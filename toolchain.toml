@@ -1,0 +1,17 @@
+# Filled in on day 0 from ./tools/stm32/versions.sh. See docs/TOOLCHAIN.md.
+[target]
+board = "B-U585I-IOT02A"
+mcu = "STM32U585AI"
+core = "cortex-m33"
+
+[host]
+os = "macos"
+arch = "arm64"
+
+[tools]
+cubemx = "TBD"
+cubeide = "TBD"
+cubeu5 = "TBD"
+stedgeai = "TBD"
+gcc = "TBD"
+programmer = "TBD"

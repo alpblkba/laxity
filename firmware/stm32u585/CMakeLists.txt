@@ -45,11 +45,14 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
+    # Laxity modules live outside the generated tree. CubeMX writes this file once and then leaves it alone, verified by md5 across a regenerate, which is what makes these two lines survive. cmake/stm32cubemx/CMakeLists.txt is the one rewritten on every run and nothing of ours goes there.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/cortex-m33/counters_dwt.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/cortex-m33
 )
 
 # Add project symbols (macros)

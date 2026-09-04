@@ -24,6 +24,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "main.h"
+#include "counters_dwt.h"
+#include <stdio.h>
 
 extern UART_HandleTypeDef huart1;
 
@@ -36,7 +38,8 @@ extern UART_HandleTypeDef huart1;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define LAXITY_HELLO_STACK  1024
+/* snprintf through newlib takes several hundred bytes of stack on its own, and the block 2 lesson was that a stack or pool shortfall here shows up as a silent port rather than as an error, so the margin is bought up front out of the 4096 byte pool. */
+#define LAXITY_HELLO_STACK  2048
 #define LAXITY_HELLO_PRIO   15
 
 /* USER CODE END PD */
@@ -111,17 +114,39 @@ void MX_ThreadX_Init(void)
 }
 
 /* USER CODE BEGIN 1 */
-/* One line per second over the ST-LINK virtual COM port. It repeats so a
-   capture attached after reset still sees it. */
+/* One report per second over the ST-LINK virtual COM port. It repeats so a capture attached after reset still sees it. */
 static VOID laxity_hello_entry(ULONG argument)
 {
-  static const char line[] = "laxity block 2 alive, 160 MHz, ThreadX tick 100 Hz\r\n";
+  char line[160];
+  bool dwt_ok;
+  uint32_t hz;
+  qos_dwt_caps_t caps;
+  int n;
 
   (void)argument;
 
+  dwt_ok = qos_dwt_init();
+  hz = dwt_ok ? qos_dwt_measure_hz(HAL_GetTick, 200u) : 0u;
+  caps = qos_dwt_probe(HAL_GetTick, 5u);
+
   while (1)
   {
-    HAL_UART_Transmit(&huart1, (uint8_t *)line, sizeof(line) - 1U, HAL_MAX_DELAY);
+    /* The measurement runs once at start up and is reported every second, since re measuring each second would report the same clock tree over and over and put a 200 ms busy wait in the loop for nothing. */
+    n = snprintf(line, sizeof line,
+                 "dwt=%s cyccnt_hz=%lu ctrl=0x%08lX noprfcnt=%s "
+                 "cpi=%s exc=%s lsu=%s fold=%s\r\n",
+                 dwt_ok ? "ok" : "FAIL",
+                 (unsigned long)hz,
+                 (unsigned long)caps.ctrl_after_enable,
+                 caps.prfcnt_claimed ? "clear" : "set",
+                 caps.cpicnt ? "yes" : "no",
+                 caps.exccnt ? "yes" : "no",
+                 caps.lsucnt ? "yes" : "no",
+                 caps.foldcnt ? "yes" : "no");
+    if (n > 0)
+    {
+      HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)n, HAL_MAX_DELAY);
+    }
     tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
   }
 }

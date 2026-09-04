@@ -9,9 +9,9 @@ os = "macos"
 arch = "arm64"
 
 [tools]
-cubemx = "TBD"
-cubeide = "TBD"
-cubeu5 = "TBD"
-stedgeai = "TBD"
-gcc = "TBD"
-programmer = "TBD"
+cubemx = "6.17"
+cubeide = "2.1.1"
+cubeu5 = "STM32Cube_FW_U5_V1.8.0"
+stedgeai = "missing"  # not installed on this host, see TOOLCHAIN.md
+gcc = "arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623"
+programmer = "2.22.0"

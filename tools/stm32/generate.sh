@@ -7,6 +7,11 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 CUBEMX="/Applications/STMicroelectronics/STM32CubeMX.app/Contents/MacOs/STM32CubeMX"
+
+# script mode still opens modal dialogs and waits on them, which is how one generate sat for eight minutes and forty six seconds. macOS ships no timeout(1), coreutils installs it under both names, so resolve it rather than assuming either one and refuse to run without it.
+TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
+[ -n "$TIMEOUT_BIN" ] || { echo "no timeout(1) or gtimeout(1) on PATH, brew install coreutils" >&2; exit 1; }
+LIMIT="${CUBEMX_TIMEOUT:-300}"
 IOC="$PWD/firmware/stm32u585/laxity-u585.ioc"
 LOG="$(mktemp -t cubemx-log)"
 SCRIPT_FILE="$(mktemp -t cubemx)"
@@ -20,8 +25,15 @@ project generate
 exit
 EOS
 
-"$CUBEMX" -q "$SCRIPT_FILE" >"$LOG" 2>&1 || true
+rc=0
+"$TIMEOUT_BIN" "$LIMIT" "$CUBEMX" -q "$SCRIPT_FILE" >"$LOG" 2>&1 || rc=$?
 rm -f "$SCRIPT_FILE"
+
+# 124 is timeout(1) killing it. a generate that finished normally took thirteen seconds, so reaching the limit means it is waiting on a dialog nobody can see.
+if [ "$rc" -eq 124 ]; then
+  echo "CubeMX did not finish within ${LIMIT}s, most likely a modal dialog. log kept at $LOG" >&2
+  exit 1
+fi
 
 # KO catches a command CubeMX refused. the file check catches a run that started, printed nothing wrong, and produced nothing.
 if grep -q '^KO' "$LOG"; then

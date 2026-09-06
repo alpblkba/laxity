@@ -12,6 +12,14 @@ arch = "arm64"
 cubemx = "6.17"
 cubeide = "2.1.1"
 cubeu5 = "STM32Cube_FW_U5_V1.8.0"
-stedgeai = "missing"  # not installed on this host, see TOOLCHAIN.md
+stedgeai = "ST Edge AI Core v4.0.1-20581 7ed50de05"
 gcc = "arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623"
 programmer = "2.22.0"
+
+# the model is not in this repository. it is SLA0044 and the repository is public, so the hash
+# is the identity and tools/stm32/generate-model.sh refuses to run when it does not match.
+[model]
+name = "st_ign_wl_24.keras"
+sha256 = "1b18f481839ebf4ea5482dc4c929afb3f46fd151e1010fb6bc28d9571a08425a"
+source = "STMicroelectronics/stm32ai-modelzoo, human_activity_recognition/st_ign/ST_pretrainedmodel_public_dataset/WISDM/st_ign_wl_24"
+licence = "SLA0044"

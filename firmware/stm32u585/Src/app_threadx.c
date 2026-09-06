@@ -25,7 +25,12 @@
 /* USER CODE BEGIN Includes */
 #include "main.h"
 #include "counters_dwt.h"
+#include "network.h"
+#include "network_data.h"
+#include "golden_st_ign_wl_24.h"
 #include <stdio.h>
+#include <string.h>
+#include <math.h>
 
 extern UART_HandleTypeDef huart1;
 
@@ -38,8 +43,8 @@ extern UART_HandleTypeDef huart1;
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* snprintf through newlib takes several hundred bytes of stack on its own, and the block 2 lesson was that a stack or pool shortfall here shows up as a silent port rather than as an error, so the margin is bought up front out of the 4096 byte pool. */
-#define LAXITY_HELLO_STACK  2048
+/* snprintf through newlib takes several hundred bytes of stack on its own, and the block 2 lesson was that a stack or pool shortfall here shows up as a silent port rather than as an error, so the margin is bought up front. It stays under TX_APP_MEM_POOL_SIZE, which is 4096, because raising the pool would mean editing the .ioc and block 4 does not regenerate. The activation buffer and the network context are static rather than stack allocated, so the inference call itself adds little to this. */
+#define LAXITY_HELLO_STACK  3072
 #define LAXITY_HELLO_PRIO   15
 
 /* USER CODE END PD */
@@ -52,6 +57,11 @@ extern UART_HandleTypeDef huart1;
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
 static TX_THREAD laxity_hello_thread;
+
+/* The vendor default, kept exactly as ST writes it: a plain static array whose address the linker chooses. docs/CHARTER.md defines the baseline as the activation buffer wherever the default linker configuration puts it, so placing this deliberately would destroy the comparison block 15 depends on. Handing the arena over on purpose is block 6. */
+static uint8_t laxity_activations[STAI_NETWORK_ACTIVATIONS_SIZE_BYTES] __attribute__((aligned(8)));
+static uint8_t laxity_net_ctx[STAI_NETWORK_CONTEXT_SIZE] __attribute__((aligned(STAI_NETWORK_CONTEXT_ALIGNMENT)));
+static float   laxity_out[LAXITY_GOLDEN_OUT_LEN];
 
 /* USER CODE END PV */
 
@@ -114,35 +124,69 @@ void MX_ThreadX_Init(void)
 }
 
 /* USER CODE BEGIN 1 */
+/* Run the vendor path once and report what it cost and what it produced. The weights are bound inside network.c at init, so only the activations have to be handed over. */
+static int laxity_infer(uint32_t *cycles)
+{
+  stai_network *net = (stai_network *)laxity_net_ctx;
+  stai_ptr acts[STAI_NETWORK_ACTIVATIONS_NUM] = { (stai_ptr)laxity_activations };
+  stai_ptr inputs[STAI_NETWORK_IN_NUM];
+  stai_ptr outputs[STAI_NETWORK_OUT_NUM];
+  stai_size n;
+  uint32_t t0, t1;
+
+  if (stai_network_init(net) != STAI_SUCCESS) { return -1; }
+  if (stai_network_set_activations(net, acts, STAI_NETWORK_ACTIVATIONS_NUM) != STAI_SUCCESS) { return -2; }
+
+  n = STAI_NETWORK_IN_NUM;
+  if (stai_network_get_inputs(net, inputs, &n) != STAI_SUCCESS) { return -3; }
+  memcpy(inputs[0], laxity_golden_input, STAI_NETWORK_IN_1_SIZE_BYTES);
+
+  t0 = qos_cyc_now();
+  if (stai_network_run(net, STAI_MODE_SYNC) != STAI_SUCCESS) { return -4; }
+  t1 = qos_cyc_now();
+  *cycles = qos_cyc_delta(t0, t1);
+
+  n = STAI_NETWORK_OUT_NUM;
+  if (stai_network_get_outputs(net, outputs, &n) != STAI_SUCCESS) { return -5; }
+  memcpy(laxity_out, outputs[0], STAI_NETWORK_OUT_1_SIZE_BYTES);
+  return 0;
+}
+
 /* One report per second over the ST-LINK virtual COM port. It repeats so a capture attached after reset still sees it. */
 static VOID laxity_hello_entry(ULONG argument)
 {
-  char line[160];
-  bool dwt_ok;
-  uint32_t hz;
-  qos_dwt_caps_t caps;
-  int n;
+  char line[200];
+  uint32_t cycles = 0u;
+  uint32_t worst_ppm = 0u;
+  int rc, argmax = 0, i, n;
 
   (void)argument;
 
-  dwt_ok = qos_dwt_init();
-  hz = dwt_ok ? qos_dwt_measure_hz(HAL_GetTick, 200u) : 0u;
-  caps = qos_dwt_probe(HAL_GetTick, 5u);
+  (void)qos_dwt_init();
+
+  rc = laxity_infer(&cycles);
+
+  for (i = 1; i < LAXITY_GOLDEN_OUT_LEN; ++i)
+  {
+    if (laxity_out[i] > laxity_out[argmax]) { argmax = i; }
+  }
+
+  /* The difference is reported in parts per million as an integer rather than as a float, since printing floats would pull newlib's formatting onto a path that later carries a measurement. */
+  for (i = 0; i < LAXITY_GOLDEN_OUT_LEN; ++i)
+  {
+    uint32_t ppm = (uint32_t)(fabsf(laxity_out[i] - laxity_golden_output[i]) * 1000000.0f);
+    if (ppm > worst_ppm) { worst_ppm = ppm; }
+  }
 
   while (1)
   {
-    /* The measurement runs once at start up and is reported every second, since re measuring each second would report the same clock tree over and over and put a 200 ms busy wait in the loop for nothing. */
     n = snprintf(line, sizeof line,
-                 "dwt=%s cyccnt_hz=%lu ctrl=0x%08lX noprfcnt=%s "
-                 "cpi=%s exc=%s lsu=%s fold=%s\r\n",
-                 dwt_ok ? "ok" : "FAIL",
-                 (unsigned long)hz,
-                 (unsigned long)caps.ctrl_after_enable,
-                 caps.prfcnt_claimed ? "clear" : "set",
-                 caps.cpicnt ? "yes" : "no",
-                 caps.exccnt ? "yes" : "no",
-                 caps.lsucnt ? "yes" : "no",
-                 caps.foldcnt ? "yes" : "no");
+                 "infer rc=%d cycles=%lu class=%d(%s) expect=%d(%s) %s worst_diff_ppm=%lu opt=-O0\r\n",
+                 rc, (unsigned long)cycles,
+                 argmax, laxity_golden_class_names[argmax],
+                 LAXITY_GOLDEN_CLASS, laxity_golden_class_names[LAXITY_GOLDEN_CLASS],
+                 (rc == 0 && argmax == LAXITY_GOLDEN_CLASS) ? "MATCH" : "MISMATCH",
+                 (unsigned long)worst_ppm);
     if (n > 0)
     {
       HAL_UART_Transmit(&huart1, (uint8_t *)line, (uint16_t)n, HAL_MAX_DELAY);

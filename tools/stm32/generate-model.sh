@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 # regenerate the ST Edge AI network sources from the pinned model, so the command line is code rather than a comment that rots.
-#
 # the generated sources are not in Git. they carry the model's trained weights, the model is SLA0044 and cannot be committed, so this script is what stands between a clean clone and a build. the same is already true of the CubeMX tree and tools/stm32/generate.sh.
-#
 # generation is reproducible where it matters. the weights array and the graph come out byte identical across runs. the date banner and STAI_NETWORK_MODEL_SIGNATURE in network.h differ per run, so two clones build binaries that differ by eight bytes and a date string.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -25,6 +23,17 @@ if [ "$WANT" != "$HAVE" ]; then
   echo "model hash mismatch, refusing to generate" >&2
   echo "  expected $WANT" >&2
   echo "  found    $HAVE" >&2
+  exit 1
+fi
+
+# the model is pinned and checked, so the generator has to be too. the same tool at the same path can be upgraded under us, and a different generator on the same model produces different code without anything in the tree changing.
+WANT_TOOL="$(sed -n 's/^stedgeai = "\(.*\)"/\1/p' toolchain.toml)"
+HAVE_TOOL="$("$STEDGEAI" --version 2>/dev/null | head -1)"
+[ -n "$WANT_TOOL" ] || { echo "no stedgeai version in toolchain.toml" >&2; exit 1; }
+if [ "$WANT_TOOL" != "$HAVE_TOOL" ]; then
+  echo "generator version mismatch, refusing to generate" >&2
+  echo "  expected $WANT_TOOL" >&2
+  echo "  found    $HAVE_TOOL" >&2
   exit 1
 fi
 

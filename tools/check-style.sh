@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 fail=0
 report() { echo "$2"; echo "$1"; fail=1; }
 
-DOCS=$(find . -name '*.md' -not -path './docs/STYLE.md' -not -path './.git/*')
+DOCS=$(find . -name '*.md' -not -path './self-docs/docs/STYLE.md' -not -path './.git/*')
 
 if hits=$(grep -n $'\u2014\|\u2013' $DOCS 2>/dev/null); then
   report "$hits" "em dash or en dash:"
@@ -27,7 +27,7 @@ fi
 
 # headings must be sentence case: flag a second capitalised word in a heading.
 if hits=$(grep -nE '^#{1,6} +[A-Z][a-z]+ +[A-Z][a-z]+' $DOCS 2>/dev/null \
-          | grep -vE '(STM32|Laxity|Apache|ThreadX|NetX|Edge AI|Cortex|SRAM|DWT|CubeMX|TinyML|RTOS|Wi-Fi)'); then
+          | grep -vE '(STM32|Laxity|Apache|ThreadX|NetX|Edge AI|Cortex|SRAM|DWT|CubeMX|TinyML|RTOS|Wi-Fi|Claude)'); then
   report "$hits" "possible title case heading:"
 fi
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# verify the local environment before anything else runs. Fails loudly, so a missing STM32Cube component surfaces here instead of as invented code later.
+# verify the local environment before anything else runs. fails loudly, so a missing STM32Cube component surfaces here instead of as invented code later.
 # macOS arm64 is the canonical host, linux is only expected in ci
 set -uo pipefail
 

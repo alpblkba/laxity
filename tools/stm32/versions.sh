@@ -4,7 +4,7 @@ set -uo pipefail
 CUBE_REPO="${HOME}/STM32Cube/Repository"
 
 printf 'host=%s %s\n' "$(uname -s)" "$(uname -m)"
-# -dumpversion yields 14.3.1 and cannot separate ST's 14.3.rel1 build from any other 14.3.1. The compiler decides the numbers this project reports, so record the full identification line.
+# -dumpversion yields 14.3.1 and cannot separate ST's 14.3.rel1 build from any other 14.3.1. the compiler decides the numbers this project reports, so record the full identification line.
 printf 'gcc=%s\n' "$(arm-none-eabi-gcc --version 2>/dev/null | head -1 || echo missing)"
 printf 'cmake=%s\n' "$(cmake --version 2>/dev/null | head -1 | awk '{print $3}')"
 printf 'cubemx=%s\n' "$(plutil -extract CFBundleShortVersionString raw /Applications/STMicroelectronics/STM32CubeMX.app/Contents/Info.plist 2>/dev/null || echo missing)"

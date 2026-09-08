@@ -1,4 +1,4 @@
-# Filled in on day 0 from ./tools/stm32/versions.sh. See docs/TOOLCHAIN.md.
+# filled in on day 0 from ./tools/stm32/versions.sh. see docs/TOOLCHAIN.md.
 [target]
 board = "B-U585I-IOT02A"
 mcu = "STM32U585AI"

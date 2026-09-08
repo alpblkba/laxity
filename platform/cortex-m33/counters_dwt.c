@@ -1,8 +1,8 @@
-/* See counters_dwt.h for what this module promises and what it deliberately does not. */
+/* see counters_dwt.h for what this module promises and what it deliberately does not. */
 
 #include "counters_dwt.h"
 
-/* ARMv8-M debug and DWT registers, addressed directly so this file needs no CMSIS device header and no STM32 header. Addresses are architectural and come from the ARMv8-M architecture reference manual. */
+/* ARMv8-M debug and DWT registers, addressed directly so this file needs no CMSIS device header and no STM32 header. addresses are architectural and come from the ARMv8-M architecture reference manual. */
 #define REG32(addr)     (*(volatile uint32_t *)(addr))
 
 #define DEMCR           REG32(0xE000EDFCu)
@@ -21,7 +21,7 @@
 #define DWT_CTRL_LSUEVTENA    (1u << 20)
 #define DWT_CTRL_FOLDEVTENA   (1u << 21)
 
-/* Read only capability bits. A part that does not implement a counter reads 1 here, which is the architectural answer to the question the probe asks empirically. */
+/* read only capability bits. a part that does not implement a counter reads 1 here, which is the architectural answer to the question the probe asks empirically. */
 #define DWT_CTRL_NOPRFCNT     (1u << 24)
 #define DWT_CTRL_NOCYCCNT     (1u << 25)
 
@@ -40,7 +40,7 @@ bool qos_dwt_init(void)
         return false;
     }
 
-    /* The enable bit reading back is not the same claim as the counter running, and on ARMv8-M some parts gate DWT behind a lock access register, so the only honest check is to look twice. */
+    /* the enable bit reading back is not the same claim as the counter running, and on ARMv8-M some parts gate DWT behind a lock access register, so the only honest check is to look twice. */
     uint32_t first = DWT_CYCCNT;
     for (volatile int i = 0; i < 16; ++i) {
     }
@@ -57,13 +57,18 @@ uint32_t qos_cyc_delta(uint32_t start, uint32_t end)
     return end - start;
 }
 
+bool qos_cyc_wrapped(uint32_t start, uint32_t end)
+{
+    return end < start;
+}
+
 uint32_t qos_dwt_measure_hz(uint32_t (*millis)(void), uint32_t window_ms)
 {
     if (millis == 0 || window_ms == 0u) {
         return 0u;
     }
 
-    /* Wait for a tick edge before starting, since entering mid tick makes the window shorter than window_ms by up to one tick and biases the result high. */
+    /* wait for a tick edge before starting, since entering mid tick makes the window shorter than window_ms by up to one tick and biases the result high. */
     uint32_t edge = millis();
     while (millis() == edge) {
     }
@@ -99,7 +104,7 @@ qos_dwt_caps_t qos_dwt_probe(uint32_t (*millis)(void), uint32_t burst_ms)
     DWT_LSUCNT = 0u;
     DWT_FOLDCNT = 0u;
 
-    /* The load mixes loads, stores and arithmetic so a working LSUCNT sees memory accesses and a working CPICNT sees multi cycle instructions, and it runs for whole milliseconds so the timebase interrupt fires several times and a working EXCCNT has something to count. volatile keeps the compiler from deleting all of it. */
+    /* the load mixes loads, stores and arithmetic so a working LSUCNT sees memory accesses and a working CPICNT sees multi cycle instructions, and it runs for whole milliseconds so the timebase interrupt fires several times and a working EXCCNT has something to count. volatile keeps the compiler from deleting all of it. */
     static volatile uint32_t scratch[8];
     uint32_t base = millis();
     uint32_t first_cpi = 0u, first_exc = 0u, first_lsu = 0u, first_fold = 0u;
@@ -108,7 +113,7 @@ qos_dwt_caps_t qos_dwt_probe(uint32_t (*millis)(void), uint32_t burst_ms)
     for (uint32_t i = 0u; (millis() - base) < burst_ms; ++i) {
         scratch[i & 7u] = scratch[(i + 3u) & 7u] + i;
         if (!sampled && i == 256u) {
-            /* One early sample, because these counters are eight bits wide and wrap. Comparing an early reading against a late one detects a counter that is running even when the late reading happens to land back on zero. */
+            /* one early sample, because these counters are eight bits wide and wrap. comparing an early reading against a late one detects a counter that is running even when the late reading happens to land back on zero. */
             first_cpi  = DWT_CPICNT  & 0xFFu;
             first_exc  = DWT_EXCCNT  & 0xFFu;
             first_lsu  = DWT_LSUCNT  & 0xFFu;

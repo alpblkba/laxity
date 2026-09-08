@@ -1,0 +1,10 @@
+# first-pass sweep. screen before crossing everything, then sweep the factors
+# that actually moved the result and record the reduction.
+name: baseline
+repetitions: 30
+randomize_order: true
+factors:
+  arena_region: [SRAM1, SRAM2, SRAM3]
+  aggressor:    [none, cpu_hog, gpdma_m2m, audio_p2m]
+  intensity:    [0, 50, 100]   # applies to gpdma_m2m only
+policy: vendor_default

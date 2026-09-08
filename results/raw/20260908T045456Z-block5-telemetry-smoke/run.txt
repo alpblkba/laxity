@@ -1,0 +1,8 @@
+run=block5-telemetry-smoke
+port=/dev/cu.usbmodem21303
+stlink_sn=0022003F3432511430343838
+baud=921600
+seconds=35
+drain_seconds=2
+utc=20260908T045456Z
+bytes=31706

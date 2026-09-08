@@ -1,0 +1,8 @@
+host=Darwin arm64
+gcc=arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+cmake=4.3.2
+cubemx=6.17
+cubeide=2.1.1
+stedgeai=ST Edge AI Core v4.0.1-20581 7ed50de05
+programmer=2.22.0
+cubeu5=STM32Cube_FW_U5_V1.8.0

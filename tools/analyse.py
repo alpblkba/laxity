@@ -59,7 +59,18 @@ def entry(run_dir):
     out, meta, placements, records = telemetry_parse.parse((run_dir / "telemetry.bin").read_bytes())
     if not meta:
         raise SystemExit("%s carries no header frame" % run_dir)
-    stats = telemetry_parse.region_stats(placements, records)
+    quiet = [r for r in records if r["aggressor_idx"] == 0] or records
+    stats = telemetry_parse.region_stats(placements, quiet)
+    cells = telemetry_parse.cell_stats(placements, records)
+
+    # a channel that failed to start is indistinguishable from a channel that caused no
+    # contention, so a cell that names an aggressor whose transfer count never moved is a broken
+    # run and is refused rather than reported as a null result.
+    dead = ["%s under %s" % (a, g) for (a, g), st in cells.items()
+            if g != "off" and not st["xfer_advanced"]]
+    if dead:
+        raise SystemExit("%s: the aggressor never advanced in %d cell(s): %s"
+                         % (run_dir, len(dead), ", ".join(dead[:4])))
 
     lines = []
     lines.append("## %s" % run_dir.name)
@@ -91,6 +102,32 @@ def entry(run_dir):
     lines.append("%s records over %s s, %s dropped, %s sequence gaps, %s frames rejected on CRC." % (
         out["records"], run.get("seconds", "?"), out["dropped"], out["gaps"], out["false_sync"]))
     lines.append("")
+    contended = sorted({g for (_, g) in cells if g != "off"})
+    if contended:
+        base = {a: st["median"] for (a, g), st in cells.items() if g == "off"}
+        lines.append("Median inference cycles by arena placement and competing GPDMA1 traffic. "
+                     "The aggressor is a memory to memory channel whose buffers sit in the named "
+                     "region, so a row is one arena and a column is one source of bus traffic.")
+        lines.append("")
+        lines.append("| arena | uncontended | " + " | ".join(contended) + " |")
+        lines.append("|---" * (len(contended) + 2) + "|")
+        for arena in sorted(base):
+            row = ["%d" % base[arena]]
+            for g in contended:
+                st = cells.get((arena, g))
+                row.append("%d (%+d)" % (st["median"], st["median"] - base[arena]) if st else "")
+            lines.append("| %s | %s |" % (arena, " | ".join(row)))
+        lines.append("")
+        worst = max(((a, g, st["median"] - base[a]) for (a, g), st in cells.items()
+                     if g != "off" and a in base), key=lambda t: t[2])
+        lines.append("Every contended cell carried a GPDMA1 transfer count that advanced across "
+                     "its records, so no cell here is a channel that failed to start. The largest "
+                     "effect is %s under %s at %s above its own uncontended median."
+                     % (worst[0], worst[1], cycles(worst[2])))
+        lines.append("")
+
+    lines.append("Placement on its own, from the records taken with no aggressor running.")
+    lines.append("")
     lines.append("| label | arena | n | min | median | p99 | max | median delta |")
     lines.append("|---|---|---|---|---|---|---|---|")
     base = None
@@ -108,7 +145,7 @@ def entry(run_dir):
     def group(label):
         return label.rstrip("abcdefghijklmnopqrstuvwxyz'")
 
-    controls, alts = [], []
+    controls, alts, control_floor = [], [], 0
     for label, st in stats.items():
         base_label = next((l for l in stats if l == group(label) and l != label), None)
         if base_label is None:
@@ -117,6 +154,7 @@ def entry(run_dir):
         p99d = st["p99"] - stats[base_label]["p99"]
         if st["control"]:
             controls.append((label, base_label, delta, p99d))
+            control_floor = max(control_floor, abs(delta))
         elif st["alt_addr"]:
             alts.append((label, base_label, delta, p99d))
 
@@ -132,6 +170,37 @@ def entry(run_dir):
                          label, stats[label]["arena_addr"], base_label,
                          stats[base_label]["arena_addr"], cycles(delta), p99d))
         lines.append("")
+
+    if contended:
+        by_col = {}
+        for (a, g), st in cells.items():
+            if g != "off":
+                by_col.setdefault(g, {})[a] = st["median"]
+        widest = max(by_col.items(), key=lambda kv: max(kv[1].values()) - min(kv[1].values()))
+        span = max(widest[1].values()) - min(widest[1].values())
+        best = min(widest[1], key=widest[1].get)
+        lines.append("Under contention, where the arena sits changes median inference latency by "
+                     "up to %s. The widest column is %s, where %s is the cheapest placement and "
+                     "the most expensive costs that much more, against a same buffer control that "
+                     "differs by %s."
+                     % (cycles(span), widest[0], best, cycles(control_floor)))
+        lines.append("")
+
+        # the footprint axis, read from the cells where arena and aggressor share a region
+        same = {}
+        for (a, g), st in cells.items():
+            if g != "off" and a[:4] == "SRAM" and a[4:].isdigit() and g.startswith("r%s-" % a[4:]):
+                same.setdefault(g.split("-")[1], []).append(st["median"])
+        if len(same) > 1:
+            order = sorted(same, key=lambda k: int(k.rstrip("K")))
+            trend = [int(sum(same[k]) / len(same[k])) for k in order]
+            lines.append("Aggressor footprint moves the cost by %s across %s, and the direction is "
+                         "%s: %s. Smaller buffers restart the channel's block more often, so the "
+                         "per block arbitration rather than the bandwidth is what the arena pays for."
+                         % (cycles(max(trend) - min(trend)), " to ".join([order[0], order[-1]]),
+                            "downward" if trend[-1] < trend[0] else "upward",
+                            ", ".join("%s %d" % (k, v) for k, v in zip(order, trend))))
+            lines.append("")
 
     floor = max((abs(d) for _, _, d, _ in controls), default=0)
     primaries = {l: st for l, st in stats.items() if not st["control"] and not st["alt_addr"]}

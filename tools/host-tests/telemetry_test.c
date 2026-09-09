@@ -249,11 +249,23 @@ static void write_streams(const char *dir)
     for (uint32_t i = 0u; i < 32u; ++i) {
         rec.exec_cyc = 300000u + i;
         rec.region_id = ids[i % 4u];
+        /* half the records carry an aggressor in region 2 at footprint index 1 and a transfer
+         * count that climbs, the other half carry none. the parser has to split them into
+         * different cells and see the count advance only where an aggressor was running. */
+        if ((i % 2u) == 0u) {
+            rec.aggressor_idx = (uint16_t)((1u << 8) | 2u);
+            rec.reserved = 100u + i;
+        } else {
+            rec.aggressor_idx = 0u;
+            rec.reserved = 0u;
+        }
         rec.flags = ((i % 8u) == 0u) ? QOS_FLAG_CYCCNT_WRAP : 0u;
         (void)qos_telemetry_push(&rec);
     }
     rec.flags = 0u;
     rec.region_id = 1u;
+    rec.aggressor_idx = 0u;
+    rec.reserved = 0u;
     for (uint32_t i = 0u; i < 4u; ++i) { (void)qos_telemetry_push(&rec); }
 
     first_header_payload = len + QOS_FRAME_OVERHEAD;

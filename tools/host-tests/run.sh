@@ -23,7 +23,7 @@ fail=0
 # grep -q keeps the whole stream consumed, which is the false negative that form once produced.
 expect() {
   local out="$1" key="$2" want="$3" got
-  got=$(printf '%s\n' "$out" | sed -n "s/^${key}=//p")
+  got=$(printf '%s\n' "$out" | sed -n "s|^${key}=||p")
   if [ "$got" != "$want" ]; then
     echo "FAIL $key=$got, expected $want"
     fail=1
@@ -48,6 +48,13 @@ expect "$good" region.SRAM2.arena_addr 0x20030000
 expect "$good" region.SRAM1cx.control 1
 expect "$good" region.SRAM1.n 12
 expect "$good" region.SRAM3.n 8
+# the aggressor axis has to split one placement into two cells, and the transfer count has to
+# advance only in the cell that carried an aggressor.
+expect "$good" cell.SRAM1.r2-4K.xfer_advanced 1
+expect "$good" cell.SRAM1.off.xfer_advanced 0
+# the same placement appears in two cells, eight records with an aggressor and four without
+expect "$good" cell.SRAM1.r2-4K.n 8
+expect "$good" cell.SRAM1.off.n 4
 expect "$good" header_frames 2
 expect "$good" batch_frames 2
 expect "$good" records 36

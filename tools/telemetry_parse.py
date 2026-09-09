@@ -25,6 +25,20 @@ RECORD_SIZE = 32
 
 FLAG_CYCCNT_WRAP = 1 << 0
 
+# aggressor_idx packs the competing master's region in the low byte and a footprint index in the
+# high byte. the footprint table is a property of the run rather than of the format, so it is
+# named here and has to move with the firmware if the levels change.
+FOOTPRINT_BYTES = (1024, 4096, 8192, 16384)
+
+
+def aggressor_of(rec):
+    idx = rec["aggressor_idx"]
+    region, foot = idx & 0xFF, (idx >> 8) & 0xFF
+    if region == 0:
+        return "off"
+    size = FOOTPRINT_BYTES[foot] if foot < len(FOOTPRINT_BYTES) else foot
+    return "r%d-%s" % (region, "%dK" % (size // 1024) if size >= 1024 else str(size))
+
 RECORD_FIELDS = (
     "seq", "release_cyc", "exec_cyc", "cpu_cyc", "stall_cyc",
     "model_id", "region_id", "flags", "aggressor_idx", "padding", "reserved",
@@ -186,6 +200,34 @@ def region_stats(placements, records):
     return out
 
 
+def cell_stats(placements, records):
+    """one row per arena placement crossed with the aggressor that was running
+
+    the transfer count travels with the cell, because a cell whose aggressor never moved is a
+    broken measurement and has to be refused rather than reported as a null result.
+    """
+    cells = {}
+    for rec in records:
+        info = placements.get(rec["region_id"], {})
+        arena = info.get("name") or ("id%d" % rec["region_id"])
+        cells.setdefault((arena, aggressor_of(rec)), []).append(rec)
+    out = {}
+    for (arena, aggr), recs in sorted(cells.items()):
+        values = [r["exec_cyc"] for r in recs]
+        counts = [r["reserved"] for r in recs]
+        out[(arena, aggr)] = {
+            "n": len(values),
+            "median": median(values),
+            "p99": p99(values),
+            "min": min(values),
+            "max": max(values),
+            "xfer_first": counts[0],
+            "xfer_last": counts[-1],
+            "xfer_advanced": 1 if counts[-1] > counts[0] else 0,
+        }
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("path", help="raw capture, normally results/raw/<run>/telemetry.bin")
@@ -203,6 +245,9 @@ def main():
     for label, st in region_stats(placements, records).items():
         for key in ("id", "n", "min", "median", "p99", "max", "control", "alt_addr", "arena_addr"):
             print("region.%s.%s=%s" % (label, key, st[key]))
+    for (arena, aggr), st in cell_stats(placements, records).items():
+        for key in ("n", "min", "median", "p99", "max", "xfer_advanced"):
+            print("cell.%s.%s.%s=%s" % (arena, aggr, key, st[key]))
 
     if args.csv:
         with open(args.csv, "w") as handle:

@@ -1,11 +1,11 @@
 /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
-  * @file    app_azure_rtos.h
+  * @file    app_netxduo.h
   * @author  MCD Application Team
-  * @brief   app_azure_rtos application header file
+  * @brief   NetXDuo applicative header file
   ******************************************************************************
-   * @attention
+    * @attention
   *
   * Copyright (c) 2026 STMicroelectronics.
   * All rights reserved.
@@ -17,23 +17,19 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Define to prevent recursive inclusion -------------------------------------*/
-#ifndef APP_AZURE_RTOS_H
-#define APP_AZURE_RTOS_H
+#ifndef __APP_NETXDUO_H__
+#define __APP_NETXDUO_H__
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Includes ------------------------------------------------------------------*/
-
-#include "app_threadx.h"
-#include "stm32u5xx_hal.h"
-#include "app_azure_rtos_config.h"
-
-#include "app_netxduo.h"
+#include "nx_api.h"
 
 /* Private includes ----------------------------------------------------------*/
+
 /* USER CODE BEGIN Includes */
 
 /* USER CODE END Includes */
@@ -54,6 +50,7 @@ extern "C" {
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
+UINT MX_NetXDuo_Init(VOID *memory_ptr);
 
 /* USER CODE BEGIN EFP */
 
@@ -64,7 +61,11 @@ extern "C" {
 
 /* USER CODE END PD */
 
+/* USER CODE BEGIN 1 */
+
+/* USER CODE END 1 */
+
 #ifdef __cplusplus
 }
 #endif
-#endif /* APP_AZURE_RTOS_H */
+#endif /* __APP_NETXDUO_H__ */

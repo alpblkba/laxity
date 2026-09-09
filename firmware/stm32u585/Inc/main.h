@@ -57,8 +57,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define WRLS_FLOW_Pin GPIO_PIN_15
-#define WRLS_FLOW_GPIO_Port GPIOG
+#define MXCHIP_FLOW_Pin GPIO_PIN_15
+#define MXCHIP_FLOW_GPIO_Port GPIOG
 #define WRLS_UART4_RX_Pin GPIO_PIN_11
 #define WRLS_UART4_RX_GPIO_Port GPIOC
 #define USB_UCPD_CC1_Pin GPIO_PIN_15
@@ -147,8 +147,8 @@ void Error_Handler(void);
 #define MIC_CCK0_GPIO_Port GPIOE
 #define Mems_VLX_GPIO_Pin GPIO_PIN_5
 #define Mems_VLX_GPIO_GPIO_Port GPIOG
-#define WRLS_NOTIFY_Pin GPIO_PIN_14
-#define WRLS_NOTIFY_GPIO_Port GPIOD
+#define MXCHIP_NOTIFY_Pin GPIO_PIN_14
+#define MXCHIP_NOTIFY_GPIO_Port GPIOD
 #define OCTOSPI_R_IO6_Pin GPIO_PIN_3
 #define OCTOSPI_R_IO6_GPIO_Port GPIOC
 #define OCTOSPI_F_DQS_Pin GPIO_PIN_12
@@ -167,8 +167,8 @@ void Error_Handler(void);
 #define USB_VBUS_SENSE_GPIO_Port GPIOF
 #define OCTOSPI_R_NCS_Pin GPIO_PIN_11
 #define OCTOSPI_R_NCS_GPIO_Port GPIOB
-#define WRLS_SPI2_NSS_Pin GPIO_PIN_12
-#define WRLS_SPI2_NSS_GPIO_Port GPIOB
+#define MXCHIP_NSS_Pin GPIO_PIN_12
+#define MXCHIP_NSS_GPIO_Port GPIOB
 #define USB_UCPD_CC2_Pin GPIO_PIN_15
 #define USB_UCPD_CC2_GPIO_Port GPIOB
 #define Mems_STSAFE_RESET_Pin GPIO_PIN_11
@@ -177,10 +177,19 @@ void Error_Handler(void);
 #define Mems_ISM330DLC_INT1_GPIO_Port GPIOE
 #define MIC_SDIN0_Pin GPIO_PIN_1
 #define MIC_SDIN0_GPIO_Port GPIOB
-#define WRLS_WKUP_W_Pin GPIO_PIN_15
-#define WRLS_WKUP_W_GPIO_Port GPIOF
+#define MXCHIP_RESET_Pin GPIO_PIN_15
+#define MXCHIP_RESET_GPIO_Port GPIOF
 
 /* USER CODE BEGIN Private defines */
+/* the MXCHIP driver reaches the SPI port through this name. */
+#define MXCHIP_SPI hspi2
+extern SPI_HandleTypeDef hspi2;
+
+/* raised from the two module interrupt lines. */
+void mxchip_WIFI_ISR(uint16_t isr_source);
+
+/* the two module interrupts, enabled here because the .ioc drops the NVIC entries. */
+void laxity_mxchip_irq_enable(void);
 
 /* USER CODE END Private defines */
 

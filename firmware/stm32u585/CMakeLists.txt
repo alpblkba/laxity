@@ -18,6 +18,15 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug")
 endif()
 
+# the STM32Cube U5 package supplies the Wi-Fi driver sources. the generated CMake already
+# references this install by absolute path, so this only names the same place once more.
+if(NOT DEFINED LAXITY_CUBE_U5)
+    set(LAXITY_CUBE_U5 "$ENV{HOME}/STM32Cube/Repository/STM32Cube_FW_U5_V1.8.0")
+endif()
+if(NOT EXISTS "${LAXITY_CUBE_U5}/Drivers/BSP/Components/mx_wifi/mx_wifi.c")
+    message(FATAL_ERROR "no mx_wifi driver under ${LAXITY_CUBE_U5}, set LAXITY_CUBE_U5")
+endif()
+
 # Set the project name
 set(CMAKE_PROJECT_NAME laxity-u585)
 
@@ -49,8 +58,23 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/cortex-m33/counters_dwt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../runtime/telemetry.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/stm32u5/memory_map.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/stm32u5/net_udp_export.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/kernels/null_probe.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/aggressors/gpdma_m2m.c
+
+    # the MXCHIP driver and the NetX Duo glue for it, referenced from the Cube package rather
+    # than copied in. CubeMX owns firmware/stm32u585/Drivers and Middlewares and deletes what it
+    # no longer generates there, so a copy would not survive a regeneration.
+    # nx_driver_framework.c is deliberately absent: nx_driver_emw3080.c includes it, and listing
+    # it here as its own translation unit gives duplicate symbols at link.
+    ${LAXITY_CUBE_U5}/Drivers/BSP/Components/mx_wifi/mx_wifi.c
+    ${LAXITY_CUBE_U5}/Drivers/BSP/Components/mx_wifi/core/mx_address.c
+    ${LAXITY_CUBE_U5}/Drivers/BSP/Components/mx_wifi/core/mx_wifi_hci.c
+    ${LAXITY_CUBE_U5}/Drivers/BSP/Components/mx_wifi/core/mx_wifi_ipc.c
+    ${LAXITY_CUBE_U5}/Drivers/BSP/Components/mx_wifi/core/mx_wifi_slip.c
+    ${LAXITY_CUBE_U5}/Drivers/BSP/Components/mx_wifi/io_pattern/mx_wifi_spi.c
+    ${LAXITY_CUBE_U5}/Middlewares/ST/netxduo/common/drivers/wifi/mxchip/mx_wifi_azure_rtos.c
+    ${LAXITY_CUBE_U5}/Middlewares/ST/netxduo/common/drivers/wifi/mxchip/nx_driver_emw3080.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai/network.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai/network_data.c
 )
@@ -63,6 +87,11 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/kernels
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/aggressors
+    ${LAXITY_CUBE_U5}/Drivers/BSP/Components/mx_wifi
+    ${LAXITY_CUBE_U5}/Middlewares/ST/netxduo/common/drivers/wifi/mxchip
+    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/ST/netxduo/common/inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/ST/netxduo/addons/dhcp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Middlewares/ST/netxduo/ports/cortex_m33/gnu/inc
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai/Middlewares/ST/AI/Inc
 )

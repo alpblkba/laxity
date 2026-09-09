@@ -29,6 +29,7 @@
 #include "null_probe.h"
 #include "gpdma_m2m.h"
 #include "qos/telemetry.h"
+#include "net_udp_export.h"
 #include "network.h"
 #include "network_data.h"
 #include "golden_st_ign_wl_24.h"
@@ -52,6 +53,11 @@ extern UART_HandleTypeDef huart1;
 #define LAXITY_INFER_PRIO    15
 #define LAXITY_EXPORT_STACK  2048
 #define LAXITY_EXPORT_PRIO   20
+
+/* below the driver's own threads and above the exporter, so joining a network never delays a
+ * measurement and never starves the thing draining the ring. */
+#define LAXITY_NET_STACK     2048
+#define LAXITY_NET_PRIO      12
 
 /* lower priority than the measurement thread, so a blocking transmit that takes several milliseconds at 921600 baud cannot delay an inference. that is what best effort export means here. */
 
@@ -110,6 +116,7 @@ extern UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 static TX_THREAD    laxity_infer_thread;
 static TX_THREAD    laxity_export_thread;
+static TX_THREAD    laxity_net_thread;
 
 /* the exporter waits on this rather than sleeping for a plausible interval. the null probe pushes records and resets the ring, so a consumer that started draining during boot would both corrupt the probe and put its synthetic records on the wire. */
 static TX_SEMAPHORE laxity_boot_done;
@@ -163,6 +170,10 @@ static volatile struct {
   uint32_t mismatches;
   uint32_t passes;
   uint32_t aggr_completions;
+  int32_t  net_rc;
+  uint32_t net_addr;
+  uint32_t net_sent;
+  uint32_t net_failed;
 } laxity_live;
 
 /* USER CODE END PV */
@@ -171,6 +182,7 @@ static volatile struct {
 /* USER CODE BEGIN PFP */
 static VOID laxity_infer_entry(ULONG argument);
 static VOID laxity_export_entry(ULONG argument);
+static VOID laxity_net_entry(ULONG argument);
 
 /* USER CODE END PFP */
 
@@ -223,6 +235,22 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                        TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
   {
     return TX_THREAD_ERROR;
+  }
+
+  {
+    CHAR *net_stack;
+    if (tx_byte_allocate(byte_pool, (VOID **)&net_stack, LAXITY_NET_STACK,
+                         TX_NO_WAIT) != TX_SUCCESS)
+    {
+      return TX_POOL_ERROR;
+    }
+    if (tx_thread_create(&laxity_net_thread, "laxity_net", laxity_net_entry, 0,
+                         net_stack, LAXITY_NET_STACK,
+                         LAXITY_NET_PRIO, LAXITY_NET_PRIO,
+                         TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+    {
+      return TX_THREAD_ERROR;
+    }
   }
   /* USER CODE END App_ThreadX_Init */
 
@@ -567,6 +595,25 @@ static VOID laxity_infer_entry(ULONG argument)
   }
 }
 
+/* bring the link up once, then report it. the result is published for the status line rather
+   than printed here, because one thread owns the UART and it is not this one. */
+static VOID laxity_net_entry(ULONG argument)
+{
+  (void)argument;
+
+  laxity_mxchip_irq_enable();
+  laxity_live.net_rc = (int32_t)qos_net_start();
+
+  while (1)
+  {
+    ULONG addr = 0u, mask = 0u;
+    (void)qos_net_address(&addr, &mask);
+    laxity_live.net_addr = (uint32_t)addr;
+    (void)qos_net_stats((UINT *)&laxity_live.net_sent, (UINT *)&laxity_live.net_failed);
+    tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
+  }
+}
+
 /* send one line, with the frame magic scrubbed out of it first.
  *
  * the magic is "LX" in ASCII and the status line shares this UART with the framed stream, so a status line that happened to contain those two bytes would cost the parser a rescan. the parser recovers from it either way, and keeping the sequence off the wire is cheaper than relying on the recovery. */
@@ -601,7 +648,10 @@ static VOID laxity_export_entry(ULONG argument)
     size_t n = qos_telemetry_drain(laxity_export_buf, sizeof laxity_export_buf);
     if (n > 0u)
     {
+      /* the UART is the path that always works and it stays first. the datagram carries the
+         same bytes, so the host parser reads either without knowing which it received. */
       HAL_UART_Transmit(&huart1, laxity_export_buf, (uint16_t)n, HAL_MAX_DELAY);
+      (void)qos_net_send(laxity_export_buf, (UINT)n);
     }
 
     /* one human readable set per second, so a silent board is still distinguishable from a broken one without running the parser. */
@@ -629,6 +679,16 @@ static VOID laxity_export_entry(ULONG argument)
                    (unsigned long)laxity_placements[3].arena_addr,
                    (unsigned long)laxity_placements[4].arena_addr,
                    (unsigned)LAXITY_ARENA_BYTES));
+
+      laxity_say(line, snprintf(line, sizeof line,
+                   "net rc=%ld ip=%lu.%lu.%lu.%lu sent=%lu failed=%lu\r\n",
+                   (long)laxity_live.net_rc,
+                   (unsigned long)((laxity_live.net_addr >> 24) & 0xFFu),
+                   (unsigned long)((laxity_live.net_addr >> 16) & 0xFFu),
+                   (unsigned long)((laxity_live.net_addr >> 8) & 0xFFu),
+                   (unsigned long)(laxity_live.net_addr & 0xFFu),
+                   (unsigned long)laxity_live.net_sent,
+                   (unsigned long)laxity_live.net_failed));
 
       laxity_say(line, snprintf(line, sizeof line,
                    "telemetry v%u cyccnt_hz=%lu stall_avail=%d null_read_med=%lu null_read_p99=%lu null_push_med=%lu null_push_p99=%lu n=%lu\r\n",

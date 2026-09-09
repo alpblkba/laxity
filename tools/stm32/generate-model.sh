@@ -15,7 +15,7 @@ LOG="$(mktemp -t stedgeai-log)"
 [ -x "$STEDGEAI" ] || { echo "no stedgeai at $STEDGEAI, install ST Edge AI Core and see TOOLCHAIN.md" >&2; exit 1; }
 [ -f "$MODEL" ]    || { echo "no model at $MODEL, TOOLCHAIN.md records where it comes from" >&2; exit 1; }
 
-# a pin nobody checks is decoration. the hash lives in toolchain.toml rather than in TOOLCHAIN.md because self-docs is not in a clone and this script has to work in one.
+# a pin nobody checks is decoration. the hash lives in toolchain.toml, which is in the repository, because this script has to work in a clean clone.
 WANT="$(sed -n 's/^sha256 = "\(.*\)"/\1/p' toolchain.toml)"
 HAVE="$(shasum -a 256 "$MODEL" | cut -d' ' -f1)"
 [ -n "$WANT" ] || { echo "no model sha256 in toolchain.toml" >&2; exit 1; }

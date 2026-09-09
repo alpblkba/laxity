@@ -16,7 +16,7 @@ done
 
 if [ "$fail" -ne 0 ]; then
   echo
-  echo "Vendor headers belong behind include/qos/port/. See docs/ARCHITECTURE.md."
+  echo "vendor headers belong behind include/qos/port/, so the runtime stays buildable without them."
   exit 1
 fi
 echo "layering ok"

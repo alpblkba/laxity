@@ -4,13 +4,14 @@
 # verified on this machine by the script mode invocation is -q <script file>.
 # CubeMX returns 0 even after refusing a command, so the exit status carries no information and success has to be established from the output and the tree.
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+LAXITY_STM32_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$LAXITY_STM32_DIR/lib.sh"
+cd "$LAXITY_STM32_DIR/../.."
 
 CUBEMX="/Applications/STMicroelectronics/STM32CubeMX.app/Contents/MacOs/STM32CubeMX"
 
-# script mode still opens modal dialogs and waits on them, which is how one generate sat for eight minutes and forty six seconds. macOS ships no timeout(1), coreutils installs it under both names, so resolve it rather than assuming either one and refuse to run without it.
-TIMEOUT_BIN="$(command -v timeout || command -v gtimeout || true)"
-[ -n "$TIMEOUT_BIN" ] || { echo "no timeout(1) or gtimeout(1) on PATH, brew install coreutils" >&2; exit 1; }
+# script mode still opens modal dialogs and waits on them, which is how one generate sat for eight minutes and forty six seconds, so refuse to run without a time limit.
+TIMEOUT_BIN="$(laxity_timeout)" || { echo "no timeout(1) or gtimeout(1) on PATH, brew install coreutils" >&2; exit 1; }
 LIMIT="${CUBEMX_TIMEOUT:-300}"
 IOC="$PWD/firmware/stm32u585/laxity-u585.ioc"
 LOG="$(mktemp -t cubemx-log)"

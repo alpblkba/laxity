@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """read a framed Laxity telemetry stream and report what is in it.
 
-the format is self-docs/docs/TELEMETRY.md. the firmware shares one UART between framed
+the format is defined by include/qos/telemetry.h. the firmware shares one UART between framed
 telemetry and a human readable status line, so a capture is a mixed stream and this parser
 recovers by scanning for the magic and validating the CRC before accepting anything.
 
@@ -14,9 +14,13 @@ import struct
 import sys
 
 MAGIC = b"LX"
-VERSION = 1
+# version 1 carried a 20 byte fixed header and no placement entries. version 2 added the null
+# probe overhead and the placement table. both are accepted, since results/raw is append only
+# and a capture has to stay readable after the format moves.
+VERSIONS = (1, 2)
+HEADER_FIXED = {1: 20, 2: 40}
 FRAME_OVERHEAD = 8
-HEADER_PAYLOAD = 20
+PLACEMENT_SIZE = 20
 RECORD_SIZE = 32
 
 FLAG_CYCCNT_WRAP = 1 << 0
@@ -26,6 +30,18 @@ RECORD_FIELDS = (
     "model_id", "region_id", "flags", "aggressor_idx", "padding", "reserved",
 )
 RECORD_STRUCT = struct.Struct("<5I H B B H H I")
+PLACEMENT_STRUCT = struct.Struct("<B B H I I 8s")
+PLACEMENT_CONTROL = 1 << 0
+PLACEMENT_ALT_ADDR = 1 << 1
+
+
+def median(values):
+    """the firmware's rule, so a host figure and a target figure mean the same thing"""
+    return sorted(values)[len(values) // 2]
+
+
+def p99(values):
+    return sorted(values)[(len(values) * 99) // 100]
 
 
 def crc16(data):
@@ -46,6 +62,7 @@ def parse(data):
         "wrapped": 0,
     }
     meta = {}
+    placements = {}
     records = []
     seen_header = False
     expect_seq = None
@@ -66,7 +83,7 @@ def parse(data):
         # a candidate is rejected on the byte after its magic rather than on the length it
         # claims, since "LX" occurs in ordinary text and a claimed length can walk the reader
         # straight over a real frame that starts inside the bytes it would have skipped.
-        ok = (version == VERSION and ftype in (0, 1) and body + plen <= end
+        ok = (version in VERSIONS and ftype in (0, 1) and body + plen <= end
               and crc16(data[body:body + plen]) == want)
         if not ok:
             pos += 1
@@ -76,7 +93,9 @@ def parse(data):
 
         out["frames"] += 1
         if ftype == 0:
-            if plen != HEADER_PAYLOAD:
+            fixed = HEADER_FIXED[version]
+            n_regions = data[body + 17] if plen > 17 else 0
+            if plen != fixed + n_regions * PLACEMENT_SIZE:
                 pos += 1
                 out["skipped_bytes"] += 1
                 out["false_sync"] += 1
@@ -89,10 +108,27 @@ def parse(data):
                 "seq_next": seq_next,
                 "stall_available": (data[body + 16] & 1) != 0,
                 "stall_populated": (data[body + 16] & 2) != 0,
-                "n_regions": data[body + 17],
+                "n_regions": n_regions,
                 "n_models": data[body + 18],
                 "record_size": data[body + 19],
             }
+            if version >= 2:
+                rm, rp, pm, pp = struct.unpack_from("<4I", data, body + 20)
+                meta.update({
+                    "null_read_median": rm, "null_read_p99": rp,
+                    "null_push_median": pm, "null_push_p99": pp,
+                    "null_n": struct.unpack_from("<H", data, body + 36)[0],
+                })
+            placements.clear()
+            for i in range(n_regions):
+                pid, pflags, rel, addr, size, raw = PLACEMENT_STRUCT.unpack_from(
+                    data, body + fixed + i * PLACEMENT_SIZE)
+                placements[pid] = {
+                    "name": raw.split(b"\x00")[0].decode("ascii", "replace"),
+                    "control": bool(pflags & PLACEMENT_CONTROL),
+                    "alt_addr": bool(pflags & PLACEMENT_ALT_ADDR),
+                    "rel_cost": rel, "arena_addr": addr, "arena_size": size,
+                }
             out["dropped"] = max(out["dropped"], dropped)
             out["header_frames"] += 1
             seen_header = True
@@ -124,7 +160,30 @@ def parse(data):
         pos = body + plen
 
     out["skipped_bytes"] += end - pos
-    return out, meta, records
+    return out, meta, placements, records
+
+
+def region_stats(placements, records):
+    """group exec_cyc by placement label, so the control alias stays a separate column"""
+    stats = {}
+    for rec in records:
+        stats.setdefault(rec["region_id"], []).append(rec["exec_cyc"])
+    out = {}
+    for rid, values in sorted(stats.items()):
+        info = placements.get(rid, {})
+        label = info.get("name") or ("id%d" % rid)
+        out[label] = {
+            "id": rid,
+            "n": len(values),
+            "min": min(values),
+            "median": median(values),
+            "p99": p99(values),
+            "max": max(values),
+            "control": 1 if info.get("control") else 0,
+            "alt_addr": 1 if info.get("alt_addr") else 0,
+            "arena_addr": "0x%08x" % info["arena_addr"] if "arena_addr" in info else "",
+        }
+    return out
 
 
 def main():
@@ -134,13 +193,16 @@ def main():
     args = ap.parse_args()
 
     with open(args.path, "rb") as handle:
-        out, meta, records = parse(handle.read())
+        out, meta, placements, records = parse(handle.read())
 
     for key in sorted(meta):
         value = meta[key]
         print("%s=%s" % (key, int(value) if isinstance(value, bool) else value))
     for key in sorted(out):
         print("%s=%s" % (key, out[key]))
+    for label, st in region_stats(placements, records).items():
+        for key in ("id", "n", "min", "median", "p99", "max", "control", "alt_addr", "arena_addr"):
+            print("region.%s.%s=%s" % (label, key, st[key]))
 
     if args.csv:
         with open(args.csv, "w") as handle:

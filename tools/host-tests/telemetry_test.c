@@ -110,12 +110,22 @@ static void test_wrap(void)
     CHECK_EQ(qos_cyc_delta(0x00000000u, 0x00000005u), 5u);
 }
 
+/* the shape the placement experiment puts on the wire: three regions plus a control alias of the first. */
+static const qos_placement_t PLACEMENTS[4] = {
+    { 1u, 0u,                      1000u, 0x20004000u, 2944u, "SRAM1"  },
+    { 2u, 0u,                      1000u, 0x20030000u, 2944u, "SRAM2"  },
+    { 3u, 0u,                      1000u, 0x20040000u, 2944u, "SRAM3"  },
+    { 5u, QOS_PLACEMENT_CONTROL,   1000u, 0x20004000u, 2944u, "SRAM1cx" },
+};
+
 static void test_round_trip(void)
 {
     uint8_t buf[2048];
     qos_infer_record_t rec = {0};
 
     qos_telemetry_init(160000000u, 159999450u, QOS_HDR_STALL_AVAILABLE);
+    qos_telemetry_set_null_probe(14u, 14u, 118u, 118u, 128u);
+    qos_telemetry_set_placements(PLACEMENTS, 2u);
     CHECK(qos_telemetry_has_stall_attribution());
     CHECK_EQ(qos_telemetry_drain(buf, sizeof buf), 0u);
 
@@ -127,7 +137,7 @@ static void test_round_trip(void)
 
     size_t n = qos_telemetry_drain(buf, sizeof buf);
     size_t head = check_frame(buf, n, QOS_FRAME_HEADER);
-    CHECK_EQ(head, (size_t)QOS_FRAME_OVERHEAD + QOS_HEADER_PAYLOAD);
+    CHECK_EQ(head, (size_t)QOS_FRAME_OVERHEAD + QOS_HEADER_FIXED + 2u * QOS_PLACEMENT_SIZE);
 
     const uint8_t *hp = buf + QOS_FRAME_OVERHEAD;
     CHECK_EQ(rd32(hp + 0), 160000000u);
@@ -135,9 +145,22 @@ static void test_round_trip(void)
     CHECK_EQ(rd32(hp + 8), 5u);
     CHECK_EQ(rd32(hp + 12), 0u);
     CHECK_EQ(hp[16], 1u);
-    CHECK_EQ(hp[17], 0u);
+    CHECK_EQ(hp[17], 2u);
     CHECK_EQ(hp[18], 0u);
     CHECK_EQ(hp[19], QOS_RECORD_SIZE);
+    CHECK_EQ(rd32(hp + 20), 14u);
+    CHECK_EQ(rd32(hp + 24), 14u);
+    CHECK_EQ(rd32(hp + 28), 118u);
+    CHECK_EQ(rd32(hp + 32), 118u);
+    CHECK_EQ(rd16(hp + 36), 128u);
+
+    /* the entries reach the wire as the struct sits in memory, which is the claim the static assertion in the header makes and this checks on real bytes. */
+    CHECK_EQ(hp[QOS_HEADER_FIXED + 0], 1u);
+    CHECK_EQ(rd32(hp + QOS_HEADER_FIXED + 4), 0x20004000u);
+    CHECK_EQ(rd32(hp + QOS_HEADER_FIXED + 8), 2944u);
+    CHECK(memcmp(hp + QOS_HEADER_FIXED + 12, "SRAM1", 5) == 0);
+    CHECK_EQ(hp[QOS_HEADER_FIXED + QOS_PLACEMENT_SIZE + 0], 2u);
+    CHECK_EQ(rd32(hp + QOS_HEADER_FIXED + QOS_PLACEMENT_SIZE + 4), 0x20030000u);
 
     size_t batch = check_frame(buf + head, n - head, QOS_FRAME_BATCH);
     CHECK_EQ(batch, (size_t)QOS_FRAME_OVERHEAD + 5u * QOS_RECORD_SIZE);
@@ -155,19 +178,21 @@ static void test_round_trip(void)
 static void test_partial_drain(void)
 {
     /* a buffer that holds both frames but only two records has to take two and leave the rest, since the exporter's buffer is what limits a batch rather than the ring. */
-    uint8_t buf[QOS_FRAME_OVERHEAD + QOS_HEADER_PAYLOAD + QOS_FRAME_OVERHEAD + 2u * QOS_RECORD_SIZE];
+    uint8_t buf[QOS_FRAME_OVERHEAD + QOS_HEADER_FIXED + QOS_FRAME_OVERHEAD + 2u * QOS_RECORD_SIZE];
     qos_infer_record_t rec = {0};
 
+    /* no placement table here, so the header is its fixed part only and the buffer arithmetic stays readable. */
+    qos_telemetry_set_placements(NULL, 0u);
     qos_telemetry_reset();
     for (uint32_t i = 0u; i < 5u; ++i) { CHECK(qos_telemetry_push(&rec)); }
 
     CHECK_EQ(qos_telemetry_drain(buf, sizeof buf), sizeof buf);
-    CHECK_EQ(rd16(buf + QOS_FRAME_OVERHEAD + QOS_HEADER_PAYLOAD + 4), 2u * QOS_RECORD_SIZE);
+    CHECK_EQ(rd16(buf + QOS_FRAME_OVERHEAD + QOS_HEADER_FIXED + 4), 2u * QOS_RECORD_SIZE);
 
     CHECK_EQ(qos_telemetry_drain(buf, sizeof buf), sizeof buf);
-    CHECK_EQ(rd16(buf + QOS_FRAME_OVERHEAD + QOS_HEADER_PAYLOAD + 4), 2u * QOS_RECORD_SIZE);
+    CHECK_EQ(rd16(buf + QOS_FRAME_OVERHEAD + QOS_HEADER_FIXED + 4), 2u * QOS_RECORD_SIZE);
     CHECK(qos_telemetry_drain(buf, sizeof buf) > 0u);
-    CHECK_EQ(rd16(buf + QOS_FRAME_OVERHEAD + QOS_HEADER_PAYLOAD + 4), 1u * QOS_RECORD_SIZE);
+    CHECK_EQ(rd16(buf + QOS_FRAME_OVERHEAD + QOS_HEADER_FIXED + 4), 1u * QOS_RECORD_SIZE);
     CHECK_EQ(qos_telemetry_drain(buf, sizeof buf), 0u);
 
     /* too small for a header and one record together, so nothing is emitted rather than a batch without its header. */
@@ -189,7 +214,7 @@ static void test_overflow(void)
     CHECK_EQ(rd32(hp + 8), 36u);
     CHECK_EQ(rd32(hp + 12), 4u);
 
-    size_t head = (size_t)QOS_FRAME_OVERHEAD + QOS_HEADER_PAYLOAD;
+    size_t head = (size_t)QOS_FRAME_OVERHEAD + QOS_HEADER_FIXED;
     CHECK_EQ(rd16(buf + head + 4), 32u * QOS_RECORD_SIZE);
     CHECK_EQ(n, head + QOS_FRAME_OVERHEAD + 32u * QOS_RECORD_SIZE);
 
@@ -214,15 +239,21 @@ static void write_streams(const char *dir)
     qos_infer_record_t rec = {0};
 
     qos_telemetry_init(160000000u, 159999450u, QOS_HDR_STALL_AVAILABLE);
+    qos_telemetry_set_null_probe(14u, 14u, 118u, 118u, 128u);
+    qos_telemetry_set_placements(PLACEMENTS, 4u);
 
     memcpy(stream + len, NOISE, sizeof NOISE - 1u); len += sizeof NOISE - 1u;
 
+    /* cycle the four placement labels so the parser's grouping is exercised on real bytes rather than on records that all carry the same id. */
+    static const uint8_t ids[4] = { 1u, 2u, 3u, 5u };
     for (uint32_t i = 0u; i < 32u; ++i) {
         rec.exec_cyc = 300000u + i;
+        rec.region_id = ids[i % 4u];
         rec.flags = ((i % 8u) == 0u) ? QOS_FLAG_CYCCNT_WRAP : 0u;
         (void)qos_telemetry_push(&rec);
     }
     rec.flags = 0u;
+    rec.region_id = 1u;
     for (uint32_t i = 0u; i < 4u; ++i) { (void)qos_telemetry_push(&rec); }
 
     first_header_payload = len + QOS_FRAME_OVERHEAD;
@@ -246,7 +277,7 @@ static void write_streams(const char *dir)
 
     /* one byte of the first header payload flipped. the frame then fails its CRC, the parser
        resumes one byte later, and the batch behind it arrives with no header in front of it,
-       which is the case docs/TELEMETRY.md says a reader must discard rather than parse. */
+       which is the case a reader must discard rather than parse. */
     stream[first_header_payload + 19u] ^= 0xFFu;
     snprintf(path, sizeof path, "%s/corrupt.bin", dir);
     f = fopen(path, "wb");

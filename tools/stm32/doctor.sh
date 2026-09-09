@@ -2,6 +2,7 @@
 # verify the local environment before anything else runs. fails loudly, so a missing STM32Cube component surfaces here instead of as invented code later.
 # macOS arm64 is the canonical host, linux is only expected in ci
 set -uo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
 
 fail=0
 ok()   { printf '  ok    %s\n' "$1"; }
@@ -52,7 +53,8 @@ done
 echo "board"
 if command -v STM32_Programmer_CLI >/dev/null; then
   # grep -q exits at the first match, the CLI dies of SIGPIPE with status 141, and pipefail turns that into a false "unplugged". grep -c reads it all.
-  if STM32_Programmer_CLI -l 2>/dev/null | grep -c -i 'ST-LINK' >/dev/null; then ok "ST-LINK visible"
+  # presence is all this asks. how many there are is capture.sh's problem, not this one's.
+  if laxity_stlink_list | grep -c -i 'ST-LINK' >/dev/null; then ok "ST-LINK visible"
   else warn "no ST-LINK detected, board may be unplugged"; fi
 fi
 

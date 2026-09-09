@@ -48,6 +48,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Laxity modules live outside the generated tree. CubeMX writes this file once and then leaves it alone, verified by md5 across a regenerate, which is what makes these two lines survive. cmake/stm32cubemx/CMakeLists.txt is the one rewritten on every run and nothing of ours goes there.
     ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/cortex-m33/counters_dwt.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../runtime/telemetry.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/stm32u5/memory_map.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/kernels/null_probe.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai/network.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai/network_data.c
@@ -57,6 +58,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/cortex-m33
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/stm32u5
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/kernels
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai

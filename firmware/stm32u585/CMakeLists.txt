@@ -50,6 +50,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../runtime/telemetry.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/stm32u5/memory_map.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/kernels/null_probe.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/aggressors/gpdma_m2m.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai/network.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai/network_data.c
 )
@@ -61,6 +62,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../platform/stm32u5
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/kernels
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/aggressors
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai
     ${CMAKE_CURRENT_SOURCE_DIR}/../../backend/stedgeai/Middlewares/ST/AI/Inc
 )

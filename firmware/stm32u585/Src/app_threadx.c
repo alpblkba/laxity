@@ -27,6 +27,7 @@
 #include "counters_dwt.h"
 #include "memory_map.h"
 #include "null_probe.h"
+#include "gpdma_m2m.h"
 #include "qos/telemetry.h"
 #include "network.h"
 #include "network_data.h"
@@ -68,12 +69,29 @@ extern UART_HandleTypeDef huart1;
 /* one reservation that reaches from wherever bss puts it up to SRAM3, so all three arenas come out of memory the linker actually allocated. sized for the worst case of starting at the base of SRAM1; starting later only makes it reach further.
  *
  * the alternative was a linker script edit, and it was rejected on a real failure mode rather than on taste. the generated script maps SRAM1, SRAM2 and SRAM3 as one 768K RAM region with _estack at its top, so placing sections in the upper two means either overlapping MEMORY regions, which GNU ld does not check for collisions between, or splitting RAM, which moves the stack out of SRAM3 and changes the vendor default layout every comparison is made against. one C object cannot overlap anything, because the linker allocated it. */
-#define LAXITY_SPAN_BYTES    ((QOS_SRAM3_BASE - QOS_SRAM1_BASE) + LAXITY_ARENA_BYTES + LAXITY_ARENA_ALIGN)
+/* the largest buffer the aggressor cycles through, per buffer. two of them plus the arena have
+ * to fit in the smallest region, and SRAM2 is 64 KB, so 16 KB each leaves room to spare. */
+#define LAXITY_AGGR_MAX      (16u * 1024u)
 
-/* 128 gives a 99th percentile at sorted index 126, with two samples above it. at the N of 30 that is the reporting floor, the 99th percentile is the maximum and says nothing the maximum does not. */
-#define LAXITY_REPS          128u
-#define LAXITY_LABELS        5u
-#define LAXITY_SCHEDULE      (LAXITY_REPS * LAXITY_LABELS)
+/* one region's worth of the reservation: the arena on its own alignment, then the two aggressor
+ * buffers after it. */
+#define LAXITY_REGION_SLICE  (LAXITY_ARENA_ALIGN + 2u * LAXITY_AGGR_MAX)
+
+#define LAXITY_SPAN_BYTES    ((QOS_SRAM3_BASE - QOS_SRAM1_BASE) + LAXITY_REGION_SLICE + LAXITY_ARENA_ALIGN)
+
+/* repetitions of the whole cross per pass. the schedule reshuffles and repeats, so the sample
+ * count per cell comes from how long the capture runs rather than from this number, and a small
+ * value keeps one pass short enough that drift is spread across cells rather than within one. */
+#define LAXITY_REPS          8u
+/* the cross this binary measures: three arena regions against three aggressor regions at four
+ * footprints, plus an aggressor off column for each arena region, plus the same buffer control.
+ * 3*3*4 + 3 + 1 comes to 40. */
+#define LAXITY_ARENAS        5u   /* the three regions, then SRAM2 at a second address, then SRAM1 again */
+#define LAXITY_AGGR_REGIONS  3u
+#define LAXITY_FOOTPRINTS    4u
+#define LAXITY_CELLS         (3u * LAXITY_AGGR_REGIONS * LAXITY_FOOTPRINTS + LAXITY_ARENAS)
+#define LAXITY_LABELS        LAXITY_ARENAS
+#define LAXITY_SCHEDULE      (LAXITY_REPS * LAXITY_CELLS)
 
 /* discarded, not recorded. the first inferences after reset pull the vendor kernels through flash into ICACHE, and a cold first sample would land wherever the shuffle happened to put it. */
 #define LAXITY_WARMUP        32u
@@ -107,7 +125,26 @@ static float   laxity_out[LAXITY_GOLDEN_OUT_LEN];
 /* one entry per placement label, in the order the schedule draws from. the control is the same arena address as SRAM1 under a second id, which is what makes the spread between them a noise floor rather than a comparison. */
 static qos_placement_t laxity_placements[LAXITY_LABELS];
 static uint8_t        *laxity_arena[LAXITY_LABELS];
-static uint8_t         laxity_schedule[LAXITY_SCHEDULE];
+
+/* one source and one destination per aggressor region, both inside that region, so the traffic
+ * is region local and the only thing crossing regions is the arbitration. */
+static uint8_t        *laxity_aggr_src[LAXITY_AGGR_REGIONS];
+static uint8_t        *laxity_aggr_dst[LAXITY_AGGR_REGIONS];
+
+/* bytes per aggressor buffer. the smallest is well under any buffering on the path and the
+ * largest is bounded by SRAM2, which is 64 KB and has to hold an arena and both buffers. */
+static const uint32_t  laxity_footprints[LAXITY_FOOTPRINTS] = { 1024u, 4096u, 8192u, 16384u };
+
+/* the cross, built at start up rather than written out by hand. */
+static struct {
+  uint8_t arena_slot;
+  uint8_t aggr_region;   /* 0 when the aggressor is off */
+  uint8_t foot_idx;
+} laxity_cells[LAXITY_CELLS];
+
+static uint8_t  laxity_aggr_ok;
+static uint32_t laxity_cur_aggr = 0xFFFFFFFFu;
+static uint16_t        laxity_schedule[LAXITY_SCHEDULE];
 static uint8_t         laxity_placed_ok;
 
 /* written once during boot and read by the exporter after the semaphore, which publishes it. */
@@ -125,6 +162,7 @@ static volatile struct {
   uint32_t worst_ppm;
   uint32_t mismatches;
   uint32_t passes;
+  uint32_t aggr_completions;
 } laxity_live;
 
 /* USER CODE END PV */
@@ -256,8 +294,10 @@ static const struct {
 } laxity_labels[LAXITY_LABELS] = {
   { QOS_REGION_SRAM1,         QOS_REGION_SRAM1, LAXITY_OFF_FIRST, 0u,                      "SRAM1"  },
   { QOS_REGION_SRAM2,         QOS_REGION_SRAM2, 0x00000u,         0u,                      "SRAM2"  },
-  { QOS_REGION_SRAM2_ALT,     QOS_REGION_SRAM2, 0x08000u,         QOS_PLACEMENT_ALT_ADDR,  "SRAM2b" },
   { QOS_REGION_SRAM3,         QOS_REGION_SRAM3, 0x00000u,         0u,                      "SRAM3"  },
+  /* past the aggressor buffers, which occupy one arena alignment plus two maximum footprints
+   * from the base of every region. */
+  { QOS_REGION_SRAM2_ALT,     QOS_REGION_SRAM2, 0x09000u,         QOS_PLACEMENT_ALT_ADDR,  "SRAM2b" },
   { QOS_REGION_SRAM1_CONTROL, QOS_REGION_SRAM1, LAXITY_OFF_FIRST, QOS_PLACEMENT_CONTROL,   "SRAM1c" },
 };
 
@@ -280,11 +320,73 @@ static uint8_t laxity_place(void)
     laxity_name(laxity_placements[i].name, laxity_labels[i].name);
   }
 
+  /* the aggressor buffers sit after the arena inside the same region. */
+  for (uint32_t r = 0u; r < LAXITY_AGGR_REGIONS; ++r)
+  {
+    const qos_mem_region_t *reg = qos_mem_region((uint8_t)(QOS_REGION_SRAM1 + r));
+    uintptr_t base;
+    if (reg == NULL) { return 0u; }
+    base = (uintptr_t)laxity_arena[r] + LAXITY_ARENA_ALIGN;
+    laxity_aggr_src[r] = (uint8_t *)base;
+    laxity_aggr_dst[r] = (uint8_t *)(base + LAXITY_AGGR_MAX);
+    if ((base + 2u * LAXITY_AGGR_MAX) > ((uintptr_t)reg->base + reg->size)) { return 0u; }
+    if ((base + 2u * LAXITY_AGGR_MAX) > ((uintptr_t)laxity_arena_span + sizeof laxity_arena_span)) { return 0u; }
+  }
+
   /* the control has to be the same bytes as SRAM1, not merely the same region, or the spread between them would measure a second buffer rather than the noise floor. */
   if (laxity_arena[4] != laxity_arena[0]) { return 0u; }
   /* and the alternate address has to be a different one, or it would measure nothing. */
-  if (laxity_arena[2] == laxity_arena[1]) { return 0u; }
+  if (laxity_arena[3] == laxity_arena[1]) { return 0u; }
   return 1u;
+}
+
+static void laxity_build_cells(void)
+{
+  uint32_t n = 0u;
+  for (uint32_t a = 0u; a < LAXITY_ARENAS; ++a)
+  {
+    /* every arena label gets an aggressor off cell, which is what the contended numbers are
+     * compared against and what the control measures its noise floor in. */
+    laxity_cells[n].arena_slot = (uint8_t)a;
+    laxity_cells[n].aggr_region = 0u;
+    laxity_cells[n].foot_idx = 0u;
+    ++n;
+
+    /* the control is only ever measured uncontended, since its job is the noise floor. */
+    if (a >= LAXITY_AGGR_REGIONS) { continue; }
+
+    for (uint32_t r = 0u; r < LAXITY_AGGR_REGIONS; ++r)
+    {
+      for (uint32_t f = 0u; f < LAXITY_FOOTPRINTS; ++f)
+      {
+        laxity_cells[n].arena_slot = (uint8_t)a;
+        laxity_cells[n].aggr_region = (uint8_t)(QOS_REGION_SRAM1 + r);
+        laxity_cells[n].foot_idx = (uint8_t)f;
+        ++n;
+      }
+    }
+  }
+}
+
+/* switch the aggressor only when the cell asks for something different, since a stop and start
+ * costs more than the comparison does and the schedule repeats cells. */
+static void laxity_set_aggressor(uint8_t region, uint8_t foot_idx)
+{
+  uint32_t want = ((uint32_t)region << 8) | foot_idx;
+  if (want == laxity_cur_aggr) { return; }
+  laxity_cur_aggr = want;
+
+  if (region == 0u || !laxity_aggr_ok)
+  {
+    qos_gpdma_m2m_stop();
+    return;
+  }
+  {
+    uint32_t r = (uint32_t)region - QOS_REGION_SRAM1;
+    (void)qos_gpdma_m2m_start((uint32_t)(uintptr_t)laxity_aggr_src[r],
+                              (uint32_t)(uintptr_t)laxity_aggr_dst[r],
+                              laxity_footprints[foot_idx]);
+  }
 }
 
 /* xorshift32, seeded from the cycle counter at boot so the order differs between runs. the realised order does not have to be reproducible because every record carries its own region_id, so the schedule that actually ran is in the data rather than in a seed someone has to keep. */
@@ -301,11 +403,11 @@ static uint32_t laxity_rand(void)
 /* the order is randomised so thermal and flash state do not correlate with run index. a Fisher-Yates shuffle over the whole schedule spreads each label across the run instead of blocking it. */
 static void laxity_shuffle(void)
 {
-  for (uint32_t i = 0u; i < LAXITY_SCHEDULE; ++i) { laxity_schedule[i] = (uint8_t)(i % LAXITY_LABELS); }
+  for (uint32_t i = 0u; i < LAXITY_SCHEDULE; ++i) { laxity_schedule[i] = (uint16_t)(i % LAXITY_CELLS); }
   for (uint32_t i = LAXITY_SCHEDULE - 1u; i > 0u; --i)
   {
     uint32_t j = laxity_rand() % (i + 1u);
-    uint8_t t = laxity_schedule[i];
+    uint16_t t = laxity_schedule[i];
     laxity_schedule[i] = laxity_schedule[j];
     laxity_schedule[j] = t;
   }
@@ -389,6 +491,8 @@ static VOID laxity_infer_entry(ULONG argument)
 
   laxity_placed_ok = laxity_place();
   if (laxity_placed_ok) { qos_telemetry_set_placements(laxity_placements, LAXITY_LABELS); }
+  laxity_aggr_ok = qos_gpdma_m2m_init() ? 1u : 0u;
+  laxity_build_cells();
 
   laxity_rand_state = qos_cyc_now() | 1u;
 
@@ -407,7 +511,7 @@ static VOID laxity_infer_entry(ULONG argument)
   for (uint32_t i = 0u; i < LAXITY_WARMUP; ++i)
   {
     uint32_t cycles = 0u; bool wrapped = false;
-    (void)laxity_infer(i % LAXITY_LABELS, &cycles, &wrapped);
+    (void)laxity_infer(i % LAXITY_ARENAS, &cycles, &wrapped);
     tx_thread_sleep(LAXITY_INFER_PERIOD);
   }
 
@@ -418,10 +522,17 @@ static VOID laxity_infer_entry(ULONG argument)
     for (uint32_t i = 0u; i < LAXITY_SCHEDULE; ++i)
     {
       qos_infer_record_t rec = {0};
-      uint32_t slot = laxity_schedule[i];
+      uint32_t cell = laxity_schedule[i];
+      uint32_t slot = laxity_cells[cell].arena_slot;
+      uint8_t  aggr = laxity_cells[cell].aggr_region;
+      uint8_t  foot = laxity_cells[cell].foot_idx;
       uint32_t cycles = 0u;
       bool wrapped = false;
       int run;
+
+      /* the aggressor is set before the window opens and left alone inside it, so nothing this
+       * loop does to the channel is counted as part of the inference. */
+      laxity_set_aggressor(aggr, foot);
 
       rec.release_cyc = qos_cyc_now();
       run = laxity_infer(slot, &cycles, &wrapped);
@@ -439,6 +550,13 @@ static VOID laxity_infer_entry(ULONG argument)
 
       rec.exec_cyc = cycles;
       rec.region_id = laxity_placements[slot].id;
+
+      /* which aggressor was running, and the proof that it was. the count is polled after the
+       * window so it covers it, and it advances only when the channel actually completed a
+       * block, which is what tells a null result apart from a channel that never started. */
+      rec.aggressor_idx = (uint16_t)(((uint16_t)foot << 8) | aggr);
+      rec.reserved = qos_gpdma_m2m_completions();
+      laxity_live.aggr_completions = rec.reserved;
       /* cpu_cyc and stall_cyc stay zero, as do model_id and aggressor_idx. there is no attribution measurement and no aggressor in this block, and writing a plausible value into a field nothing measured is how a number nobody can defend gets into a capture. */
       rec.flags = wrapped ? (uint8_t)QOS_FLAG_CYCCNT_WRAP : 0u;
       (void)qos_telemetry_push(&rec);
@@ -491,16 +609,17 @@ static VOID laxity_export_entry(ULONG argument)
     {
       argmax = (int)laxity_live.argmax;
       laxity_say(line, snprintf(line, sizeof line,
-                   "infer rc=%ld cycles=%lu class=%d(%s) expect=%d(%s) %s mismatch=%lu pass=%lu opt=-O0\r\n",
+                   "infer rc=%ld cycles=%lu class=%d(%s) expect=%d(%s) %s mismatch=%lu pass=%lu dma=%u/%lu opt=-O0\r\n",
                    (long)laxity_live.rc, (unsigned long)laxity_live.cycles,
                    argmax, laxity_golden_class_names[argmax],
                    LAXITY_GOLDEN_CLASS, laxity_golden_class_names[LAXITY_GOLDEN_CLASS],
                    (laxity_live.rc == 0 && argmax == LAXITY_GOLDEN_CLASS) ? "MATCH" : "MISMATCH",
-                   (unsigned long)laxity_live.mismatches, (unsigned long)laxity_live.passes));
+                   (unsigned long)laxity_live.mismatches, (unsigned long)laxity_live.passes,
+                   (unsigned)laxity_aggr_ok, (unsigned long)laxity_live.aggr_completions));
 
       /* the addresses are on the wire in the header frame as well. printing them makes a wrong placement visible with head -c, before anyone runs the parser. */
       laxity_say(line, snprintf(line, sizeof line,
-                   "placement ok=%u span=0x%08lx..0x%08lx s1=0x%08lx s2=0x%08lx s2b=0x%08lx s3=0x%08lx ctl=0x%08lx bytes=%u\r\n",
+                   "placement ok=%u span=0x%08lx..0x%08lx s1=0x%08lx s2=0x%08lx s3=0x%08lx s2b=0x%08lx ctl=0x%08lx bytes=%u\r\n",
                    (unsigned)laxity_placed_ok,
                    (unsigned long)(uintptr_t)laxity_arena_span,
                    (unsigned long)((uintptr_t)laxity_arena_span + sizeof laxity_arena_span),

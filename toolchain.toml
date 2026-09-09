@@ -1,4 +1,4 @@
-# filled in on day 0 from ./tools/stm32/versions.sh. see docs/TOOLCHAIN.md.
+# every version here was observed on the build host with ./tools/stm32/versions.sh rather than taken from a download page.
 [target]
 board = "B-U585I-IOT02A"
 mcu = "STM32U585AI"
@@ -23,3 +23,20 @@ name = "st_ign_wl_24.keras"
 sha256 = "1b18f481839ebf4ea5482dc4c929afb3f46fd151e1010fb6bc28d9571a08425a"
 source = "STMicroelectronics/stm32ai-modelzoo, human_activity_recognition/st_ign/ST_pretrainedmodel_public_dataset/WISDM/st_ign_wl_24"
 licence = "SLA0044"
+
+# the EMW3080B module firmware is not in this repository either. it is SLA0048, ST's binary
+# image licence with redistribution restricted, and it is a vendor blob that gets written to the
+# board rather than built here. same rule as the model: pin the hash, do not commit the file.
+[wifi_module]
+firmware_version = "V2.3.4"
+build_date = "2022-10-27"
+updater = "EMW3080update_B-U585I-IOT02A-RevC_V2.3.4_SPI.bin"
+updater_sha256 = "54735cbeddd7e9d7c193c8692bb9b9f788488ab567ca67dbcab8b245597007e8"  # locally computed, no vendor hash published
+payload_md5_all = "379ef5517c985b4be2a07671b76cd6d0"  # vendor-attested, verified
+payload_md5_ota = "60e87470bf6f66bfd66432bf8f180e56"  # vendor-attested, verified
+source = "STMicroelectronics X-WIFI-EMW3080B, x-wifi-emw3080b.zip"
+licence = "SLA0048"
+# the updater is not entirely unattested after all. it carries the OTA payload verbatim at offset
+# 564, all 686,672 bytes of it, so 95.6 percent of the file is covered by the MD5 above and only
+# the 31,910 bytes of STM32 side loader around it rest on the locally computed hash.
+updater_embeds_ota_at = 564

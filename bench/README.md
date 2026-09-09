@@ -4,4 +4,4 @@ Two things live here. `kernels/` measures a unit of work in isolation. `aggresso
 
 The tuning study is not a third directory. It is a sweep whose findings become the runtime's default placement policy, which is what closes the loop between measurement and product.
 
-Methodology, the aggressor set and the experiment matrix are in `docs/EXPERIMENTS.md`.
+Every run warms up first, reports median and p99 rather than the mean, uses at least thirty repetitions, randomises the order of configurations so drift does not correlate with run index, and records the null probe overhead beside the result.

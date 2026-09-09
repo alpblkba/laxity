@@ -1,6 +1,6 @@
 /* what the measurement costs, measured the same way the measurement is.
  *
- * docs/EXPERIMENTS.md requires the null probe to run first in every sweep and its overhead to be reported beside every result. without it a placement effect of a few hundred cycles cannot be told apart from the cost of looking.
+ * this runs first in every sweep and its overhead is reported beside every result. without it a placement effect of a few hundred cycles cannot be told apart from the cost of looking.
  *
  * nothing here includes a vendor header. it needs the cycle counter and the telemetry ring and nothing else. */
 #ifndef LAXITY_NULL_PROBE_H

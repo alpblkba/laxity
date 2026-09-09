@@ -1,6 +1,6 @@
-/* the on-wire telemetry contract, implemented by runtime/telemetry.c and parsed by tools/telemetry-parse.py.
+/* the on-wire telemetry contract, implemented by runtime/telemetry.c and parsed by tools/telemetry_parse.py.
  *
- * self-docs/docs/TELEMETRY.md is the specification and this header is its C form. changing either means changing both in the same commit and bumping QOS_TELEMETRY_VERSION.
+ * this header is the format. changing anything here changes what a recorded stream means, so it comes with a bump of QOS_TELEMETRY_VERSION and a matching change in the host reader.
  *
  * nothing here includes a vendor header. the cycle values arrive from the caller, so this file has no opinion about where they came from and builds on the host for the tests under tools/host-tests.
  */
@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define QOS_TELEMETRY_VERSION  1u
+#define QOS_TELEMETRY_VERSION  2u
 
 /* records are streamed verbatim, so the struct layout is the wire layout and a big endian target would emit a different format under the same version number. both the STM32U585 and the macOS arm64 host are little endian, so this is a contract rather than a portability gap to close now. */
 #if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
@@ -26,12 +26,32 @@
 #define QOS_FRAME_BATCH        1u
 
 #define QOS_FRAME_OVERHEAD     8u   /* magic, version, type, payload_len, crc16 */
-#define QOS_HEADER_PAYLOAD     20u
+#define QOS_HEADER_FIXED       40u  /* the part of a header payload that is always present */
+#define QOS_PLACEMENT_SIZE     20u  /* one placement entry, n_regions of them follow the fixed part */
 #define QOS_RECORD_SIZE        32u
 
-/* header frame flags. two bits rather than one, since the capability and its use are different facts: block 3 measured that this part implements the DWT profiling counters, and nothing populates stall_cyc from them until the RQ2 attribution work lands. a reader that saw only the capability bit could not tell an absent counter from an unimplemented one, and every record would look the same in both cases. */
+/* header frame flags. two bits rather than one, since the capability and its use are different facts: this part was measured to implement the DWT profiling counters, and nothing populates stall_cyc from them yet. a reader that saw only the capability bit could not tell an absent counter from an unimplemented one, and every record would look the same in both cases. */
 #define QOS_HDR_STALL_AVAILABLE  (1u << 0)  /* the port can attribute stall cycles */
 #define QOS_HDR_STALL_POPULATED  (1u << 1)  /* this stream actually carries them in stall_cyc */
+
+/* one placement label the run measured, and where its arena actually sat.
+ *
+ * the address is recorded per label because the arena has no fixed home: adding unrelated bss moves it, and it has already moved by 0x2c8 across two builds of the same firmware. a capture that carried only a region name would not be able to show that the buffer landed where the firmware meant to put it.
+ *
+ * a control entry is the same memory under a second identity rather than a second region, so its arena address matches the entry it shadows. an alternate address entry is the other half of that argument: the same region at a different address, which is what tells a difference between regions apart from a difference between addresses. */
+#define QOS_PLACEMENT_CONTROL  (1u << 0)
+#define QOS_PLACEMENT_ALT_ADDR (1u << 1)
+
+typedef struct {
+    uint8_t  id;          /* matches qos_infer_record_t::region_id */
+    uint8_t  flags;
+    uint16_t rel_cost;
+    uint32_t arena_addr;
+    uint32_t arena_size;
+    char     name[8];     /* NUL padded, not NUL terminated when the name fills it */
+} qos_placement_t;
+
+_Static_assert(sizeof(qos_placement_t) == QOS_PLACEMENT_SIZE, "placement entry must be 20 bytes on the wire");
 
 /* set when the measured window crossed a CYCCNT wrap, which is the case where a host recomputing the duration from raw counter values would be wrong. qos_cyc_delta() is already correct across one wrap, so the flag is a warning about interpretation rather than about the value. */
 #define QOS_FLAG_CYCCNT_WRAP   (1u << 0)
@@ -68,6 +88,13 @@ _Static_assert(offsetof(qos_infer_record_t, reserved) == 28, "record layout move
 
 /* record the run metadata the target knows. clock_hz is what the clock tree is configured for and cyccnt_hz is what qos_dwt_measure_hz() observed, and keeping both lets a capture show a configuration that did not take. header_flags is the QOS_HDR_ set that goes into every header frame. */
 void qos_telemetry_init(uint32_t clock_hz, uint32_t cyccnt_hz, uint8_t header_flags);
+
+/* what the measurement cost, copied into every header frame. every reported result carries the null probe overhead beside it, and carrying it in the stream rather than in a log line keeps a raw capture self contained. */
+void qos_telemetry_set_null_probe(uint32_t read_median, uint32_t read_p99,
+                                  uint32_t push_median, uint32_t push_p99, uint16_t n);
+
+/* the placement labels this run measured. the table is not copied, so it has to outlive the exporter, which on the target means static storage. at most 255 entries, since n_regions is one byte. */
+void qos_telemetry_set_placements(const qos_placement_t *table, uint8_t count);
 
 /* empty the ring and clear the sequence and drop counters. the producer owns this call, and the consumer must not be draining concurrently, which on the target means calling it before the exporter thread is released. */
 void qos_telemetry_reset(void);

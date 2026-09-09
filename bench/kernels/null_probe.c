@@ -5,7 +5,7 @@
 #include "counters_dwt.h"
 #include "qos/telemetry.h"
 
-/* static rather than automatic. two arrays of 128 words are 1024 bytes, which is a third of the measurement thread's stack, and block 2 established that a stack shortfall on this target presents as a silent port rather than as an error. */
+/* static rather than automatic. two arrays of 128 words are 1024 bytes, which is a third of the measurement thread's stack, and a stack shortfall on this target presents as a silent UART rather than as an error. */
 static uint32_t s_read[QOS_NULL_PROBE_N];
 static uint32_t s_push[QOS_NULL_PROBE_N];
 

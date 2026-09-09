@@ -1,4 +1,4 @@
-/* see include/qos/telemetry.h for the contract and self-docs/docs/TELEMETRY.md for the wire format this implements. */
+/* see include/qos/telemetry.h for the wire format this implements and for what it promises. */
 
 #include "qos/telemetry.h"
 
@@ -21,9 +21,23 @@ static uint32_t s_clock_hz;
 static uint32_t s_cyccnt_hz;
 static uint8_t  s_header_flags;
 
+static uint32_t s_null_read_median;
+static uint32_t s_null_read_p99;
+static uint32_t s_null_push_median;
+static uint32_t s_null_push_p99;
+static uint16_t s_null_n;
+
+static const qos_placement_t *s_placements;
+static uint8_t s_placement_count;
+
+static size_t header_payload_len(void)
+{
+    return (size_t)QOS_HEADER_FIXED + (size_t)s_placement_count * QOS_PLACEMENT_SIZE;
+}
+
 /* CRC-16/CCITT-FALSE: polynomial 0x1021, initial value 0xFFFF, no reflection, no final xor.
  *
- * ponytail: bitwise rather than table driven, which is 8 iterations per byte and about 3000 cycles for a full batch. the ceiling is wire bandwidth on the export path, which is best effort and off the measured window, so a 512 byte table would buy nothing here. add one if the exporter ever becomes the bottleneck. */
+ * bitwise rather than table driven, which is 8 iterations per byte and about 3000 cycles for a full batch. the ceiling is wire bandwidth on the export path, which is best effort and off the measured window, so a 512 byte table would buy nothing here. add one if the exporter ever becomes the bottleneck. */
 static uint16_t crc16(const uint8_t *data, size_t len)
 {
     uint16_t crc = 0xFFFFu;
@@ -71,6 +85,22 @@ void qos_telemetry_init(uint32_t clock_hz, uint32_t cyccnt_hz, uint8_t header_fl
     qos_telemetry_reset();
 }
 
+void qos_telemetry_set_null_probe(uint32_t read_median, uint32_t read_p99,
+                                  uint32_t push_median, uint32_t push_p99, uint16_t n)
+{
+    s_null_read_median = read_median;
+    s_null_read_p99 = read_p99;
+    s_null_push_median = push_median;
+    s_null_push_p99 = push_p99;
+    s_null_n = n;
+}
+
+void qos_telemetry_set_placements(const qos_placement_t *table, uint8_t count)
+{
+    s_placements = table;
+    s_placement_count = (table == NULL) ? 0u : count;
+}
+
 void qos_telemetry_reset(void)
 {
     atomic_store_explicit(&s_head, 0u, memory_order_relaxed);
@@ -103,7 +133,7 @@ bool qos_telemetry_push(const qos_infer_record_t *rec)
 
 size_t qos_telemetry_drain(uint8_t *buf, size_t cap)
 {
-    const size_t minimum = (size_t)QOS_FRAME_OVERHEAD + QOS_HEADER_PAYLOAD +
+    const size_t minimum = (size_t)QOS_FRAME_OVERHEAD + header_payload_len() +
                            (size_t)QOS_FRAME_OVERHEAD + QOS_RECORD_SIZE;
 
     if (buf == NULL || cap < minimum) {
@@ -122,11 +152,25 @@ size_t qos_telemetry_drain(uint8_t *buf, size_t cap)
     put32(payload + 8,  atomic_load_explicit(&s_seq_next, memory_order_relaxed));
     put32(payload + 12, atomic_load_explicit(&s_dropped, memory_order_relaxed));
     payload[16] = s_header_flags;
-    payload[17] = 0u;  /* region table, block 6 */
-    payload[18] = 0u;  /* model table, block 9 */
+    payload[17] = s_placement_count;
+    payload[18] = 0u;  /* model table, not populated yet */
     payload[19] = (uint8_t)QOS_RECORD_SIZE;
+    put32(payload + 20, s_null_read_median);
+    put32(payload + 24, s_null_read_p99);
+    put32(payload + 28, s_null_push_median);
+    put32(payload + 32, s_null_push_p99);
+    payload[36] = (uint8_t)s_null_n;
+    payload[37] = (uint8_t)(s_null_n >> 8);
+    payload[38] = 0u;
+    payload[39] = 0u;
 
-    size_t used = frame(buf, QOS_FRAME_HEADER, QOS_HEADER_PAYLOAD);
+    /* the entries are plain old data with the same layout on the wire as in memory, checked by the static assertion in the header, so they copy rather than serialise field by field. */
+    for (uint8_t i = 0u; i < s_placement_count; ++i) {
+        memcpy(payload + QOS_HEADER_FIXED + (size_t)i * QOS_PLACEMENT_SIZE,
+               &s_placements[i], QOS_PLACEMENT_SIZE);
+    }
+
+    size_t used = frame(buf, QOS_FRAME_HEADER, (uint16_t)header_payload_len());
 
     uint32_t room  = (uint32_t)((cap - used - QOS_FRAME_OVERHEAD) / QOS_RECORD_SIZE);
     uint32_t count = head - tail;

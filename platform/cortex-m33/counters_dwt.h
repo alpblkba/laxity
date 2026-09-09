@@ -1,6 +1,6 @@
 /* DWT cycle counting and profiling counter capability probe for Cortex-M33.
  *
- * this is a local header rather than a port interface. include/qos/port/ is block 9, and retrofitting this module behind qos_port_counters_t does not need the file to move.
+ * this is a local header rather than a port interface. retrofitting this module behind a qos_port_counters_t later does not need the file to move, so the interface is not written before there is a second port to shape it.
  *
  * nothing here includes a vendor header. the DWT and DEBUG blocks are architectural on ARMv8-M, so the registers are addressed directly and the module stays buildable on any Cortex-M33.
  */
@@ -18,7 +18,7 @@ typedef struct {
     bool exccnt;
     bool lsucnt;
     bool foldcnt;
-    uint32_t ctrl_after_enable;  /* DWT_CTRL read back after the enable writes, kept for the tracelog. */
+    uint32_t ctrl_after_enable;  /* DWT_CTRL read back after the enable writes, kept so a capability claim can be reported with the register that backs it. */
 } qos_dwt_caps_t;
 
 /* enable TRCENA and CYCCNTENA, then confirm by reading back and by watching the counter move. returns false if CYCCNT does not run, in which case no timing in this project means anything. */

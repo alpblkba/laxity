@@ -61,6 +61,18 @@ _Static_assert(sizeof(qos_placement_t) == QOS_PLACEMENT_SIZE, "placement entry m
  * release_cyc is a raw CYCCNT reading taken at release and it wraps every 26.8 seconds at the measured clock. exec_cyc, cpu_cyc and stall_cyc are durations in cycles. stall_cyc is zero when the port reports no stall attribution, and the header frame says which case applies so a reader does not have to infer it from zeros.
  *
  * seq is assigned by qos_telemetry_push() rather than by the caller, and it advances on records the ring dropped as well as on records it accepted, so a gap in seq is a drop that is visible per record. */
+/* aggressor_idx packs which competing bus master was running during the measured window: the low
+ * byte is the memory region its buffers sit in, using the same ids as region_id, and zero means
+ * no aggressor. the high byte is an index into the footprint table the run declares.
+ *
+ * reserved carries the aggressor's completed transfer count at the end of the window. a channel
+ * that failed to start is indistinguishable from a channel that caused no contention, so a count
+ * that does not advance between consecutive records of an aggressor bearing cell marks the run
+ * as broken rather than null. it is a lower bound, since several transfers can complete between
+ * two samples and be counted once. */
+#define QOS_AGGRESSOR_REGION(idx)    ((uint8_t)((idx) & 0xFFu))
+#define QOS_AGGRESSOR_FOOTPRINT(idx) ((uint8_t)(((idx) >> 8) & 0xFFu))
+
 typedef struct {
     uint32_t seq;
     uint32_t release_cyc;

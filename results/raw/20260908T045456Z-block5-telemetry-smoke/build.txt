@@ -1,9 +1,0 @@
-build_type=Debug
-opt=-O0
-elf=build/target/laxity-u585.elf
-elf_sha256=5a9d256acb241e268b10d67f9b9238bec43f03250a3e801c590b9e5a139151dc
-text=62792
-data=360
-bss=18056
-arena_addr=0x20000bd8
-arena_size=0x00000b80

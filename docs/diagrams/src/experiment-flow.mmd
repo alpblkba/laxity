@@ -1,0 +1,159 @@
+---
+config:
+  layout: elk
+---
+flowchart TB
+
+%% ================================================================
+%% Embedded target, apex of the experiment
+%% ================================================================
+
+subgraph TARGET["Embedded target"]
+    direction LR
+
+    BOARD["B-U585I-IOT02A<br/>STM32U585"]
+    FIRMWARE["Laxity firmware<br/>ThreadX + STM32 HAL"]
+
+    subgraph EXEC["Runtime experiment"]
+        direction TB
+
+        WORKLOAD["activity_node<br/>inference workload"]
+        BENCH["Benchmark harness<br/>GPDMA aggressor"]
+        TELEMETRY["Telemetry runtime"]
+
+        WORKLOAD --> TELEMETRY
+        BENCH --> TELEMETRY
+    end
+
+    BOARD --> FIRMWARE
+    FIRMWARE --> WORKLOAD
+    FIRMWARE --> BENCH
+
+    PROGRAM_IN(("program"))
+    DATA_OUT(("telemetry"))
+
+    PROGRAM_IN --> BOARD
+    TELEMETRY --> DATA_OUT
+end
+
+
+%% ================================================================
+%% Lower left: development path
+%% ================================================================
+
+subgraph DEV["Developer and experiment tooling"]
+    direction TB
+
+    DOCTOR["doctor.sh<br/>check toolchain"]
+
+    subgraph SOURCES[""]
+        direction LR
+        GENERATE["generate.sh<br/>generate firmware sources"]
+        MODEL["generate-model.sh<br/>prepare Edge AI model"]
+    end
+
+    BUILD["build.sh<br/>cross-compile firmware"]
+    FLASH["flash.sh<br/>program target"]
+
+    DOCTOR --> GENERATE
+    GENERATE --> BUILD
+    MODEL --> BUILD
+    BUILD --> FLASH
+
+    PROGRAM_OUT(("program"))
+    FLASH --> PROGRAM_OUT
+end
+
+
+%% ================================================================
+%% Lower right: host measurement path
+%% ================================================================
+
+subgraph HOST["Host-side measurement"]
+    direction TB
+
+    DATA_IN(("telemetry"))
+
+    subgraph INGEST[""]
+        direction LR
+        TUI["laxity-tui<br/>live view / replay"]
+        CAPTURE["capture.sh<br/>persist telemetry"]
+    end
+
+    BINARY["telemetry.bin"]
+
+    subgraph ANALYSIS[""]
+        direction LR
+        PARSER["telemetry_parse.py"]
+        ANALYSE["analyse.py"]
+        RESULTS["Measurement results"]
+    end
+
+    DATA_IN --> TUI
+    DATA_IN --> CAPTURE
+
+    CAPTURE --> BINARY
+    BINARY --> PARSER
+    PARSER --> ANALYSE
+    ANALYSE --> RESULTS
+
+    BINARY -.->|"replay"| TUI
+end
+
+
+%% ================================================================
+%% Cross-domain connections
+%% ================================================================
+
+PROGRAM_OUT --> PROGRAM_IN
+DATA_OUT --> DATA_IN
+
+%% Force the two lower domains to occupy the same conceptual rank.
+DEV ~~~ HOST
+
+
+%% ================================================================
+%% Hide layout-only / gateway presentation
+%% ================================================================
+
+style SOURCES fill:transparent,stroke:transparent,color:transparent
+style INGEST fill:transparent,stroke:transparent,color:transparent
+style ANALYSIS fill:transparent,stroke:transparent,color:transparent
+
+classDef gateway fill:#FFFFFF,stroke:#69A9DB,color:#547896,stroke-width:1.2px;
+class PROGRAM_IN,PROGRAM_OUT,DATA_IN,DATA_OUT gateway;
+
+
+%% ================================================================
+%% Domain styling
+%% ================================================================
+
+style TARGET fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+style DEV fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+style HOST fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+
+style EXEC fill:#ECF7FF,stroke:#A5CBE8,stroke-width:1.2px,color:#17212b
+
+
+%% ================================================================
+%% Semantic node styling
+%% ================================================================
+
+classDef tooling fill:#F3F7FA,stroke:#8DA8BB,color:#253746,stroke-width:1.4px;
+classDef hardware fill:#F2EEFF,stroke:#9276D8,color:#211A32,stroke-width:1.8px;
+classDef firmware fill:#EAF4FF,stroke:#5B9BD5,color:#17212B,stroke-width:1.6px;
+classDef bench fill:#FFF5DF,stroke:#D7A249,color:#2B2418,stroke-width:1.6px;
+classDef runtime fill:#E8FAFC,stroke:#49AEB7,color:#17212B,stroke-width:1.6px;
+classDef host fill:#EDF9F1,stroke:#65AD79,color:#17251B,stroke-width:1.6px;
+classDef artifact fill:#F8FAFC,stroke:#94A3B8,color:#334155,stroke-width:1.4px;
+
+class DOCTOR,GENERATE,MODEL,BUILD,FLASH tooling;
+class BOARD hardware;
+class FIRMWARE,WORKLOAD firmware;
+class BENCH bench;
+class TELEMETRY runtime;
+class TUI,CAPTURE,PARSER,ANALYSE host;
+class BINARY,RESULTS artifact;
+
+linkStyle default stroke:#547896,stroke-width:2.4px;
+

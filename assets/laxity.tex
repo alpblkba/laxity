@@ -1,0 +1,447 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{url}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Activation Placement and Memory Contention in\\Microcontroller-Class Neural Inference}
+
+\author{\IEEEauthorblockN{Alp O. Bolukbasi}
+\IEEEauthorblockA{\textit{Department of Informatics} \\
+\textit{Karlsruhe Institute of Technology}\\
+Karlsruhe, Germany}}
+
+\maketitle
+
+\begin{abstract}
+Placing a neural network's activation buffer in a different on-chip SRAM
+region changes inference time on an STM32U585 by three cycles out of
+320\,898 when no other bus master is active, and by up to 31\,189 cycles
+when a DMA engine is running in the same region. This paper reports both
+numbers from a single firmware image, using a cycle-accurate telemetry
+path whose own overhead is 118 cycles per record and whose same-region
+control spread is zero. The uncontended effect is 9.3 parts per million
+and is not a useful scheduling signal. Under contention the effect is
+9.7 percent, and it is asymmetric: traffic in the largest SRAM region
+costs arenas in the other two regions roughly 4.7 percent each without
+sharing a region with either, while traffic in those two regions costs
+each other nothing measurable. A sweep of the competing master's working
+set shows an effect whose sign depends on which region that master
+occupies. The results argue that activation placement is worth treating
+as a schedulable resource on this class of device only when the memory
+system is shared, and they identify the bus topology of the largest
+region as the mechanism that a placement policy would have to model.
+\end{abstract}
+
+\begin{IEEEkeywords}
+embedded machine learning, memory interference, scratchpad allocation,
+real-time systems, microcontrollers
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Neural network inference on microcontrollers is usually described as a
+compute problem and optimised as one. The activation arena, the scratch
+buffer a converted network uses to hold intermediate tensors, is treated
+as a size constraint: it either fits in on-chip SRAM or the network does
+not deploy. Where in SRAM it fits is left to the linker.
+
+That is a reasonable default on a device with one bus master. It is less
+obviously reasonable on a modern microcontroller, where DMA engines,
+radio stacks and sensor peripherals move data through the same bus matrix
+as the core. If the placement of the activation arena interacts with that
+traffic, then placement is a scheduling decision rather than a linker
+detail, and a runtime could make it.
+
+This paper measures whether that interaction exists and how large it is
+on one concrete platform. The contribution is not a placement policy. It
+is a measurement, taken carefully enough to be trusted in either
+direction, of an effect that is usually assumed rather than quantified.
+
+Three results follow. Without a competing bus master the effect is 9.3
+parts per million, which is resolvable by the instrument and useless to a
+scheduler. With a DMA engine active the effect reaches 9.7 percent. The
+effect is strongly asymmetric between regions, and the asymmetry does not
+follow from region size or from whether the arena and the competing
+master share a region.
+
+\section{Background and Related Work}
+
+Scratchpad allocation for embedded systems is a mature problem. Banakar
+et al.\ established the case for software-managed on-chip memory over
+caches in embedded designs \cite{banakar2002}, and both Avissar et al.\
+\cite{avissar2002} and Steinke et al.\ \cite{steinke2002} formulated the
+assignment of program objects to scratchpad as an optimisation over a
+static cost model. Those cost models assume a single requester. The
+question here is what happens to such a model when a second master is
+active, which is the condition a sensor-carrying microcontroller is
+normally in.
+
+Memory interference between concurrent requesters is well studied on
+multicore platforms with shared DRAM. MemGuard regulates per-core memory
+bandwidth to restore temporal isolation \cite{yun2013}, and PALLOC
+allocates pages so that cores occupy different DRAM banks, which is
+placement used for exactly the purpose examined here \cite{yun2014}. Kim
+et al.\ bound the resulting interference delay analytically
+\cite{kim2014}, and the predictable execution model of Pellizzoni et
+al.\ restructures tasks into phases that do not contend
+\cite{pellizzoni2011}. These works target processors with caches, DRAM
+controllers and multiple cores. A Cortex-M33 microcontroller with
+uncached on-chip SRAM has none of those, so the mechanism has to be
+re-established rather than assumed.
+
+On the inference side, TensorFlow Lite Micro documents the arena as the
+central memory abstraction for microcontroller deployment
+\cite{david2021}, and MLPerf Tiny standardises how such deployments are
+benchmarked \cite{banbury2021}. MCUNet and its successor attack the same
+memory limit from the model side, reducing peak activation footprint so
+that networks fit at all \cite{lin2020,lin2021}. All of them treat the
+arena as a quantity. None of them treat its address as a variable.
+
+The name of the system reported here follows the real-time literature's
+use of laxity, the slack between a task's remaining execution and its
+deadline \cite{liu1973}, since the question being asked is whether
+placement buys slack that a scheduler could spend.
+
+\section{System Design}
+
+\subsection{Platform}
+
+Measurements were taken on a B-U585I-IOT02A board carrying an STM32U585
+with a Cortex-M33 core at 160\,MHz, four flash wait states and the
+regulator in its highest voltage scaling mode. The instruction cache is
+enabled and instruction fetches come from flash. The data cache on this
+part covers only the external memory aperture from
+\texttt{0x60000000} to \texttt{0x9FFFFFFF}, so internal SRAM is uncached
+and every access from the core to the activation arena is a bus
+transaction that nothing absorbs. That property is what makes the device
+suitable for this measurement: an effect at the bus matrix is not hidden
+behind a cache.
+
+The device exposes three contiguous SRAM regions in the system address
+space: 192\,KiB at \texttt{0x20000000}, 64\,KiB at \texttt{0x20030000}
+and 512\,KiB at \texttt{0x20040000}. A fourth region in the low-power
+domain was excluded, since it is not comparable in intended use.
+
+Application code runs under ThreadX. Inference uses a network converted
+by ST Edge AI Core 4.0.1 from a public human activity recognition model
+trained on the WISDM accelerometer dataset \cite{kwapisz2010}. The
+network takes a window of 24 samples across three axes and emits four
+class scores. Its activation arena is 2\,944 bytes, which is small
+relative to every region under test and is a stated limit of this study.
+
+\subsection{Instrumentation}
+
+Inference is timed with the Data Watchpoint and Trace cycle counter. The
+counter is 32 bits wide and wraps every 26.8 seconds at this clock, so
+wrap is detected and flagged rather than assumed absent. Each completed
+inference emits a 32-byte record carrying a sequence number, a release
+timestamp, the execution interval, and identifiers for the arena region
+and the competing master. Records accumulate in a single-producer
+single-consumer ring and leave the device in framed batches protected by
+a CRC.
+
+The instrument was measured before it was used. A null probe that
+exercises the record path without running inference costs 14 cycles to
+read the ring and 118 cycles to push a record, which is 0.037 percent of
+one inference. A sequence gap in the received stream is the only evidence
+of a dropped record, so the sequence number advances on drop rather than
+on transmission.
+
+\subsection{Placement Mechanism}
+
+The arena is a statically allocated buffer in each region under test,
+with identical alignment, selected by pointer at run time rather than by
+a linker script or a compile-time switch. The converted network accepts
+its activation buffer through a run-time call, which is what makes the
+runtime rather than the linker the owner of placement. Model inputs and
+outputs are allocated inside the activation buffer, so moving the arena
+moves the network's tensors with it.
+
+Selecting at run time is not a convenience. A relink of identical sources
+moved the observed median by 85 cycles in earlier work on this system,
+which is an order of magnitude larger than the uncontended effect being
+measured. Any design that rebuilds between regions cannot resolve that
+effect. Every figure in Section V therefore comes from one firmware
+image, identified by the hash of its flashed binary rather than of its
+ELF container, since a clean rebuild reorders debug sections while
+leaving the image identical.
+
+\subsection{Competing Master}
+
+The competing master is a GPDMA1 channel performing memory-to-memory
+transfers on a circular linked list, with source and destination both in
+the region under test, at high channel priority and with source and
+destination on different matrix ports. It takes no interrupt, and its
+completion count is polled outside the measured interval.
+
+The choice of a DMA engine rather than a second thread is the central
+methodological decision of this work. There is one core and no
+simultaneous multithreading, so two threads never execute at the same
+instant. A thread that preempts the inference thread contributes its own
+cycles to the measured interval, producing a curve that rises smoothly
+with aggressor intensity and that is scheduler accounting rather than
+memory interference. A DMA engine is the only independent master
+available, and it is the only configuration in which the bus arbiter has
+a decision to make.
+
+\section{Methodology}
+
+Each measurement cell is one arena region crossed with one competing
+master configuration. Three arena regions, three aggressor regions and an
+aggressor-off column give twelve cells. Two further cells place the arena
+in the first region under two different labels, so that the spread
+between them is a same-region control and an estimate of the noise floor
+that does not depend on any assumption about the instrument.
+
+Cells are visited in randomised order across repetitions, so that thermal
+or clock drift does not accumulate against one region. The system is
+warmed before recording and the null probe runs before each session.
+Medians and 99th percentiles are reported; a mean alone is not, since the
+distributions are narrow and multimodal and a mean conceals both
+properties.
+
+The reported capture contains 9\,062 records over 180 seconds, between
+217 and 225 samples per cell, with no dropped records, no sequence gaps,
+no CRC rejections and one detected counter wrap. Raw captures record the
+build configuration, the clock and voltage settings and the flashed image
+hash alongside the samples, and analysis refuses a capture missing any of
+them.
+
+\section{Results}
+
+\subsection{Placement without Contention}
+
+Table~\ref{tab:matrix}, first column, gives the uncontended medians. The
+three regions span three cycles out of 320\,898, which is 9.3 parts per
+million. The same-region control pair returned 320\,898 and 320\,901,
+identical to the corresponding uncontended figures, so the spread of the
+instrument on the median is zero cycles at this sample size.
+
+The instrument therefore resolves the uncontended effect, and the effect
+is too small to act on. Reporting it as a null result would understate
+what the measurement shows, and reporting it as a finding would overstate
+what it is worth.
+
+\begin{table}[t]
+\caption{Median inference time in cycles, by arena region and competing
+master region. Parenthesised values are the change against the same
+arena's uncontended median.}
+\label{tab:matrix}
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Arena & None & DMA in R1 & DMA in R2 & DMA in R3 \\
+\midrule
+R1 (192\,KiB) & 320\,898 & 337\,877 & 320\,927 & 335\,843 \\
+              &          & (+16\,979) & (+29) & (+14\,945) \\
+R2 (64\,KiB)  & 320\,901 & 320\,960 & 337\,845 & 335\,847 \\
+              &          & (+59) & (+16\,944) & (+14\,946) \\
+R3 (512\,KiB) & 320\,899 & 320\,967 & 320\,937 & 352\,088 \\
+              &          & (+68) & (+38) & (+31\,189) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Placement under Contention}
+
+The remaining columns of Table~\ref{tab:matrix} change the picture by
+four orders of magnitude. Sharing a region with the competing master
+costs 16\,979 cycles for the first region and 16\,944 for the second,
+which is 5.3 percent. For the third region it costs 31\,189 cycles, or
+9.7 percent, roughly twice as much.
+
+Three observations follow, and only the first was expected.
+
+Sharing a region with an active master is expensive, and the cost is
+consistent between the first two regions to within 35 cycles.
+
+The first and second regions do not interfere with each other. A master
+in one costs an arena in the other 29 and 59 cycles respectively, which
+is 0.01 percent and close to the resolution floor. For the purpose of
+this workload they behave as independent slaves.
+
+A master in the third region costs arenas in the other two 14\,945 and
+14\,946 cycles, about 4.7 percent each, without sharing a region with
+either. The reverse does not hold: masters in the first and second
+regions cost an arena in the third 68 and 38 cycles. The asymmetry is
+therefore a property of the third region rather than of the pairings.
+
+\subsection{Working Set of the Competing Master}
+
+Table~\ref{tab:sweep} sweeps the competing master's buffer over four
+sizes. The effect is between 423 and 568 cycles across that range, well
+above the zero-cycle control spread, and its sign depends on which region
+the master occupies. A master in the first or second region does less
+damage as its buffer grows. A master in the third region does more. When
+both the arena and the master are in the third region the response is
+almost flat.
+
+An aggregate over all cells returns a change of a few hundred cycles in
+the falling direction, which is the residue of two opposite trends and
+does not describe either. Reporting the sweep per cell is therefore not a
+presentational choice.
+
+\begin{table}[t]
+\caption{Median inference time in cycles against the competing master's
+working set size.}
+\label{tab:sweep}
+\centering
+\begin{tabular}{llrrrr}
+\toprule
+Arena & Master & 1\,KiB & 4\,KiB & 8\,KiB & 16\,KiB \\
+\midrule
+R1 & R1 & 338\,414 & 337\,981 & 337\,898 & 337\,877 \\
+R1 & R3 & 335\,420 & 335\,746 & 335\,816 & 335\,843 \\
+R2 & R2 & 338\,391 & 337\,951 & 337\,869 & 337\,845 \\
+R2 & R3 & 335\,421 & 335\,747 & 335\,819 & 335\,847 \\
+R3 & R3 & 351\,997 & 352\,052 & 352\,066 & 352\,088 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{A Real Workload}
+
+The synthetic master saturates the path it occupies, which makes it a
+ceiling rather than an operating point. To place a realistic figure on
+the same axis, the device also runs a sensing pipeline: an inertial
+sensor sampled at 26\,Hz feeding the network's input window, an
+environmental sensor, and a microphone captured through the digital
+filter peripheral at a measured 16\,230 samples per second against the
+16\,233 its clock chain predicts. The audio path writes roughly 32\,KiB
+per second, three orders of magnitude below what the synthetic master
+moves, and its buffer lands in the third region, which the previous
+subsection identifies as the least convenient one.
+
+This pipeline is always on and cannot currently be disabled at run time,
+so its cost is measured as a shift in the uncontended baseline rather
+than isolated from the inertial and environmental paths. It is reported
+as the cost of the sensing workload as a whole, and separating the
+contributions requires a run-time switch that this implementation does
+not provide.
+
+\section{Discussion and Limitations}
+
+The practical reading of Table~\ref{tab:matrix} is that a placement
+policy on this device would have almost nothing to optimise on an idle
+memory system and a great deal to optimise on a busy one. That is a
+narrower claim than the premise this work started from, and it is the
+claim the data supports.
+
+The asymmetry of the third region is the most useful result and the least
+explained one. Three candidate mechanisms are consistent with the
+measurements. The region may hang off a matrix port that also carries
+traffic to the other two, so that saturating it blocks them. Its accesses
+may cost roughly twice as much individually, which would explain both the
+cross-region penalty and the near doubling of the same-region figure.
+Or its arbitration may be shared at a point upstream of the slaves. The
+transfer counter recorded with each sample advances at an identical rate
+in all three regions, so it does not discriminate between these, and
+resolving the question requires the bus matrix and SRAM sections of the
+device reference manual rather than a further experiment.
+
+Several limits sit next to the results rather than after them. The arena
+is 2\,944 bytes and cannot be varied, since it is a property of the
+converted network rather than a parameter, so the study says nothing
+about how the effect scales with arena size. Measurements were taken at
+optimisation level zero, which lengthens the inference and therefore
+dilutes any fixed-cost component of the effect. Each region contributes
+one arena address, so region and address are confounded, although a
+second address within one region reproduced that region's figure. The
+sampling rate of the inertial sensor is 26\,Hz against the 20\,Hz of the
+dataset the network was trained on, which affects classification quality
+and not timing. Finally, the competing master occupied one DMA channel
+for most of the study and a different one after an audio driver claimed
+the first, and channel index is assumed not to affect arbitration at
+equal priority.
+
+The network stack deserves a separate caution. With the radio driver's
+threads running, inference costs about four percent more, but those
+threads run above the inference thread in priority and preempt it, so
+that figure mixes preemption with interference. The distinction this work
+makes between a thread and a DMA engine applies to its own measurements
+and would have to be applied again to separate those two components.
+
+\section{Conclusion and Future Work}
+
+Activation placement on this microcontroller is worth 9.3 parts per
+million when the memory system is idle and up to 9.7 percent when it is
+not. The instrument that produced both figures resolves three cycles in
+320\,898 with a zero-cycle same-region control, which is what makes the
+first number a measurement rather than an absence.
+
+Two directions follow. The first is explanatory: identifying the topology
+that makes the largest SRAM region penalise the other two without
+sharing with them would turn a measured asymmetry into a cost model. The
+second is operational: a runtime that placed the arena according to which
+regions are currently busy would need exactly that cost model, and the
+per-region figures here are the data such a policy would learn from. The
+measurement path already carries the identifiers a policy would need, so
+the remaining work is the policy rather than the plumbing.
+
+\begin{thebibliography}{00}
+
+\bibitem{liu1973} C. L. Liu and J. W. Layland, ``Scheduling algorithms
+for multiprogramming in a hard-real-time environment,'' \emph{Journal of
+the ACM}, vol. 20, no. 1, pp. 46--61, 1973.
+
+\bibitem{banakar2002} R. Banakar, S. Steinke, B.-S. Lee, M. Balakrishnan,
+and P. Marwedel, ``Scratchpad memory: a design alternative for cache
+on-chip memory in embedded systems,'' in \emph{Proc. CODES}, 2002, pp.
+73--78.
+
+\bibitem{avissar2002} O. Avissar, R. Barua, and D. Stewart, ``An optimal
+memory allocation scheme for scratch-pad-based embedded systems,''
+\emph{ACM Trans. Embedded Computing Systems}, vol. 1, no. 1, pp. 6--26,
+2002.
+
+\bibitem{steinke2002} S. Steinke, L. Wehmeyer, B.-S. Lee, and P.
+Marwedel, ``Assigning program and data objects to scratchpad for energy
+reduction,'' in \emph{Proc. DATE}, 2002, pp. 409--415.
+
+\bibitem{yun2013} H. Yun, G. Yao, R. Pellizzoni, M. Caccamo, and L. Sha,
+``MemGuard: memory bandwidth reservation system for efficient performance
+isolation in multi-core platforms,'' in \emph{Proc. RTAS}, 2013, pp.
+55--64.
+
+\bibitem{yun2014} H. Yun, R. Mancuso, Z.-P. Wu, and R. Pellizzoni,
+``PALLOC: DRAM bank-aware memory allocator for performance isolation on
+multicore platforms,'' in \emph{Proc. RTAS}, 2014, pp. 155--166.
+
+\bibitem{kim2014} H. Kim, D. de Niz, B. Andersson, M. Klein, O.
+Mutlu, and R. Rajkumar, ``Bounding memory interference delay in
+COTS-based multi-core systems,'' in \emph{Proc. RTAS}, 2014, pp.
+145--154.
+
+\bibitem{pellizzoni2011} R. Pellizzoni, E. Betti, S. Bak, G. Yao, J.
+Criswell, M. Caccamo, and R. Kegley, ``A predictable execution model for
+COTS-based embedded systems,'' in \emph{Proc. RTAS}, 2011, pp. 269--279.
+
+\bibitem{david2021} R. David et al., ``TensorFlow Lite Micro: embedded
+machine learning for TinyML systems,'' in \emph{Proc. MLSys}, 2021, pp.
+800--811.
+
+\bibitem{banbury2021} C. Banbury et al., ``MLPerf Tiny benchmark,'' in
+\emph{Proc. NeurIPS Datasets and Benchmarks Track}, 2021.
+
+\bibitem{lin2020} J. Lin, W.-M. Chen, Y. Lin, J. Cohn, C. Gan, and S.
+Han, ``MCUNet: tiny deep learning on IoT devices,'' in \emph{Proc.
+NeurIPS}, 2020, pp. 11711--11722.
+
+\bibitem{lin2021} J. Lin, W.-M. Chen, H. Cai, C. Gan, and S. Han,
+``MCUNetV2: memory-efficient patch-based inference for tiny deep
+learning,'' in \emph{Proc. NeurIPS}, 2021, pp. 2346--2358.
+
+\bibitem{kwapisz2010} J. R. Kwapisz, G. M. Weiss, and S. A. Moore,
+``Activity recognition using cell phone accelerometers,'' \emph{ACM
+SIGKDD Explorations Newsletter}, vol. 12, no. 2, pp. 74--82, 2010.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,101 @@
+flowchart TB
+
+subgraph TARGET["Embedded target"]
+    direction TB
+
+    APP["activity_node<br/>application workload"]
+
+    subgraph EXP["Experiment and inference layer"]
+        direction LR
+        BACKEND["ST Edge AI<br/>inference backend"]
+        BENCH["Benchmark harness<br/>GPDMA aggressor / null probe"]
+        RUNTIME["Telemetry runtime"]
+    end
+
+    subgraph PLATFORM["Platform support"]
+        direction LR
+        DWT["Cortex-M33<br/>DWT counters"]
+        MEM["STM32U5<br/>memory map"]
+        IO["Sensors / audio"]
+        UDP["UDP export"]
+    end
+
+    FW["STM32U585 firmware<br/>ThreadX + HAL"]
+
+    APP --> BACKEND
+    APP --> RUNTIME
+    BENCH --> RUNTIME
+
+    BACKEND --> MEM
+    BENCH --> MEM
+    RUNTIME --> DWT
+
+    IO --> APP
+    RUNTIME --> UDP
+
+    FW --> APP
+    FW --> BENCH
+    FW --> PLATFORM
+end
+
+BOARD["B-U585I-IOT02A<br/>STM32U585 hardware"]
+
+FW --> BOARD
+
+subgraph HOST["Host software"]
+    direction LR
+
+    TUI["laxity-tui<br/>live / replay"]
+    PARSER["telemetry_parse.py"]
+    ANALYSE["analyse.py"]
+
+    PARSER --> ANALYSE
+end
+
+BOARD -->|"telemetry stream"| TUI
+BOARD -->|"captured telemetry"| PARSER
+
+subgraph TOOLS["Experiment tooling"]
+    direction LR
+
+    DOCTOR["doctor.sh"]
+    GENERATE["generate.sh"]
+    BUILD["build.sh"]
+    FLASH["flash.sh"]
+    CAPTURE["capture.sh"]
+    MONITOR["monitor.sh"]
+
+    DOCTOR --> GENERATE
+    GENERATE --> BUILD
+    BUILD --> FLASH
+    FLASH --> CAPTURE
+end
+
+FLASH -->|"program"| BOARD
+CAPTURE -->|"record"| PARSER
+MONITOR -->|"observe"| BOARD
+
+style TARGET fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+style HOST fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+style TOOLS fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+
+style EXP fill:#ECF7FF,stroke:#A5CBE8,stroke-width:1.2px,color:#17212b
+style PLATFORM fill:#F5FAFE,stroke:#BED6E7,stroke-width:1.2px,color:#17212b
+
+classDef app fill:#EAF4FF,stroke:#5B9BD5,color:#17212B,stroke-width:1.6px;
+classDef runtime fill:#E8FAFC,stroke:#49AEB7,color:#17212B,stroke-width:1.6px;
+classDef bench fill:#FFF5DF,stroke:#D7A249,color:#2B2418,stroke-width:1.6px;
+classDef platform fill:#F5F9FC,stroke:#8FAFC7,color:#17212B,stroke-width:1.4px;
+classDef hardware fill:#F2EEFF,stroke:#9276D8,color:#211A32,stroke-width:1.8px;
+classDef host fill:#EDF9F1,stroke:#65AD79,color:#17251B,stroke-width:1.6px;
+classDef tooling fill:#F3F7FA,stroke:#8DA8BB,color:#253746,stroke-width:1.4px;
+
+class APP,BACKEND app;
+class RUNTIME,UDP runtime;
+class BENCH bench;
+class DWT,MEM,IO,FW platform;
+class BOARD hardware;
+class TUI,PARSER,ANALYSE host;
+class DOCTOR,GENERATE,BUILD,FLASH,CAPTURE,MONITOR tooling;
+
+linkStyle default stroke:#547896,stroke-width:2.4px;

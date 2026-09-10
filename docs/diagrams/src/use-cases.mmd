@@ -1,0 +1,144 @@
+flowchart LR
+
+%% ================================================================
+%% Actors
+%% ================================================================
+
+DEV["Developer"]
+OP["Experiment operator"]
+ANALYST["Researcher / analyst"]
+
+
+%% ================================================================
+%% Laxity system boundary
+%% ================================================================
+
+subgraph LAXITY["Laxity experiment system"]
+    direction TB
+
+    subgraph PREP["Build and deployment"]
+        direction LR
+
+        CHECK(["Check toolchain"])
+        GEN(["Generate firmware"])
+        MODEL(["Prepare inference model"])
+        BUILD(["Build firmware"])
+        FLASH(["Flash STM32U585"])
+    end
+
+    subgraph EXP["Run experiments"]
+        direction LR
+
+        CONFIG_ARENA(["Select activation arena"])
+        CONFIG_DMA(["Configure DMA aggressor"])
+        BASELINE(["Run contention-free sweep"])
+        CONTENTION(["Run contention sweep"])
+        LIVE(["Observe live telemetry"])
+        CAPTURE(["Capture telemetry"])
+    end
+
+    subgraph ANALYSIS["Inspect measurements"]
+        direction LR
+
+        REPLAY(["Replay recorded capture"])
+        VALIDATE(["Check telemetry integrity"])
+        ANALYSE(["Analyse capture"])
+        COMPARE(["Compare SRAM placements"])
+        INSPECT(["Inspect contention asymmetry"])
+    end
+end
+
+
+%% ================================================================
+%% Actor interactions
+%% ================================================================
+
+DEV --> CHECK
+DEV --> GEN
+DEV --> MODEL
+DEV --> BUILD
+DEV --> FLASH
+
+OP --> CONFIG_ARENA
+OP --> CONFIG_DMA
+OP --> BASELINE
+OP --> CONTENTION
+OP --> LIVE
+OP --> CAPTURE
+
+ANALYST --> REPLAY
+ANALYST --> VALIDATE
+ANALYST --> ANALYSE
+ANALYST --> COMPARE
+ANALYST --> INSPECT
+
+
+%% ================================================================
+%% Use-case relationships
+%% ================================================================
+
+CHECK -.->|"precedes"| BUILD
+GEN -.->|"input"| BUILD
+MODEL -.->|"input"| BUILD
+BUILD -.->|"precedes"| FLASH
+
+BASELINE -.->|"includes"| CONFIG_ARENA
+
+CONTENTION -.->|"includes"| CONFIG_ARENA
+CONTENTION -.->|"includes"| CONFIG_DMA
+
+BASELINE -.->|"produces"| CAPTURE
+CONTENTION -.->|"produces"| CAPTURE
+
+CAPTURE -.->|"input"| REPLAY
+CAPTURE -.->|"input"| VALIDATE
+CAPTURE -.->|"input"| ANALYSE
+
+ANALYSE -.->|"supports"| COMPARE
+ANALYSE -.->|"supports"| INSPECT
+
+
+%% ================================================================
+%% Domain styling
+%% ================================================================
+
+style LAXITY fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+
+style PREP fill:#F5FAFE,stroke:#BED6E7,stroke-width:1.2px,color:#17212b
+style EXP fill:#ECF7FF,stroke:#A5CBE8,stroke-width:1.2px,color:#17212b
+style ANALYSIS fill:#F5FAFE,stroke:#BED6E7,stroke-width:1.2px,color:#17212b
+
+
+%% ================================================================
+%% Actor styling
+%% ================================================================
+
+classDef actor fill:#F2EEFF,stroke:#9276D8,color:#211A32,stroke-width:1.8px;
+
+class DEV,OP,ANALYST actor;
+
+
+%% ================================================================
+%% Use-case styling
+%% ================================================================
+
+classDef tooling fill:#F3F7FA,stroke:#8DA8BB,color:#253746,stroke-width:1.4px;
+classDef experiment fill:#FFF5DF,stroke:#D7A249,color:#2B2418,stroke-width:1.5px;
+classDef telemetry fill:#E8FAFC,stroke:#49AEB7,color:#17212B,stroke-width:1.5px;
+classDef analysis fill:#EDF9F1,stroke:#65AD79,color:#17251B,stroke-width:1.5px;
+
+class CHECK,GEN,MODEL,BUILD,FLASH tooling;
+
+class CONFIG_ARENA,CONFIG_DMA,BASELINE,CONTENTION experiment;
+
+class LIVE,CAPTURE,REPLAY,VALIDATE telemetry;
+
+class ANALYSE,COMPARE,INSPECT analysis;
+
+
+%% ================================================================
+%% Edges
+%% ================================================================
+
+linkStyle default stroke:#547896,stroke-width:2.2px;
+

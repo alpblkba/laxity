@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+
+    participant APP as activity_node
+    participant BENCH as Benchmark harness
+    participant DMA as GPDMA1
+    participant DWT as Cortex-M33 DWT
+    participant AI as ST Edge AI
+    participant SRAM as Activation SRAM
+    participant TEL as Telemetry runtime
+    participant HOST as Host / laxity-tui
+
+    BENCH->>DMA: Configure aggressor region and working set
+    BENCH->>DMA: Start circular memory traffic
+
+    APP->>DWT: Read start cycle
+    APP->>AI: Run inference with selected arena
+
+    par CPU inference
+        AI->>SRAM: Activation and tensor accesses
+    and Independent DMA traffic
+        DMA->>SRAM: Memory-to-memory transfers
+    end
+
+    AI-->>APP: Inference complete
+    APP->>DWT: Read end cycle
+    DWT-->>APP: Execution interval
+
+    APP->>TEL: Push inference record
+    Note over APP,TEL: Timing interval has already ended
+
+    TEL-->>HOST: Framed telemetry
+    HOST->>HOST: Validate sequence and CRC
+    HOST->>HOST: Update live experiment state
+    HOST->>HOST: Render latency and placement

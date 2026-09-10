@@ -1,0 +1,61 @@
+{
+  "theme": "base",
+  "look": "neo",
+
+  "flowchart": {
+    "curve": "basis",
+    "htmlLabels": true,
+    "nodeSpacing": 38,
+    "rankSpacing": 52,
+    "diagramPadding": 18
+  },
+
+  "themeVariables": {
+    "actorBkg": "#EAF4FF",
+    "actorBorder": "#5B9BD5",
+    "actorTextColor": "#17212B",
+    "actorLineColor": "#91B6D2",
+
+    "signalColor": "#547896",
+    "signalTextColor": "#17212B",
+
+    "labelBoxBkgColor": "#ECF7FF",
+    "labelBoxBorderColor": "#A5CBE8",
+    "labelTextColor": "#17212B",
+
+    "noteBkgColor": "#FFF5DF",
+    "noteBorderColor": "#D7A249",
+    "noteTextColor": "#2B2418",
+
+    "activationBkgColor": "#DCEFFF",
+    "activationBorderColor": "#69A9DB",
+    "sequenceNumberColor": "#547896",
+
+    "fontFamily": "Inter, SF Pro Display, Helvetica Neue, Helvetica, Arial, sans-serif",
+    "fontSize": "15px",
+
+    "background": "#ffffff",
+
+    "primaryColor": "#f7fbff",
+    "primaryTextColor": "#17212b",
+    "primaryBorderColor": "#8fb7d8",
+
+    "secondaryColor": "#edf7ff",
+    "secondaryTextColor": "#17212b",
+    "secondaryBorderColor": "#7aaed8",
+
+    "tertiaryColor": "#f9fcff",
+    "tertiaryTextColor": "#17212b",
+    "tertiaryBorderColor": "#b4ccdf",
+
+    "lineColor": "#547896",
+
+    "clusterBkg": "#eef8ff",
+    "clusterBorder": "#72a9d4",
+
+    "edgeLabelBackground": "#ffffff",
+    "titleColor": "#17212b"
+  },
+
+  "themeCSS": ".flowchart-link { stroke-width: 2.4px !important; } .messageLine0, .messageLine1 { stroke-width: 2.2px !important; stroke: #547896 !important; } .actor-line { stroke-width: 1.5px !important; stroke: #91B6D2 !important; } .marker { fill: #547896 !important; stroke: #547896 !important; }"
+}

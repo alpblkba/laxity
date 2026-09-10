@@ -1,0 +1,155 @@
+flowchart TB
+
+%% ================================================================
+%% Requesters
+%% ================================================================
+
+subgraph REQUESTERS["Concurrent memory requesters"]
+    direction LR
+
+    CPU["Cortex-M33<br/>ST Edge AI inference"]
+    DMA["GPDMA1<br/>memory-to-memory aggressor"]
+end
+
+
+%% ================================================================
+%% Placement decision
+%% ================================================================
+
+subgraph PLACEMENT["Run-time placement"]
+    direction LR
+
+    ARENA["Activation arena<br/>2,944 bytes"]
+    AGGRESSOR["DMA working set<br/>1 / 4 / 8 / 16 KiB"]
+end
+
+CPU --> ARENA
+DMA --> AGGRESSOR
+
+
+%% ================================================================
+%% SRAM regions
+%% ================================================================
+
+subgraph MEMORY["STM32U585 on-chip SRAM"]
+    direction LR
+
+    R1["SRAM1<br/>192 KiB<br/>0x20000000"]
+
+    R2["SRAM2<br/>64 KiB<br/>0x20030000"]
+
+    R3["SRAM3<br/>512 KiB<br/>0x20040000"]
+end
+
+ARENA -.->|"select"| R1
+ARENA -.->|"select"| R2
+ARENA -.->|"select"| R3
+
+AGGRESSOR -.->|"target"| R1
+AGGRESSOR -.->|"target"| R2
+AGGRESSOR -.->|"target"| R3
+
+
+%% ================================================================
+%% Measured behaviour
+%% ================================================================
+
+subgraph RESULTS["Measured contention behaviour"]
+    direction LR
+
+    BASELINE["No competing master<br/>R1 / R2 / R3 differ by 3 cycles<br/>320,898 to 320,901"]
+
+    SAME12["Same-region contention<br/>R1: +16,979 cycles<br/>R2: +16,944 cycles"]
+
+    CROSS12["R1 and R2 cross-region<br/>+29 to +59 cycles<br/>near baseline"]
+
+    R3ASYM["R3 asymmetry<br/>R3 traffic to R1 / R2: about +4.7%<br/>reverse direction: near baseline"]
+
+    SAME3["R3 same-region contention<br/>+31,189 cycles<br/>+9.7%"]
+end
+
+
+%% ================================================================
+%% Connect memory regions to observed behaviour
+%% ================================================================
+
+R1 --> BASELINE
+R2 --> BASELINE
+R3 --> BASELINE
+
+R1 --> SAME12
+R2 --> SAME12
+
+R1 --> CROSS12
+R2 --> CROSS12
+
+R3 --> R3ASYM
+R1 --> R3ASYM
+R2 --> R3ASYM
+
+R3 --> SAME3
+
+
+%% ================================================================
+%% Interpretation
+%% ================================================================
+
+POLICY["Placement is useful as a scheduling signal<br/>only when the memory system is shared"]
+
+BASELINE --> POLICY
+SAME12 --> POLICY
+CROSS12 --> POLICY
+R3ASYM --> POLICY
+SAME3 --> POLICY
+
+
+%% ================================================================
+%% Domain styling
+%% ================================================================
+
+style REQUESTERS fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+style PLACEMENT fill:#ECF7FF,stroke:#A5CBE8,stroke-width:1.3px,color:#17212b
+style MEMORY fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+style RESULTS fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212b
+
+
+%% ================================================================
+%% Semantic node styling
+%% ================================================================
+
+classDef cpu fill:#EAF4FF,stroke:#5B9BD5,color:#17212B,stroke-width:1.6px;
+classDef dma fill:#FFF5DF,stroke:#D7A249,color:#2B2418,stroke-width:1.6px;
+
+classDef placement fill:#F5FAFE,stroke:#8FAFC7,color:#17212B,stroke-width:1.5px;
+
+classDef memory fill:#F2EEFF,stroke:#9276D8,color:#211A32,stroke-width:1.8px;
+
+classDef neutral fill:#F8FAFC,stroke:#94A3B8,color:#334155,stroke-width:1.4px;
+classDef low fill:#EDF9F1,stroke:#65AD79,color:#17251B,stroke-width:1.6px;
+classDef medium fill:#FFF5DF,stroke:#D7A249,color:#2B2418,stroke-width:1.6px;
+classDef high fill:#FFF0EE,stroke:#D9776A,color:#3A201C,stroke-width:1.6px;
+
+classDef conclusion fill:#E8FAFC,stroke:#49AEB7,color:#17212B,stroke-width:1.8px;
+
+class CPU cpu;
+class DMA dma;
+
+class ARENA,AGGRESSOR placement;
+
+class R1,R2,R3 memory;
+
+class BASELINE neutral;
+class CROSS12 low;
+class SAME12 medium;
+class R3ASYM medium;
+class SAME3 high;
+
+class POLICY conclusion;
+
+
+%% ================================================================
+%% Edge styling
+%% ================================================================
+
+linkStyle default stroke:#547896,stroke-width:2.4px;
+

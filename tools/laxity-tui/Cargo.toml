@@ -1,0 +1,11 @@
+[package]
+name = "laxity-tui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+crossterm = "=0.29.0"
+ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
+serialport = { version = "=4.10.1", default-features = false }
+tachyonfx = { version = "=0.25.1", default-features = false, features = ["std"] }

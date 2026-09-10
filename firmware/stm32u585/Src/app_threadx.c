@@ -30,6 +30,8 @@
 #include "gpdma_m2m.h"
 #include "qos/telemetry.h"
 #include "net_udp_export.h"
+#include "sensors.h"
+#include "audio.h"
 #include "network.h"
 #include "network_data.h"
 #include "golden_st_ign_wl_24.h"
@@ -58,6 +60,15 @@ extern UART_HandleTypeDef huart1;
  * measurement and never starves the thing draining the ring. */
 #define LAXITY_NET_STACK     2048
 #define LAXITY_NET_PRIO      12
+
+/* the network stack is off by default. with no reachable access point the driver's own threads
+ * sit above every thread here at priorities 8 and 9, and about forty seconds after start up they
+ * stop yielding: the UART goes silent, the measurement loop stops advancing, and the board looks
+ * halted. measured as steady output for 43 seconds and then nothing at all.
+ *
+ * the sensor and telemetry paths do not need it, so it is opt in until that is understood. set
+ * this to 1 to bring it back. */
+#define LAXITY_NET_ENABLE    0
 
 /* lower priority than the measurement thread, so a blocking transmit that takes several milliseconds at 921600 baud cannot delay an inference. that is what best effort export means here. */
 
@@ -116,7 +127,9 @@ extern UART_HandleTypeDef huart1;
 /* USER CODE BEGIN PV */
 static TX_THREAD    laxity_infer_thread;
 static TX_THREAD    laxity_export_thread;
+#if LAXITY_NET_ENABLE
 static TX_THREAD    laxity_net_thread;
+#endif
 
 /* the exporter waits on this rather than sleeping for a plausible interval. the null probe pushes records and resets the ring, so a consumer that started draining during boot would both corrupt the probe and put its synthetic records on the wire. */
 static TX_SEMAPHORE laxity_boot_done;
@@ -154,6 +167,19 @@ static uint32_t laxity_cur_aggr = 0xFFFFFFFFu;
 static uint16_t        laxity_schedule[LAXITY_SCHEDULE];
 static uint8_t         laxity_placed_ok;
 
+/* which window the classifier is fed. the golden window is a fixed synthetic trace with a known
+ * answer and is the only end to end check this firmware has, so the live sensor is a second mode
+ * beside it rather than a replacement. the user button toggles between them. */
+#define LAXITY_INPUT_GOLDEN  0u
+#define LAXITY_INPUT_LIVE    1u
+static uint8_t  laxity_input_mode = LAXITY_INPUT_GOLDEN;
+static uint8_t  laxity_btn_idle;
+static uint8_t  laxity_btn_last;
+static uint32_t laxity_btn_ms;
+static uint8_t  laxity_sensor_ok;
+static uint8_t  laxity_audio_ok;
+static float    laxity_live_window[LAXITY_SENSOR_LEN];
+
 /* written once during boot and read by the exporter after the semaphore, which publishes it. */
 static struct {
   uint32_t cyccnt_hz;
@@ -182,7 +208,28 @@ static volatile struct {
 /* USER CODE BEGIN PFP */
 static VOID laxity_infer_entry(ULONG argument);
 static VOID laxity_export_entry(ULONG argument);
+#if LAXITY_NET_ENABLE
 static VOID laxity_net_entry(ULONG argument);
+#endif
+
+/* toggle on a change away from the level the pin sat at during start up, which avoids assuming
+   whether the button pulls high or low. 200 ms of settling is longer than any contact bounce. */
+static void laxity_poll_button(void)
+{
+  uint8_t now = (uint8_t)HAL_GPIO_ReadPin(USER_Button_GPIO_Port, USER_Button_Pin);
+  uint32_t t = HAL_GetTick();
+
+  if (now != laxity_btn_last)
+  {
+    laxity_btn_last = now;
+    if (now != laxity_btn_idle && (t - laxity_btn_ms) > 200u)
+    {
+      laxity_btn_ms = t;
+      laxity_input_mode = (laxity_input_mode == LAXITY_INPUT_GOLDEN)
+                            ? LAXITY_INPUT_LIVE : LAXITY_INPUT_GOLDEN;
+    }
+  }
+}
 
 /* USER CODE END PFP */
 
@@ -237,6 +284,7 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
     return TX_THREAD_ERROR;
   }
 
+#if LAXITY_NET_ENABLE
   {
     CHAR *net_stack;
     if (tx_byte_allocate(byte_pool, (VOID **)&net_stack, LAXITY_NET_STACK,
@@ -252,6 +300,7 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
       return TX_THREAD_ERROR;
     }
   }
+#endif
   /* USER CODE END App_ThreadX_Init */
 
   return ret;
@@ -462,7 +511,17 @@ static int laxity_infer(uint32_t slot, uint32_t *cycles, bool *wrapped)
 
   n = STAI_NETWORK_IN_NUM;
   if (stai_network_get_inputs(laxity_net, inputs, &n) != STAI_SUCCESS) { return -3; }
-  memcpy(inputs[0], laxity_golden_input, STAI_NETWORK_IN_1_SIZE_BYTES);
+  /* live mode only reaches the model once a whole window has been collected, so a half filled
+     buffer never gets classified and reported as if it were motion. */
+  if (laxity_input_mode == LAXITY_INPUT_LIVE && qos_sensors_ready())
+  {
+    qos_sensors_window(laxity_live_window);
+    memcpy(inputs[0], laxity_live_window, STAI_NETWORK_IN_1_SIZE_BYTES);
+  }
+  else
+  {
+    memcpy(inputs[0], laxity_golden_input, STAI_NETWORK_IN_1_SIZE_BYTES);
+  }
 
   t0 = qos_cyc_now();
   if (stai_network_run(laxity_net, STAI_MODE_SYNC) != STAI_SUCCESS) { return -4; }
@@ -520,6 +579,10 @@ static VOID laxity_infer_entry(ULONG argument)
   laxity_placed_ok = laxity_place();
   if (laxity_placed_ok) { qos_telemetry_set_placements(laxity_placements, LAXITY_LABELS); }
   laxity_aggr_ok = qos_gpdma_m2m_init() ? 1u : 0u;
+  laxity_sensor_ok = qos_sensors_init() ? 1u : 0u;
+  laxity_audio_ok = qos_audio_init() ? 1u : 0u;
+  laxity_btn_idle = (uint8_t)HAL_GPIO_ReadPin(USER_Button_GPIO_Port, USER_Button_Pin);
+  laxity_btn_last = laxity_btn_idle;
   laxity_build_cells();
 
   laxity_rand_state = qos_cyc_now() | 1u;
@@ -562,6 +625,13 @@ static VOID laxity_infer_entry(ULONG argument)
        * loop does to the channel is counted as part of the inference. */
       laxity_set_aggressor(aggr, foot);
 
+      /* all three are outside the cycle counter window below. the sensor decides its own spacing
+         from its output data rate, so this only offers it the chance, and the microphone poll
+         does nothing unless a half buffer has completed since the last pass. */
+      (void)qos_sensors_sample();
+      (void)qos_audio_poll();
+      laxity_poll_button();
+
       rec.release_cyc = qos_cyc_now();
       run = laxity_infer(slot, &cycles, &wrapped);
       laxity_live.rc = run;
@@ -572,8 +642,13 @@ static VOID laxity_infer_entry(ULONG argument)
         laxity_live.cycles = cycles;
         laxity_live.argmax = argmax;
         laxity_live.worst_ppm = laxity_worst_ppm();
-        /* the golden check runs on every inference rather than once, since a wrongly placed arena that still returns a number would otherwise pass unnoticed. */
-        if (argmax != LAXITY_GOLDEN_CLASS) { laxity_live.mismatches++; }
+        /* the golden check runs on every inference rather than once, since a wrongly placed arena
+           that still returns a number would otherwise pass unnoticed. it only means anything
+           against the golden window, so live classifications are never counted as mismatches. */
+        if (laxity_input_mode == LAXITY_INPUT_GOLDEN && argmax != LAXITY_GOLDEN_CLASS)
+        {
+          laxity_live.mismatches++;
+        }
       }
 
       rec.exec_cyc = cycles;
@@ -595,6 +670,7 @@ static VOID laxity_infer_entry(ULONG argument)
   }
 }
 
+#if LAXITY_NET_ENABLE
 /* bring the link up once, then report it. the result is published for the status line rather
    than printed here, because one thread owns the UART and it is not this one. */
 static VOID laxity_net_entry(ULONG argument)
@@ -613,6 +689,7 @@ static VOID laxity_net_entry(ULONG argument)
     tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND);
   }
 }
+#endif
 
 /* send one line, with the frame magic scrubbed out of it first.
  *
@@ -638,6 +715,7 @@ static VOID laxity_export_entry(ULONG argument)
   char line[240];
   uint32_t ticks = 0u;
   int argmax;
+  int golden;
 
   (void)argument;
 
@@ -651,19 +729,26 @@ static VOID laxity_export_entry(ULONG argument)
       /* the UART is the path that always works and it stays first. the datagram carries the
          same bytes, so the host parser reads either without knowing which it received. */
       HAL_UART_Transmit(&huart1, laxity_export_buf, (uint16_t)n, HAL_MAX_DELAY);
+#if LAXITY_NET_ENABLE
       (void)qos_net_send(laxity_export_buf, (UINT)n);
+#endif
     }
 
     /* one human readable set per second, so a silent board is still distinguishable from a broken one without running the parser. */
     if ((++ticks % TX_TIMER_TICKS_PER_SECOND) == 0u)
     {
       argmax = (int)laxity_live.argmax;
+      golden = (laxity_input_mode == LAXITY_INPUT_GOLDEN) || !qos_sensors_ready();
       laxity_say(line, snprintf(line, sizeof line,
-                   "infer rc=%ld cycles=%lu class=%d(%s) expect=%d(%s) %s mismatch=%lu pass=%lu dma=%u/%lu opt=-O0\r\n",
+                   "infer mode=%s rc=%ld cycles=%lu class=%d(%s) expect=%d(%s) %s mismatch=%lu pass=%lu dma=%u/%lu opt=-O0\r\n",
+                   golden ? "golden" : "live",
                    (long)laxity_live.rc, (unsigned long)laxity_live.cycles,
                    argmax, laxity_golden_class_names[argmax],
                    LAXITY_GOLDEN_CLASS, laxity_golden_class_names[LAXITY_GOLDEN_CLASS],
-                   (laxity_live.rc == 0 && argmax == LAXITY_GOLDEN_CLASS) ? "MATCH" : "MISMATCH",
+                   /* the verdict is only a verdict against the golden window. saying MATCH while
+                      reading a sensor would claim a check that is not being made. */
+                   golden ? ((laxity_live.rc == 0 && argmax == LAXITY_GOLDEN_CLASS) ? "MATCH" : "MISMATCH")
+                          : "live-no-verdict",
                    (unsigned long)laxity_live.mismatches, (unsigned long)laxity_live.passes,
                    (unsigned)laxity_aggr_ok, (unsigned long)laxity_live.aggr_completions));
 
@@ -680,6 +765,25 @@ static VOID laxity_export_entry(ULONG argument)
                    (unsigned long)laxity_placements[4].arena_addr,
                    (unsigned)LAXITY_ARENA_BYTES));
 
+      {
+        float t = qos_sensors_temperature();
+        int   ti = (int)t;
+        int   tf = (int)((t - (float)ti) * 10.0f); if (tf < 0) { tf = -tf; }
+        laxity_say(line, snprintf(line, sizeof line,
+                     "sensors acc=%u env=%u(inst%lu) samples=%lu window=%s peak_mg=%d temp_c=%d.%d mic=%u bufs=%lu mic_peak=%ld\r\n",
+                     (unsigned)laxity_sensor_ok, (unsigned)(qos_sensors_env_ok() ? 1u : 0u),
+                     (unsigned long)qos_sensors_env_instance(),
+                     (unsigned long)qos_sensors_count(),
+                     qos_sensors_ready() ? "full" : "filling",
+                     (int)(qos_sensors_peak_g() * 1000.0f), ti, tf,
+                     (unsigned)laxity_audio_ok, (unsigned long)qos_audio_buffers(),
+                     (long)qos_audio_peak()));
+      }
+
+#if !LAXITY_NET_ENABLE
+      /* saying rc=0 while the stack was never started would read as a link that came up. */
+      laxity_say(line, snprintf(line, sizeof line, "net disabled\r\n"));
+#else
       laxity_say(line, snprintf(line, sizeof line,
                    "net rc=%ld ip=%lu.%lu.%lu.%lu sent=%lu failed=%lu\r\n",
                    (long)laxity_live.net_rc,
@@ -689,6 +793,7 @@ static VOID laxity_export_entry(ULONG argument)
                    (unsigned long)(laxity_live.net_addr & 0xFFu),
                    (unsigned long)laxity_live.net_sent,
                    (unsigned long)laxity_live.net_failed));
+#endif
 
       laxity_say(line, snprintf(line, sizeof line,
                    "telemetry v%u cyccnt_hz=%lu stall_avail=%d null_read_med=%lu null_read_p99=%lu null_push_med=%lu null_push_p99=%lu n=%lu\r\n",

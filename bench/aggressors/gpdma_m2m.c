@@ -15,7 +15,11 @@ bool qos_gpdma_m2m_init(void)
 {
     __HAL_RCC_GPDMA1_CLK_ENABLE();
 
-    s_ch.Instance = GPDMA1_Channel0;
+    // channel 1 and not channel 0. the board support package's microphone path hard codes
+    // channel 0 for MDF1 and its MSP is static, so the collision can only be resolved from
+    // this side. the channels are otherwise the same: arbitration between equal priorities is
+    // round robin, so the index is not part of what this module measures.
+    s_ch.Instance = GPDMA1_Channel1;
 
     // DMA_HIGH_PRIORITY biases the matrix arbiter toward the channel. an aggressor set to yield would make a null result unreadable, since it could mean the matrix has headroom or it could mean the aggressor was too polite to take any. priority is itself a knob, s o a placement policy could later lower it rather than move an arena.
     s_ch.InitLinkedList.Priority          = DMA_HIGH_PRIORITY;

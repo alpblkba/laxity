@@ -1,10 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 const MAGIC: [u8; 2] = *b"LX";
 const FRAME_OVERHEAD: usize = 8;
 const PLACEMENT_SIZE: usize = 20;
 const RECORD_SIZE: usize = 32;
 const FLAG_CYCCNT_WRAP: u8 = 1 << 0;
+pub const CELL_SAMPLE_LIMIT: usize = 4096;
+
+pub const PLACEMENT_CONTROL: u8 = 1 << 0;
+pub const PLACEMENT_ALT_ADDR: u8 = 1 << 1;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
@@ -38,10 +42,21 @@ pub struct Metadata {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Placement {
     pub id: u8,
+    pub flags: u8,
     pub name: String,
     pub rel_cost: u16,
     pub arena_addr: u32,
     pub arena_size: u32,
+}
+
+impl Placement {
+    pub fn arena_end(&self) -> Option<u32> {
+        self.arena_addr.checked_add(self.arena_size)
+    }
+
+    pub fn is_primary(&self) -> bool {
+        self.flags & (PLACEMENT_CONTROL | PLACEMENT_ALT_ADDR) == 0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,6 +82,41 @@ pub struct ParseDelta {
     pub records: u64,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CellSamples {
+    samples: VecDeque<(u32, u32)>,
+}
+
+impl CellSamples {
+    fn push(&mut self, exec_cyc: u32, transfer_count: u32) {
+        if self.samples.len() == CELL_SAMPLE_LIMIT {
+            self.samples.pop_front();
+        }
+        self.samples.push_back((exec_cyc, transfer_count));
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn median(&self) -> Option<u32> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let middle = self.samples.len() / 2;
+        let mut values: Vec<_> = self.samples.iter().map(|sample| sample.0).collect();
+        let (_, median, _) = values.select_nth_unstable(middle);
+        Some(*median)
+    }
+
+    pub fn transfer_advanced(&self) -> bool {
+        matches!(
+            (self.samples.front(), self.samples.back()),
+            (Some((_, first)), Some((_, last))) if last > first
+        )
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Parser {
     pending: Vec<u8>,
@@ -75,7 +125,7 @@ pub struct Parser {
     pub stats: Stats,
     pub metadata: Option<Metadata>,
     pub placements: BTreeMap<u8, Placement>,
-    pub region_exec: BTreeMap<u8, Vec<u32>>,
+    pub cell_samples: BTreeMap<(u8, u16), CellSamples>,
     pub latest_record: Option<Record>,
 }
 
@@ -89,9 +139,12 @@ impl Parser {
         self.parse(true)
     }
 
-    pub fn median_exec(&self, region_id: u8) -> Option<u32> {
-        let values = self.region_exec.get(&region_id)?;
-        values.get(values.len() / 2).copied()
+    pub fn cell(&self, region_id: u8, aggressor_idx: u16) -> Option<&CellSamples> {
+        self.cell_samples.get(&(region_id, aggressor_idx))
+    }
+
+    pub fn cell_median(&self, region_id: u8, aggressor_idx: u16) -> Option<u32> {
+        self.cell(region_id, aggressor_idx)?.median()
     }
 
     fn parse(&mut self, eof: bool) -> ParseDelta {
@@ -200,6 +253,7 @@ impl Parser {
             let name_end = raw_name.iter().position(|byte| *byte == 0).unwrap_or(8);
             let placement = Placement {
                 id: payload[offset],
+                flags: payload[offset + 1],
                 name: String::from_utf8_lossy(&raw_name[..name_end]).into_owned(),
                 rel_cost: u16_at(payload, offset + 2),
                 arena_addr: u32_at(payload, offset + 4),
@@ -238,26 +292,31 @@ impl Parser {
                 reserved: u32_at(chunk, 28),
             };
 
-            if self
-                .expect_seq
-                .is_some_and(|expected| record.seq as u64 != expected)
-            {
-                self.stats.gaps += 1;
-            }
-            self.expect_seq = Some(record.seq as u64 + 1);
-            if record.flags & FLAG_CYCCNT_WRAP != 0 {
-                self.stats.wrapped += 1;
-            }
-
-            let values = self.region_exec.entry(record.region_id).or_default();
-            let index = values.partition_point(|value| *value <= record.exec_cyc);
-            values.insert(index, record.exec_cyc);
-            self.latest_record = Some(record);
+            self.observe_record(record);
         }
 
-        self.stats.records += count as u64;
         delta.records += count as u64;
         true
+    }
+
+    pub(crate) fn observe_record(&mut self, record: Record) {
+        if self
+            .expect_seq
+            .is_some_and(|expected| record.seq as u64 != expected)
+        {
+            self.stats.gaps += 1;
+        }
+        self.expect_seq = Some(record.seq as u64 + 1);
+        if record.flags & FLAG_CYCCNT_WRAP != 0 {
+            self.stats.wrapped += 1;
+        }
+
+        self.cell_samples
+            .entry((record.region_id, record.aggressor_idx))
+            .or_default()
+            .push(record.exec_cyc, record.reserved);
+        self.latest_record = Some(record);
+        self.stats.records += 1;
     }
 
     fn skip_byte(&mut self, pos: usize, delta: &mut ParseDelta) {
@@ -369,7 +428,7 @@ mod tests {
                 "split at {split}"
             );
             assert_eq!(
-                split_parser.region_exec, whole.region_exec,
+                split_parser.cell_samples, whole.cell_samples,
                 "split at {split}"
             );
             assert_eq!(split_ascii, whole_ascii, "split at {split}");
@@ -379,7 +438,7 @@ mod tests {
         assert_eq!(whole.stats.records, 2);
         assert_eq!(whole.stats.gaps, 1);
         assert_eq!(whole.stats.false_sync, 1);
-        assert_eq!(whole.median_exec(3), Some(352_088));
+        assert_eq!(whole.cell_median(3, 0), Some(352_088));
     }
 
     #[test]
@@ -399,9 +458,61 @@ mod tests {
 
         assert_eq!(chunked.stats, whole.stats);
         assert_eq!(chunked.metadata, whole.metadata);
-        assert_eq!(chunked.region_exec, whole.region_exec);
+        assert_eq!(chunked.cell_samples, whole.cell_samples);
         assert_eq!(whole.stats.frames, 1);
         assert_eq!(whole.stats.batch_frames, 1);
         assert_eq!(whole.stats.records_before_header, 3);
+    }
+
+    #[test]
+    fn placement_flags_and_checked_arena_range_survive_the_header() {
+        let mut payload = vec![0; 60];
+        payload[17] = 1;
+        payload[19] = 32;
+        payload[40] = 6;
+        payload[41] = PLACEMENT_ALT_ADDR;
+        payload[44..48].copy_from_slice(&0x2003_9000u32.to_le_bytes());
+        payload[48..52].copy_from_slice(&2944u32.to_le_bytes());
+        payload[52..58].copy_from_slice(b"SRAM2b");
+        let mut parser = Parser::default();
+
+        parser.feed(&frame(0, &payload));
+
+        let placement = parser.placements.get(&6).unwrap();
+        assert_eq!(placement.flags, PLACEMENT_ALT_ADDR);
+        assert_eq!(placement.arena_end(), Some(0x2003_9b80));
+        assert!(!placement.is_primary());
+
+        let overflowing = Placement {
+            arena_addr: u32::MAX,
+            arena_size: 2,
+            ..placement.clone()
+        };
+        assert_eq!(overflowing.arena_end(), None);
+    }
+
+    #[test]
+    fn cell_samples_keep_a_bounded_recent_window() {
+        let mut samples = CellSamples::default();
+        for value in 0..=CELL_SAMPLE_LIMIT as u32 {
+            samples.push(value, value);
+        }
+
+        assert_eq!(samples.len(), CELL_SAMPLE_LIMIT);
+        assert_eq!(samples.samples.front(), Some(&(1, 1)));
+        assert_eq!(samples.median(), Some(1 + CELL_SAMPLE_LIMIT as u32 / 2));
+    }
+
+    #[test]
+    fn transfer_proof_uses_only_the_retained_window() {
+        let mut samples = CellSamples::default();
+        samples.push(1, 1);
+        samples.push(2, 2);
+        for value in 0..CELL_SAMPLE_LIMIT {
+            samples.push(value as u32, 2);
+        }
+
+        assert_eq!(samples.len(), CELL_SAMPLE_LIMIT);
+        assert!(!samples.transfer_advanced());
     }
 }

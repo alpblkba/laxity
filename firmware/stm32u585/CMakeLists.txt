@@ -90,6 +90,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${LAXITY_CUBE_U5}/Drivers/BSP/B-U585I-IOT02A/b_u585i_iot02a_audio.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/kernels/null_probe.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/aggressors/gpdma_m2m.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/kernels/read_loop.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../bench/aggressors/gpdma_stress.c
 
     # the MXCHIP driver and the NetX Duo glue for it, referenced from the Cube package rather
     # than copied in. CubeMX owns firmware/stm32u585/Drivers and Middlewares and deletes what it

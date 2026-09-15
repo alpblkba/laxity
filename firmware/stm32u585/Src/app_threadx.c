@@ -28,6 +28,8 @@
 #include "memory_map.h"
 #include "null_probe.h"
 #include "gpdma_m2m.h"
+#include "gpdma_stress.h"
+#include "read_loop.h"
 #include "qos/telemetry.h"
 #include "net_udp_export.h"
 #include "sensors.h"
@@ -102,7 +104,22 @@ _Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
  * buffers after it. */
 #define LAXITY_REGION_SLICE  (LAXITY_ARENA_ALIGN + 2u * LAXITY_AGGR_MAX)
 
-#define LAXITY_SPAN_BYTES    ((QOS_SRAM3_BASE - QOS_SRAM1_BASE) + LAXITY_REGION_SLICE + LAXITY_ARENA_ALIGN)
+/* the stress experiment gets its own window in every region, clear of the arenas and of the
+ * mem2mem buffers. the offsets differ per region because SRAM2 is 64 KB and cannot hold a window
+ * at the offset the other two use. each one is checked against its region at run time rather than
+ * trusted, the same way the arenas are. */
+#define LAXITY_STRESS_BYTES  (20u * 1024u)
+#define LAXITY_STRESS_OFF_S1 0x10000u
+#define LAXITY_STRESS_OFF_S2 0x0A000u
+#define LAXITY_STRESS_OFF_S3 0x10000u
+
+/* the read loop victim, one arena alignment of SRAM1, sitting where an arena would sit and clear
+ * of everything else in that region. */
+#define LAXITY_VICTIM_OFF_S1 0x0C000u
+
+/* the reservation now has to reach the SRAM3 stress window as well as the SRAM3 arena, and the
+ * window is the one further in. */
+#define LAXITY_SPAN_BYTES    ((QOS_SRAM3_BASE - QOS_SRAM1_BASE) + LAXITY_STRESS_OFF_S3 + LAXITY_STRESS_BYTES)
 
 /* repetitions of the whole cross per pass. the schedule reshuffles and repeats, so the sample
  * count per cell comes from how long the capture runs rather than from this number, and a small
@@ -162,6 +179,84 @@ static uint8_t        *laxity_aggr_dst[LAXITY_AGGR_REGIONS];
 /* bytes per aggressor buffer. the smallest is well under any buffering on the path and the
  * largest is bounded by SRAM2, which is 64 KB and has to hold an arena and both buffers. */
 static const uint32_t  laxity_footprints[LAXITY_FOOTPRINTS] = { 1024u, 4096u, 8192u, 16384u };
+
+/* the stress experiment.
+ *
+ * which victim runs, which sweep is active and which region the aggressor sits in are all chosen
+ * at run time from the console, so one image produces every configuration. a configuration per
+ * binary would put a relink inside every measured difference, and a relink on its own has already
+ * moved a median here by 85 cycles.
+ *
+ * a sweep is a list of aggressor configurations that differ in one knob. point 0 of the schedule
+ * is always the aggressor off, which is what the rest of the sweep is read against. */
+#define LAXITY_VICTIM_INFER  0u
+#define LAXITY_VICTIM_READ   1u
+
+#define LAXITY_SWEEP_BW      0u
+#define LAXITY_SWEEP_XACT    1u
+#define LAXITY_SWEEP_CHAN    2u
+#define LAXITY_SWEEP_STRIDE  3u
+#define LAXITY_SWEEPS        4u
+#define LAXITY_SWEEP_MAX_PTS 6u
+
+/* cells per pass: the off cell plus the points of the active sweep. */
+#define LAXITY_STRESS_CELLS    (1u + LAXITY_SWEEP_MAX_PTS)
+#define LAXITY_STRESS_REPS     8u
+#define LAXITY_STRESS_SCHEDULE (LAXITY_STRESS_REPS * LAXITY_STRESS_CELLS)
+
+static const struct {
+  const char      *name;
+  uint8_t          points;
+  qos_stress_cfg_t pt[LAXITY_SWEEP_MAX_PTS];
+} laxity_sweeps[LAXITY_SWEEPS] = {
+  /* bandwidth at a fixed transaction size. width and block stay put and only the trigger rate
+   * moves, so bytes per second and transactions per second rise together and this sweep on its own
+   * cannot separate them. it is the axis the other three are read against. */
+  { "bw", 5, {
+      { 1u, 4u, 256u, 0u,  50000u },
+      { 1u, 4u, 256u, 0u, 100000u },
+      { 1u, 4u, 256u, 0u, 200000u },
+      { 1u, 4u, 256u, 0u, 400000u },
+      { 1u, 4u, 256u, 0u, 800000u },
+  } },
+  /* transactions at a fixed bandwidth. the block is a byte count, so holding it and the trigger
+   * rate fixed while the width falls from 4 to 1 leaves the byte rate exactly where it was and
+   * multiplies the transaction rate by four. this is the sweep that separates the first two
+   * hypotheses, and it is the reason the width knob exists. */
+  { "xact", 3, {
+      { 1u, 4u, 256u, 0u, 200000u },
+      { 1u, 2u, 256u, 0u, 200000u },
+      { 1u, 1u, 256u, 0u, 200000u },
+  } },
+  /* channel count at a fixed total bandwidth. the block is divided by the channel count, so the
+   * bytes and the transactions per second are the same at every point and the only thing that
+   * changes is how many masters are asking. */
+  { "chan", 3, {
+      { 1u, 4u, 512u, 0u, 200000u },
+      { 2u, 4u, 256u, 0u, 200000u },
+      { 4u, 4u, 128u, 0u, 200000u },
+  } },
+  /* address stride. bytes and transactions are constant across the whole sweep and only where
+   * they land moves, so anything this finds belongs to the address rather than to the load. */
+  { "stride", 6, {
+      { 1u, 4u, 256u,   0u, 200000u },
+      { 1u, 4u, 256u,   4u, 200000u },
+      { 1u, 4u, 256u,  12u, 200000u },
+      { 1u, 4u, 256u,  28u, 200000u },
+      { 1u, 4u, 256u,  60u, 200000u },
+      { 1u, 4u, 256u, 124u, 200000u },
+  } },
+};
+
+static uint8_t  laxity_victim = LAXITY_VICTIM_INFER;
+static uint8_t  laxity_sweep = LAXITY_SWEEP_BW;
+static uint8_t  laxity_stress_region = QOS_REGION_SRAM3;
+static uint8_t  laxity_stress_ok;
+static uint8_t  laxity_stress_point = 0xFFu;   /* the point the channels are currently set to */
+static uint32_t laxity_stress_base[LAXITY_AGGR_REGIONS];
+static uint32_t laxity_read_acc;               /* consumes the loads so none of them is dead */
+static uint8_t *laxity_victim_buf;
+static uint16_t laxity_stress_schedule[LAXITY_STRESS_SCHEDULE];
 
 /* the cross, built at start up rather than written out by hand. */
 static struct {
@@ -422,7 +517,70 @@ static uint8_t laxity_place(void)
   if (laxity_arena[4] != laxity_arena[0]) { return 0u; }
   /* and the alternate address has to be a different one, or it would measure nothing. */
   if (laxity_arena[3] == laxity_arena[1]) { return 0u; }
+
+  /* the stress windows, one per region, and the read loop victim in SRAM1.
+   *
+   * every one is checked against its region and against the reservation before it is used. a
+   * window that fell outside its region would have the aggressor competing for memory the
+   * experiment is not measuring, and it would do so while every liveness count still advanced. */
+  {
+    static const uint32_t offsets[LAXITY_AGGR_REGIONS] = {
+      LAXITY_STRESS_OFF_S1, LAXITY_STRESS_OFF_S2, LAXITY_STRESS_OFF_S3
+    };
+    uintptr_t span_lo = (uintptr_t)laxity_arena_span;
+    uintptr_t span_hi = span_lo + sizeof laxity_arena_span;
+
+    for (uint32_t r = 0u; r < LAXITY_AGGR_REGIONS; ++r)
+    {
+      const qos_mem_region_t *reg = qos_mem_region((uint8_t)(QOS_REGION_SRAM1 + r));
+      uintptr_t lo, hi;
+      if (reg == NULL) { return 0u; }
+      lo = (uintptr_t)reg->base + offsets[r];
+      hi = lo + LAXITY_STRESS_BYTES;
+      if (hi > ((uintptr_t)reg->base + reg->size)) { return 0u; }
+      if (lo < span_lo || hi > span_hi) { return 0u; }
+      /* and clear of the arena and the mem2mem buffers in the same region, which end one arena
+       * alignment plus two maximum footprints above the arena. */
+      if (lo < ((uintptr_t)laxity_arena[r] + LAXITY_ARENA_ALIGN + 2u * LAXITY_AGGR_MAX)) { return 0u; }
+      laxity_stress_base[r] = (uint32_t)lo;
+    }
+
+    {
+      const qos_mem_region_t *reg = qos_mem_region(QOS_REGION_SRAM1);
+      uintptr_t lo = (uintptr_t)reg->base + LAXITY_VICTIM_OFF_S1;
+      uintptr_t hi = lo + (QOS_READ_LOOP_WORDS * 4u);
+      if (hi > ((uintptr_t)reg->base + reg->size)) { return 0u; }
+      if (lo < span_lo || hi > span_hi) { return 0u; }
+      if (hi > (uintptr_t)laxity_stress_base[0]) { return 0u; }
+      laxity_victim_buf = (uint8_t *)lo;
+    }
+  }
+
   return 1u;
+}
+
+/* put the channels into the configuration the cell asks for, or stop them for the off cell.
+ *
+ * only on a change, since a stop and a start cost more than the comparison and the schedule
+ * repeats points. the region is a run time choice and the window for it was validated above. */
+static void laxity_set_stress(uint8_t point)
+{
+  uint32_t r;
+
+  if (point == laxity_stress_point) { return; }
+  laxity_stress_point = point;
+
+  if (point == 0u || !laxity_stress_ok)
+  {
+    qos_stress_stop();
+    return;
+  }
+
+  r = (uint32_t)laxity_stress_region - QOS_REGION_SRAM1;
+  if (r >= LAXITY_AGGR_REGIONS) { qos_stress_stop(); return; }
+
+  (void)qos_stress_start(laxity_stress_base[r], LAXITY_STRESS_BYTES,
+                         &laxity_sweeps[laxity_sweep].pt[point - 1u]);
 }
 
 static void laxity_build_cells(void)
@@ -495,6 +653,26 @@ static void laxity_shuffle(void)
     uint16_t t = laxity_schedule[i];
     laxity_schedule[i] = laxity_schedule[j];
     laxity_schedule[j] = t;
+  }
+}
+
+/* the off cell plus the active sweep's points, each repeated, then shuffled.
+ *
+ * shuffled for the same reason the arena cross is: thermal drift and flash state otherwise
+ * correlate with position in the run, and a sweep read off a monotonically ordered schedule would
+ * carry that drift as if it were the shape of the curve. */
+static void laxity_stress_shuffle(void)
+{
+  uint32_t cells = 1u + (uint32_t)laxity_sweeps[laxity_sweep].points;
+  uint32_t n = LAXITY_STRESS_REPS * cells;
+
+  for (uint32_t i = 0u; i < n; ++i) { laxity_stress_schedule[i] = (uint16_t)(i % cells); }
+  for (uint32_t i = n - 1u; i > 0u; --i)
+  {
+    uint32_t j = laxity_rand() % (i + 1u);
+    uint16_t t = laxity_stress_schedule[i];
+    laxity_stress_schedule[i] = laxity_stress_schedule[j];
+    laxity_stress_schedule[j] = t;
   }
 }
 
@@ -587,6 +765,7 @@ static VOID laxity_infer_entry(ULONG argument)
   laxity_placed_ok = laxity_place();
   if (laxity_placed_ok) { qos_telemetry_set_placements(laxity_placements, LAXITY_LABELS); }
   laxity_aggr_ok = qos_gpdma_m2m_init() ? 1u : 0u;
+  laxity_stress_ok = qos_stress_init() ? 1u : 0u;
   laxity_sensor_ok = qos_sensors_init() ? 1u : 0u;
   laxity_audio_ok = qos_audio_init() ? 1u : 0u;
   laxity_btn_idle = (uint8_t)HAL_GPIO_ReadPin(USER_Button_GPIO_Port, USER_Button_Pin);
@@ -616,22 +795,44 @@ static VOID laxity_infer_entry(ULONG argument)
 
   while (1)
   {
-    laxity_shuffle();
+    /* which victim runs is read once per pass rather than per iteration, so a console command
+       never lands between the shuffle and the schedule it produced. */
+    uint8_t victim = laxity_victim;
+    uint32_t entries;
 
-    for (uint32_t i = 0u; i < LAXITY_SCHEDULE; ++i)
+    if (victim == LAXITY_VICTIM_READ)
+    {
+      laxity_stress_shuffle();
+      entries = LAXITY_STRESS_REPS * (1u + (uint32_t)laxity_sweeps[laxity_sweep].points);
+    }
+    else
+    {
+      laxity_shuffle();
+      entries = LAXITY_SCHEDULE;
+    }
+
+    for (uint32_t i = 0u; i < entries; ++i)
     {
       qos_infer_record_t rec = {0};
-      uint32_t cell = laxity_schedule[i];
-      uint32_t slot = laxity_cells[cell].arena_slot;
-      uint8_t  aggr = laxity_cells[cell].aggr_region;
-      uint8_t  foot = laxity_cells[cell].foot_idx;
       uint32_t cycles = 0u;
       bool wrapped = false;
-      int run;
+      uint32_t slot = 0u;
+      uint8_t  point = 0u;
+      int run = 0;
 
-      /* the aggressor is set before the window opens and left alone inside it, so nothing this
-       * loop does to the channel is counted as part of the inference. */
-      laxity_set_aggressor(aggr, foot);
+      if (victim == LAXITY_VICTIM_READ)
+      {
+        point = (uint8_t)laxity_stress_schedule[i];
+        /* set before the window opens and left alone inside it, so nothing this loop does to the
+           channels is counted as part of the measured read. */
+        laxity_set_stress(point);
+      }
+      else
+      {
+        uint32_t cell = laxity_schedule[i];
+        slot = laxity_cells[cell].arena_slot;
+        laxity_set_aggressor(laxity_cells[cell].aggr_region, laxity_cells[cell].foot_idx);
+      }
 
       /* all three are outside the cycle counter window below. the sensor decides its own spacing
          from its output data rate, so this only offers it the chance, and the microphone poll
@@ -641,34 +842,66 @@ static VOID laxity_infer_entry(ULONG argument)
       laxity_poll_button();
 
       rec.release_cyc = qos_cyc_now();
-      run = laxity_infer(slot, &cycles, &wrapped);
+
+      if (victim == LAXITY_VICTIM_READ)
+      {
+        /* a known number of loads over a fixed buffer, and nothing else inside the window. the
+           accumulator is kept so the loads cannot be removed as dead. */
+        uint32_t t0 = qos_cyc_now();
+        laxity_read_acc += qos_read_loop((const volatile uint32_t *)laxity_victim_buf);
+        uint32_t t1 = qos_cyc_now();
+        cycles = qos_cyc_delta(t0, t1);
+        wrapped = qos_cyc_wrapped(t0, t1);
+      }
+      else
+      {
+        run = laxity_infer(slot, &cycles, &wrapped);
+      }
       laxity_live.rc = run;
 
       if (run == 0)
       {
-        int argmax = laxity_argmax();
         laxity_live.cycles = cycles;
-        laxity_live.argmax = argmax;
-        laxity_live.worst_ppm = laxity_worst_ppm();
-        /* the golden check runs on every inference rather than once, since a wrongly placed arena
-           that still returns a number would otherwise pass unnoticed. it only means anything
-           against the golden window, so live classifications are never counted as mismatches. */
-        if (laxity_input_mode == LAXITY_INPUT_GOLDEN && argmax != LAXITY_GOLDEN_CLASS)
+        if (victim != LAXITY_VICTIM_READ)
         {
-          laxity_live.mismatches++;
+          int argmax = laxity_argmax();
+          laxity_live.argmax = argmax;
+          laxity_live.worst_ppm = laxity_worst_ppm();
+          /* the golden check runs on every inference rather than once, since a wrongly placed arena
+             that still returns a number would otherwise pass unnoticed. it only means anything
+             against the golden window, so live classifications are never counted as mismatches. */
+          if (laxity_input_mode == LAXITY_INPUT_GOLDEN && argmax != LAXITY_GOLDEN_CLASS)
+          {
+            laxity_live.mismatches++;
+          }
         }
       }
 
       rec.exec_cyc = cycles;
-      rec.region_id = laxity_placements[slot].id;
 
-      /* which aggressor was running, and the proof that it was. the count is polled after the
-       * window so it covers it, and it advances only when the channel actually completed a
-       * block, which is what tells a null result apart from a channel that never started. */
-      rec.aggressor_idx = (uint16_t)(((uint16_t)foot << 8) | aggr);
-      rec.reserved = qos_gpdma_m2m_completions();
+      if (victim == LAXITY_VICTIM_READ)
+      {
+        /* the victim is the read loop buffer, which is in SRAM1 and never moves, so region_id
+           names SRAM1 for every record of a stress run. the point index goes where the footprint
+           index goes, and which sweep those points belong to is in the capture metadata, because
+           the record has no field left and the wire format is not being changed for this. */
+        rec.region_id = QOS_REGION_SRAM1;
+        rec.aggressor_idx = (uint16_t)(((uint16_t)point << 8)
+                                       | (point ? laxity_stress_region : 0u));
+        rec.reserved = qos_stress_completions();
+      }
+      else
+      {
+        rec.region_id = laxity_placements[slot].id;
+        rec.aggressor_idx = (uint16_t)(((uint16_t)laxity_cells[laxity_schedule[i]].foot_idx << 8)
+                                       | laxity_cells[laxity_schedule[i]].aggr_region);
+        rec.reserved = qos_gpdma_m2m_completions();
+      }
       laxity_live.aggr_completions = rec.reserved;
-      /* cpu_cyc and stall_cyc stay zero, as do model_id and aggressor_idx. there is no attribution measurement and no aggressor in this block, and writing a plausible value into a field nothing measured is how a number nobody can defend gets into a capture. */
+
+      /* cpu_cyc, stall_cyc and model_id stay zero. there is no attribution measurement here, and
+         writing a plausible value into a field nothing measured is how a number nobody can defend
+         gets into a capture. */
       rec.flags = wrapped ? (uint8_t)QOS_FLAG_CYCCNT_WRAP : 0u;
       (void)qos_telemetry_push(&rec);
 
@@ -718,6 +951,44 @@ static void laxity_say(char *line, int n)
 }
 
 /* the exporter owns USART1. nothing else transmits, so a status line cannot interleave into a frame and cost a record. */
+/* read one console command byte if one is waiting.
+ *
+ * this is what makes the four knobs run time choices. a configuration per binary would put a
+ * relink inside every measured difference, and a relink on its own has moved a median here by 85
+ * cycles, so the whole experiment would be unreadable.
+ *
+ * it runs in the exporter thread because that thread owns USART1. a second thread touching the
+ * same peripheral would interleave with a frame and cost a record. the timeout is zero, so a tick
+ * with nothing waiting costs a register read.
+ *
+ *   v  victim is the inference path        r  victim is the read loop
+ *   0  bandwidth sweep                     1  transactions at fixed bandwidth
+ *   2  channel count at fixed bandwidth    3  address stride
+ *   a  aggressor in SRAM1                  b  SRAM2        c  SRAM3
+ */
+static void laxity_poll_console(void)
+{
+  uint8_t c;
+
+  if (HAL_UART_Receive(&huart1, &c, 1u, 0u) != HAL_OK) { return; }
+
+  switch (c)
+  {
+    case 'v': laxity_victim = LAXITY_VICTIM_INFER; break;
+    case 'r': laxity_victim = LAXITY_VICTIM_READ;  break;
+    case '0': case '1': case '2': case '3':
+      laxity_sweep = (uint8_t)(c - '0');
+      /* the point index is invalidated rather than kept, so the next cell reprograms the channels
+         even if it happens to carry the same number as the last one did under the old sweep. */
+      laxity_stress_point = 0xFFu;
+      break;
+    case 'a': laxity_stress_region = QOS_REGION_SRAM1; laxity_stress_point = 0xFFu; break;
+    case 'b': laxity_stress_region = QOS_REGION_SRAM2; laxity_stress_point = 0xFFu; break;
+    case 'c': laxity_stress_region = QOS_REGION_SRAM3; laxity_stress_point = 0xFFu; break;
+    default: break;
+  }
+}
+
 static VOID laxity_export_entry(ULONG argument)
 {
   char line[240];
@@ -731,6 +1002,8 @@ static VOID laxity_export_entry(ULONG argument)
 
   while (1)
   {
+    laxity_poll_console();
+
     size_t n = qos_telemetry_drain(laxity_export_buf, sizeof laxity_export_buf);
     if (n > 0u)
     {
@@ -772,6 +1045,27 @@ static VOID laxity_export_entry(ULONG argument)
                    (unsigned long)laxity_placements[3].arena_addr,
                    (unsigned long)laxity_placements[4].arena_addr,
                    (unsigned)LAXITY_ARENA_BYTES));
+
+      {
+        /* the active configuration, so a capture taken while this was on the wire can be checked
+           against the name it was filed under rather than against someone's memory of it. */
+        uint8_t  pt = (laxity_stress_point == 0xFFu) ? 0u : laxity_stress_point;
+        const qos_stress_cfg_t *c = (pt > 0u) ? &laxity_sweeps[laxity_sweep].pt[pt - 1u] : NULL;
+        laxity_say(line, snprintf(line, sizeof line,
+                     "stress victim=%s sweep=%s region=%u ok=%u point=%u/%u "
+                     "chan=%u width=%u block=%lu stride=%lu hz=%lu Bps=%lu xps=%lu xfer=%lu\r\n",
+                     (laxity_victim == LAXITY_VICTIM_READ) ? "read" : "infer",
+                     laxity_sweeps[laxity_sweep].name,
+                     (unsigned)laxity_stress_region, (unsigned)laxity_stress_ok,
+                     (unsigned)pt, (unsigned)laxity_sweeps[laxity_sweep].points,
+                     (unsigned)(c ? c->channels : 0u), (unsigned)(c ? c->width : 0u),
+                     (unsigned long)(c ? c->block_bytes : 0u),
+                     (unsigned long)(c ? c->stride : 0u),
+                     (unsigned long)(c ? c->trigger_hz : 0u),
+                     (unsigned long)(c ? qos_stress_bytes_per_s(c) : 0u),
+                     (unsigned long)(c ? qos_stress_xacts_per_s(c) : 0u),
+                     (unsigned long)qos_stress_completions()));
+      }
 
       {
         float t = qos_sensors_temperature();

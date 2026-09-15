@@ -1,0 +1,11 @@
+# the thirty-third push fills the production ring's target-drop path.
+schema 1
+name dropped-record
+clock 160000000 159999900
+period_cycles 3200000
+pace_ms 20
+header_flags 1
+null_probe 14 14 118 118 128
+placements stm32u585
+overflow 33 1 0 0 320898 0
+emit 1 1 0 0 320898 0 1

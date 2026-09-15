@@ -1,0 +1,12 @@
+# a live source sends valid telemetry, goes silent for three seconds, then resumes.
+schema 1
+name silent-source
+clock 160000000 159999900
+period_cycles 3200000
+pace_ms 50
+header_flags 1
+null_probe 14 14 118 118 128
+placements stm32u585
+emit 2 1 0 0 320898 0 1
+silence 3000
+emit 2 1 0 0 320898 0 1

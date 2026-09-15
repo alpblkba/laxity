@@ -1,0 +1,10 @@
+# eight records arrive per drain, followed by a visible live pacing interval.
+schema 1
+name bursty
+clock 160000000 159999900
+period_cycles 3200000
+pace_ms 250
+header_flags 1
+null_probe 14 14 118 118 128
+placements stm32u585
+emit 64 3 3 3 352088 0 8

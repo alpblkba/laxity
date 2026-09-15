@@ -1,0 +1,14 @@
+# measured STM32U585 placement medians with no aggressor.
+schema 1
+name baseline
+clock 160000000 159999900
+period_cycles 3200000
+pace_ms 20
+header_flags 1
+null_probe 14 14 118 118 128
+placements stm32u585
+emit 8 1 0 0 320898 0 4
+emit 8 2 0 0 320901 0 4
+emit 8 3 0 0 320899 0 4
+emit 8 5 0 0 320898 0 4
+emit 8 6 0 0 320901 0 4

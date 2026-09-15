@@ -1,0 +1,12 @@
+# one alternate placement moves in synthetic metadata while the device regions remain unspecified.
+schema 1
+name metadata-change
+clock 160000000 159999900
+period_cycles 3200000
+pace_ms 100
+header_flags 1
+null_probe 14 14 118 118 128
+placements stm32u585
+emit 3 6 0 0 320901 0 1
+placements stm32u585-changed
+emit 3 6 0 0 320901 0 1

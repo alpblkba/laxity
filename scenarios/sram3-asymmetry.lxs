@@ -1,0 +1,16 @@
+# measured SRAM3 cross-region asymmetry, without a physical-path claim.
+schema 1
+name sram3-asymmetry
+clock 160000000 159999900
+period_cycles 3200000
+pace_ms 40
+header_flags 1
+null_probe 14 14 118 118 128
+placements stm32u585
+emit 4 1 0 0 320898 0 4
+emit 4 2 0 0 320901 0 4
+emit 4 3 0 0 320899 0 4
+emit 8 1 3 3 335843 0 4
+emit 8 2 3 3 335848 0 4
+emit 8 3 1 3 320967 0 4
+emit 8 3 2 3 320937 0 4

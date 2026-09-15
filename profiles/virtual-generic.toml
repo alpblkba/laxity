@@ -1,0 +1,50 @@
+schema_version = 1
+
+[device]
+id = "virtual-generic"
+display_name = "Virtual generic target"
+architecture = "synthetic"
+
+[[memory_regions]]
+id = "memory-alpha"
+label = "MEM-A"
+start = 0x10000000
+size = 0x00010000
+kind = "virtual"
+
+[[memory_regions]]
+id = "memory-beta"
+label = "MEM-B"
+start = 0x10010000
+size = 0x00020000
+kind = "virtual"
+
+[[memory_regions]]
+id = "memory-gamma"
+label = "MEM-C"
+start = 0x10030000
+size = 0x00008000
+kind = "virtual"
+
+[[requesters]]
+id = "host-cpu"
+label = "Host CPU"
+kind = "cpu"
+
+[[requesters]]
+id = "copy-engine"
+label = "Copy engine"
+kind = "dma"
+
+[capabilities]
+cycle_counter = true
+stall_cycles = false
+cache_metrics = false
+dma_telemetry = true
+placement_control = true
+physical_addresses = false
+physical_topology = false
+control_channel = false
+energy = false
+temperature = false
+bandwidth = false

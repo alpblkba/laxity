@@ -1,0 +1,66 @@
+schema_version = 1
+
+[device]
+id = "stm32u585"
+display_name = "B-U585I-IOT02A / STM32U585AI"
+architecture = "Cortex-M33"
+clock_hz = 160000000
+
+[[memory_regions]]
+id = "sram1"
+label = "SRAM1"
+start = 0x20000000
+size = 0x00030000
+kind = "sram"
+logical_domain = "main"
+metadata = { activation_target = "true" }
+
+[[memory_regions]]
+id = "sram2"
+label = "SRAM2"
+start = 0x20030000
+size = 0x00010000
+kind = "sram"
+logical_domain = "main"
+metadata = { activation_target = "true" }
+
+[[memory_regions]]
+id = "sram3"
+label = "SRAM3"
+start = 0x20040000
+size = 0x00080000
+kind = "sram"
+logical_domain = "main"
+metadata = { activation_target = "true" }
+
+[[memory_regions]]
+id = "sram4"
+label = "SRAM4"
+start = 0x28000000
+size = 0x00004000
+kind = "sram"
+logical_domain = "SmartRun"
+metadata = { activation_target = "false" }
+
+[[requesters]]
+id = "cpu"
+label = "Cortex-M33"
+kind = "cpu"
+
+[[requesters]]
+id = "gpdma1"
+label = "GPDMA1"
+kind = "dma"
+
+[capabilities]
+cycle_counter = true
+stall_cycles = true
+cache_metrics = false
+dma_telemetry = true
+placement_control = true
+physical_addresses = true
+physical_topology = false
+control_channel = false
+energy = false
+temperature = false
+bandwidth = false

@@ -1,0 +1,774 @@
+#!/usr/bin/env python3
+"""laxity, the operator command for this repository.
+
+one entry point that finds the board, recognises which profile describes it, and drives the
+scripts that already exist under tools/. nothing here reimplements a build, a flash or a capture:
+every subcommand is a wrapper around tools/stm32/*.sh or tools/*.py, so there is one definition of
+each operation and this file cannot drift away from it.
+
+stdlib only, no virtual environment, no third party package.
+"""
+
+import argparse
+import glob
+import os
+import platform
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+# the symlink in ~/.local/bin is resolved, so the repository is found from the real file rather
+# than from the working directory or from an environment variable someone has to remember.
+ROOT = Path(__file__).resolve().parent.parent
+
+ANSI = re.compile(r"\033\[[0-9;]*m")
+IS_MAC = platform.system() == "Darwin"
+PORT_GLOB = "/dev/cu.usbmodem*" if IS_MAC else "/dev/ttyACM*"
+
+BOLD, DIM, RED, GREEN, RESET = "\033[1m", "\033[2m", "\033[31m", "\033[32m", "\033[0m"
+if not sys.stdout.isatty():
+    BOLD = DIM = RED = GREEN = RESET = ""
+
+
+def say(text=""):
+    print(text)
+
+
+def head(text):
+    print("\n%s%s%s" % (BOLD, text, RESET))
+
+
+def die(text, code=1):
+    print("%s%s%s" % (RED, text, RESET), file=sys.stderr)
+    raise SystemExit(code)
+
+
+def capture(cmd, timeout=30):
+    """run a command and return its combined output with colouring removed.
+
+    a missing binary and a non-zero exit are both ordinary here, because discovery asks questions
+    that are allowed to have no answer. the caller reads the text.
+    """
+    try:
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    return ANSI.sub("", done.stdout + done.stderr)
+
+
+def call(cmd, env=None, cwd=None):
+    """run a command with its output on this terminal and return its exit status."""
+    merged = dict(os.environ)
+    if env:
+        merged.update(env)
+    return subprocess.call(cmd, cwd=str(cwd or ROOT), env=merged)
+
+
+def need(cmd):
+    if shutil.which(cmd) is None:
+        die("%s is not on PATH. run laxity doctor." % cmd)
+
+
+# discovery -----------------------------------------------------------------------------------
+
+class Board:
+    def __init__(self, serial):
+        self.serial = serial
+        self.port = None
+        self.port_inferred = False
+        self.device_name = None
+        self.device_id = None
+        self.profile = None
+        self.why = None
+
+    @property
+    def label(self):
+        return self.profile.stem if self.profile else "unmatched"
+
+
+def probe_serials(listing):
+    """every distinct ST-LINK serial in the listing, in the order it prints them.
+
+    counting lines that contain "ST-LINK Probe" is wrong: the section heading is "Connected
+    ST-LINK Probes List", which contains that string, so one board counts as two. serials are the
+    identity the rest of this file uses anyway, so they are what gets counted.
+    """
+    seen = []
+    for line in listing.splitlines():
+        match = re.match(r"\s*ST-LINK\s+SN\s*:\s*(\S+)", line, re.I)
+        if match and match.group(1) not in seen:
+            seen.append(match.group(1))
+    return seen
+
+
+def listed_ports(listing):
+    """the virtual COM ports the programmer reports, narrowed to ST-LINK ones.
+
+    the UART section prints a block per port. an ST-LINK block names itself in Description or
+    Manufacturer, which is what separates it from a Bluetooth port or a debug console.
+    """
+    ports, block = [], {}
+    for line in listing.splitlines():
+        match = re.match(r"\s*(Port|Location|Description|Manufacturer)\s*:\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        key, value = match.group(1), match.group(2)
+        if key == "Port" and block:
+            ports.append(block)
+            block = {}
+        block[key] = value
+    if block:
+        ports.append(block)
+
+    prefix = "/dev/cu." if IS_MAC else "/dev/tty"
+    out = []
+    for block in ports:
+        location = block.get("Location", "")
+        text = (block.get("Description", "") + " " + block.get("Manufacturer", "")).upper()
+        if location.startswith(prefix) and ("STLINK" in text or "STMICRO" in text):
+            out.append(location)
+    return out
+
+
+def discover(identify=True):
+    """the boards attached to this host, with their port and their profile where known."""
+    listing = capture(["STM32_Programmer_CLI", "-l"]) if shutil.which("STM32_Programmer_CLI") else ""
+    boards = [Board(sn) for sn in probe_serials(listing)]
+
+    ports = listed_ports(listing)
+    if not ports:
+        # the programmer's UART section is the better source because it says which ports are
+        # ST-LINK ones. the glob is the fallback for when it reports nothing useful.
+        ports = sorted(glob.glob(PORT_GLOB))
+
+    if len(boards) == 1 and len(ports) == 1:
+        boards[0].port = ports[0]
+    elif boards and len(boards) == len(ports):
+        # the listing does not state which port belongs to which probe. order is the only thing
+        # left, and it is marked as a guess rather than presented as a fact.
+        for board, port in zip(boards, ports):
+            board.port = port
+            board.port_inferred = True
+
+    if identify:
+        for board in boards:
+            identify_board(board)
+    for board in boards:
+        board.profile, board.why = match_profile(board)
+    return boards, ports
+
+
+def identify_board(board):
+    """ask the probe which part it is attached to.
+
+    hotplug mode is used on purpose. the default connection resets and halts the core, and a
+    halted board is indistinguishable from a crashed one, which has cost this project several
+    rounds of misdiagnosis already. listing boards must not stop a running experiment.
+    """
+    text = capture(["STM32_Programmer_CLI", "-c", "port=SWD", "mode=HOTPLUG", "sn=" + board.serial])
+    name = re.search(r"Device name\s*:\s*(.+?)\s*$", text, re.M)
+    ident = re.search(r"Device ID\s*:\s*(\S+)", text, re.M)
+    if name:
+        board.device_name = name.group(1)
+    if ident:
+        board.device_id = ident.group(1)
+
+
+def normalise(text):
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def part_numbers(device_name):
+    """the part numbers a reported device name stands for.
+
+    the programmer prints a family as one string, "STM32U575/585", where the tail after the slash
+    is a suffix onto the head's prefix. expanding it here is what lets a profile name one exact
+    part instead of having to repeat the vendor's shorthand.
+    """
+    if not device_name:
+        return []
+    pieces = [p.strip() for p in device_name.split("/") if p.strip()]
+    if not pieces:
+        return []
+    out = [normalise(pieces[0])]
+    head_text = normalise(pieces[0])
+    for tail in pieces[1:]:
+        tail = normalise(tail)
+        out.append(tail)
+        if len(tail) < len(head_text):
+            out.append(head_text[: len(head_text) - len(tail)] + tail)
+    return out
+
+
+def profiles():
+    return sorted(p for p in (ROOT / "profiles").glob("*.toml"))
+
+
+def profile_id(path):
+    """device.id out of a profile, without a TOML parser.
+
+    tomllib would do this and is only in Python 3.11 and later. the field is one line in a known
+    table and the profiles are written by this project, so a two state scan is enough and the CLI
+    keeps working on an older interpreter.
+    """
+    section = None
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            section = stripped
+            continue
+        if section == "[device]":
+            match = re.match(r'id\s*=\s*"([^"]+)"', stripped)
+            if match:
+                return match.group(1)
+    return None
+
+
+def match_profile(board):
+    """which profile describes this board, and why it did not match when it did not.
+
+    the rule is one comparison: a profile matches when its device.id, lowercased with every
+    non-alphanumeric character removed, is one of the part numbers the probe reports under the same
+    normalisation, or a prefix of one. the prefix half is what lets a profile name the part while
+    the probe adds a package and flash suffix, as in STM32U585AI against stm32u585. adding a board
+    is adding a TOML file whose device.id is its part number.
+    """
+    if not board.device_name:
+        return None, "the probe did not report a device name, so nothing was matched"
+    candidates = part_numbers(board.device_name)
+    for path in profiles():
+        ident = normalise(profile_id(path))
+        if ident and any(c == ident or c.startswith(ident) for c in candidates):
+            return path, None
+    return None, "no profile in profiles/ has device.id in %s" % ", ".join(candidates)
+
+
+def choose(boards, wanted):
+    """the one board a command should act on."""
+    if not boards:
+        die("no ST-LINK found. laxity looked for probes in STM32_Programmer_CLI -l and for a "
+            "serial port matching %s. plug the board in, or check the cable carries data." % PORT_GLOB)
+    if wanted:
+        for board in boards:
+            if board.serial == wanted:
+                return board
+        die("no board with serial %s. seen: %s" % (wanted, ", ".join(b.serial for b in boards)))
+    if len(boards) == 1:
+        return boards[0]
+
+    if not sys.stdin.isatty():
+        die("%d boards attached and this is not a terminal, so nothing can be asked. "
+            "pass --board <serial>." % len(boards))
+    say("%d boards attached:" % len(boards))
+    for i, board in enumerate(boards, 1):
+        say("  %d) %s  %s  %s" % (i, board.serial, board.port or "no port", board.label))
+    while True:
+        answer = input("which one? [1-%d] " % len(boards)).strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(boards):
+            return boards[int(answer) - 1]
+
+
+def board_env(board):
+    """what the shell scripts read to target one probe out of several.
+
+    only the serial is exported. LAXITY_PORT exists too and is deliberately not used: it makes
+    capture.sh skip its own enumeration and record the serial as "override", which would put a run
+    in results/raw/ that cannot say which board produced it. the serial narrows the enumeration
+    instead, so capture.sh still resolves and records the real port.
+    """
+    return {"LAXITY_STLINK_SN": board.serial} if board.serial else {}
+
+
+# subcommands ---------------------------------------------------------------------------------
+
+def cmd_doctor(args):
+    status = call(["./tools/stm32/doctor.sh"])
+    head("boards")
+    boards, ports = discover(identify=not args.no_identify)
+    if not boards:
+        say("  no ST-LINK probe in STM32_Programmer_CLI -l")
+        if ports:
+            say("  serial ports present but not attributed to a probe: %s" % ", ".join(ports))
+        else:
+            say("  no serial port matching %s" % PORT_GLOB)
+        # doctor.sh greps its whole output for the text ST-LINK, and "No ST-Link detected!"
+        # contains it, so its board line reads ok with nothing attached. this section counts
+        # serial numbers instead and is the one to believe.
+        say("  %sthe board line above matches the text ST-LINK inside \"No ST-Link detected!\", "
+            "so it says ok either way. this section is the one that counted.%s" % (DIM, RESET))
+    for board in boards:
+        say("  %s  %s  %s" % (board.serial, board.port or "no port", board.label))
+        if board.why:
+            say("  %s%s%s" % (DIM, board.why, RESET))
+    say()
+    return status
+
+
+def cmd_boards(args):
+    boards, ports = discover(identify=not args.no_identify)
+    if not boards:
+        say("no board found.")
+        say("looked for ST-LINK probes in STM32_Programmer_CLI -l, and for serial ports matching %s."
+            % PORT_GLOB)
+        if ports:
+            say("serial ports present but not attributed to a probe: %s" % ", ".join(ports))
+        return 1
+    width = max(len(b.serial) for b in boards)
+    for i, board in enumerate(boards, 1):
+        port = board.port or "no port"
+        if board.port_inferred:
+            port += " (by listing order)"
+        say("%d) %-*s  %s" % (i, width, board.serial, port))
+        say("   device  %s" % (board.device_name or "not identified"))
+        say("   profile %s" % (str(board.profile.relative_to(ROOT)) if board.profile else "unmatched"))
+        if board.why:
+            say("   %s%s%s" % (DIM, board.why, RESET))
+    return 0
+
+
+def cmd_build(args):
+    return call(["./tools/stm32/build.sh"])
+
+
+def cmd_flash(args):
+    boards, _ = discover(identify=False)
+    board = choose(boards, args.board) if boards else None
+    if board is None:
+        die("no board to flash.")
+    if len(boards) > 1:
+        say("flashing %s" % board.serial)
+    return call(["./tools/stm32/flash.sh"], env=board_env(board))
+
+
+def cmd_capture(args):
+    boards, _ = discover(identify=False)
+    board = choose(boards, args.board)
+    return call(["./tools/stm32/capture.sh", args.out, str(args.seconds)], env=board_env(board))
+
+
+def cmd_analyse(args):
+    target = args.capture
+    if target is None:
+        runs = sorted((ROOT / "results" / "raw").glob("*/"), key=lambda p: p.stat().st_mtime)
+        if not runs:
+            die("no captures under results/raw/")
+        target = str(runs[-1])
+        say("newest capture: %s" % target)
+    return call(["./tools/analyse.py", target])
+
+
+def cmd_run(args):
+    for step in (cmd_build, cmd_flash):
+        status = step(args)
+        if status != 0:
+            die("%s failed, stopping before the capture." % step.__name__[4:])
+    status = cmd_capture(args)
+    if status != 0:
+        die("capture failed, nothing to analyse.")
+    runs = sorted((ROOT / "results" / "raw").glob("*%s*/" % args.out), key=lambda p: p.stat().st_mtime)
+    if not runs:
+        die("the capture reported success but no directory matching %s appeared." % args.out)
+    return call(["./tools/analyse.py", str(runs[-1])])
+
+
+def tui_binary(build_if_missing=True):
+    binary = ROOT / "build" / "laxity-tui" / "release" / "laxity-tui"
+    if binary.exists():
+        return binary
+    if not build_if_missing:
+        return None
+    need("cargo")
+    say("building the viewer, this happens once")
+    status = call(["cargo", "build", "--manifest-path", "tools/laxity-tui/Cargo.toml",
+                   "--release", "--locked", "--target-dir", "build/laxity-tui"])
+    if status != 0 or not binary.exists():
+        die("the viewer did not build.")
+    return binary
+
+
+def cmd_tui(args):
+    binary = tui_binary()
+    if args.file:
+        return call([str(binary), "--file", args.file])
+    boards, _ = discover(identify=True)
+    board = choose(boards, args.board)
+    if not board.port:
+        die("board %s has no serial port, so there is nothing to read." % board.serial)
+    cmd = [str(binary), "--serial", board.port]
+    if board.profile:
+        cmd += ["--profile", str(board.profile)]
+    else:
+        say("%sno profile matched, the viewer will run without a memory map%s" % (DIM, RESET))
+    return call(cmd)
+
+
+def cmd_sim(args):
+    scenario = ROOT / "scenarios" / (args.scenario + ".lxs")
+    if not scenario.exists():
+        available = sorted(p.stem for p in (ROOT / "scenarios").glob("*.lxs"))
+        die("no scenario %s. available: %s" % (args.scenario, ", ".join(available)))
+
+    sim = ROOT / "build" / "laxity-sim" / "laxity-sim"
+    if not sim.exists():
+        status = call(["./tools/laxity-sim/build.sh"])
+        if status != 0 or not sim.exists():
+            die("the simulator did not build.")
+    binary = tui_binary()
+
+    profile = ROOT / "profiles" / "virtual-generic.toml"
+    cmd = [str(binary), "--udp", str(args.port)]
+    if profile.exists():
+        cmd += ["--profile", str(profile)]
+
+    # the receiver binds first. UDP keeps nothing for a socket that is not bound yet, so a
+    # simulator started first sends its opening records into a closed port.
+    viewer = subprocess.Popen(cmd, cwd=str(ROOT))
+    time.sleep(1.0)
+    sender = subprocess.Popen([str(sim), "--scenario", args.scenario, "--seed", str(args.seed),
+                               "--udp", "127.0.0.1:%d" % args.port],
+                              cwd=str(ROOT), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        return viewer.wait()
+    finally:
+        sender.terminate()
+
+
+# wifi ------------------------------------------------------------------------------------------
+
+CREDENTIALS = Path("firmware/stm32u585/Inc/wifi_credentials.h")
+PLACEHOLDER = re.compile(r"REPLACE_ME|CHANGE_?ME|YOUR_?SSID", re.I)
+
+
+def wifi_interface():
+    """the Wi-Fi device name, from the system rather than assumed to be en0."""
+    if not IS_MAC:
+        return None
+    text = capture(["networksetup", "-listallhardwareports"])
+    block = None
+    for line in text.splitlines():
+        if line.startswith("Hardware Port:"):
+            block = line.split(":", 1)[1].strip()
+        elif line.startswith("Device:") and block == "Wi-Fi":
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def host_ssid(iface):
+    """the SSID this host is on, or None with the reason.
+
+    three sources are tried in order and each one is validated rather than trusted. the old
+    airport binary is not among them: it is gone from current macOS. recent macOS also withholds
+    the SSID from a process without Location Services authorisation, and it does so by answering
+    rather than by failing, so "not associated" and a literal "<redacted>" both have to be caught
+    or the CLI would write one of them into a header as if it were a network name.
+    """
+    tried = []
+
+    if iface:
+        text = capture(["networksetup", "-getairportnetwork", iface])
+        tried.append("networksetup -getairportnetwork %s" % iface)
+        match = re.search(r"Current Wi-?Fi Network:\s*(.+?)\s*$", text, re.M)
+        if match and "redacted" not in match.group(1).lower():
+            return match.group(1), None
+
+        text = capture(["ipconfig", "getsummary", iface])
+        tried.append("ipconfig getsummary %s" % iface)
+        match = re.search(r"^\s*SSID\s*:\s*(.+?)\s*$", text, re.M)
+        if match and "redacted" not in match.group(1).lower():
+            return match.group(1), None
+
+    text = capture(["system_profiler", "SPAirPortDataType"], timeout=40)
+    tried.append("system_profiler SPAirPortDataType")
+    match = re.search(r"Current Network Information:\s*\n\s*(.+?):\s*$", text, re.M)
+    if match and "redacted" not in match.group(1).lower():
+        return match.group(1), None
+
+    return None, ("the SSID could not be read. tried: %s. current macOS returns <redacted> or "
+                  "reports no association unless the calling program has Location Services "
+                  "permission, so grant it to this terminal or pass --ssid." % "; ".join(tried))
+
+
+def host_address(iface):
+    """this host's address on that interface, which is where the board should send."""
+    if iface:
+        text = capture(["ipconfig", "getifaddr", iface]).strip()
+        if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", text):
+            return text
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))
+        return probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
+def read_credentials():
+    path = ROOT / CREDENTIALS
+    if not path.exists():
+        return None
+    text = path.read_text()
+    ssid = re.search(r'#define\s+LAXITY_WIFI_SSID\s+"([^"]*)"', text)
+    port = re.search(r"#define\s+LAXITY_TELEMETRY_PORT\s+(\d+)", text)
+    return {
+        "ssid": ssid.group(1) if ssid else None,
+        "port": int(port.group(1)) if port else 50505,
+        "text": text,
+    }
+
+
+def write_credentials(ssid, password, address, port):
+    """the header the firmware includes, with both strings quoted.
+
+    the quotes are not cosmetic. an unquoted SSID reaches the preprocessor as an identifier and
+    the build fails with an undeclared identifier a long way from this file, which has already
+    happened once on this project.
+    """
+    octets = ", ".join(address.split("."))
+    body = (
+        "/* network credentials and the telemetry destination, kept out of the repository.\n"
+        " *\n"
+        " * written by tools/laxity. this file is ignored by git on purpose.\n"
+        " */\n"
+        "#ifndef LAXITY_WIFI_CREDENTIALS_H\n"
+        "#define LAXITY_WIFI_CREDENTIALS_H\n"
+        "\n"
+        '#define LAXITY_WIFI_SSID       "%s"\n'
+        '#define LAXITY_WIFI_PASSWORD   "%s"\n'
+        "\n"
+        "/* the host running the receiver, as it appeared on this network when this was written. */\n"
+        "#define LAXITY_TELEMETRY_IP4   %s\n"
+        "#define LAXITY_TELEMETRY_PORT  %d\n"
+        "\n"
+        "#endif /* LAXITY_WIFI_CREDENTIALS_H */\n"
+    ) % (ssid.replace("\\", "\\\\").replace('"', '\\"'),
+         password.replace("\\", "\\\\").replace('"', '\\"'),
+         octets, port)
+    (ROOT / CREDENTIALS).write_text(body)
+
+
+def security_note():
+    """what the code actually does about security type, read out of the driver.
+
+    reported rather than assumed, because an open network is the case most likely to be reached
+    during a demonstration and the one least likely to have been tried.
+    """
+    cube = Path(os.environ.get("LAXITY_CUBE_U5",
+                               Path.home() / "STM32Cube/Repository/STM32Cube_FW_U5_V1.8.0"))
+    driver = cube / "Middlewares/ST/netxduo/common/drivers/wifi/mxchip/nx_driver_emw3080.c"
+    if not driver.exists():
+        return None, "the open network path was not verified: %s is not on this host" % driver
+    for number, line in enumerate(driver.read_text(errors="replace").splitlines(), 1):
+        if "MX_WIFI_Connect(" in line and "MX_WIFI_SEC_" in line:
+            mode = re.search(r"MX_WIFI_SEC_\w+", line).group(0)
+            if mode == "MX_WIFI_SEC_AUTO":
+                return True, ("security type is %s at %s:%d, so the module reads it from the scan "
+                              "result and an open network resolves to MX_WIFI_SEC_NONE without "
+                              "anything here setting it" % (mode, driver.name, number))
+            return False, ("the open network path was not verified: the driver hard codes %s at "
+                           "%s:%d instead of detecting it" % (mode, driver.name, number))
+    return None, "the open network path was not verified: no MX_WIFI_Connect call found in %s" % driver.name
+
+
+def net_enabled():
+    """whether the image even contains the network thread, and which line says so."""
+    path = ROOT / "firmware/stm32u585/Src/app_threadx.c"
+    for number, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+        match = re.match(r"\s*#define\s+LAXITY_NET_ENABLE\s+(\d+)", line)
+        if match:
+            return match.group(1) != "0", number
+    return None, None
+
+
+def watch_serial(port, seconds):
+    """the board's own account of the link, from the status line it already prints."""
+    timeout = shutil.which("timeout") or shutil.which("gtimeout")
+    if not timeout:
+        return None, "no timeout(1) or gtimeout(1) on PATH, install coreutils"
+    subprocess.call(["stty", "-f", port, "921600", "raw", "-echo"], stderr=subprocess.DEVNULL)
+    text = capture([timeout, str(seconds), "cat", port], timeout=seconds + 10)
+    for line in text.splitlines():
+        if line.startswith("net rc="):
+            return line.strip(), None
+    if "net disabled" in text:
+        return "net disabled", None
+    return None, "no net line appeared on %s in %ds" % (port, seconds)
+
+
+def wait_for_udp(port, seconds):
+    """whether anything actually arrived here, which association does not imply."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("0.0.0.0", port))
+    except OSError as err:
+        sock.close()
+        return 0, "could not bind udp/%d: %s" % (port, err)
+    sock.settimeout(1.0)
+    deadline, count = time.time() + seconds, 0
+    try:
+        while time.time() < deadline:
+            try:
+                data, _ = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            if data:
+                count += 1
+    finally:
+        sock.close()
+    return count, None
+
+
+def cmd_wifi(args):
+    head("credentials")
+    existing = read_credentials()
+    ssid = args.ssid
+    password = args.password
+    port = existing["port"] if existing else 50505
+
+    if ssid is None and existing and existing["ssid"] and not PLACEHOLDER.search(existing["ssid"]):
+        ssid = existing["ssid"]
+        say("  the board is already configured for %s, using that" % ssid)
+        password = None
+    else:
+        iface = wifi_interface()
+        say("  Wi-Fi interface: %s" % (iface or "not found"))
+        if ssid is None:
+            ssid, why = host_ssid(iface)
+            if ssid is None:
+                die("  " + why)
+            say("  this host is on %s, joining that" % ssid)
+        if password is None:
+            if not sys.stdin.isatty():
+                die("  no password given and this is not a terminal. pass --password, or "
+                    "--password '' for an open network.")
+            import getpass
+            password = getpass.getpass("  password for %s (empty for an open network): " % ssid)
+
+        address = args.host or host_address(wifi_interface())
+        if not address:
+            die("  this host has no address on that network, so there is nowhere to send to.")
+        write_credentials(ssid, password, address, port)
+        say("  wrote %s, destination %s:%d" % (CREDENTIALS, address, port))
+
+    verified, note = security_note()
+    say("  %s" % note)
+
+    enabled, line_no = net_enabled()
+    if enabled is False:
+        head("result")
+        say("  1. association and DHCP     not attempted")
+        say("  2. UDP reached this host    not attempted")
+        say()
+        say("  the firmware in this tree has the network path compiled out: LAXITY_NET_ENABLE is 0")
+        say("  at firmware/stm32u585/Src/app_threadx.c:%d, so the NetX Duo thread is never" % line_no)
+        say("  started and neither observation can be made. the credentials above are in place and")
+        say("  take effect the first time that define is 1 and the image is rebuilt.")
+        return 2
+
+    if args.write_only:
+        say("  stopping after writing the credentials, as asked")
+        return 0
+
+    head("build and flash")
+    if call(["./tools/stm32/build.sh"]) != 0:
+        die("build failed")
+    boards, _ = discover(identify=False)
+    board = choose(boards, args.board)
+    if call(["./tools/stm32/flash.sh"], env=board_env(board)) != 0:
+        die("flash failed")
+
+    head("watching")
+    say("  listening on udp/%d and reading %s for %ds" % (port, board.port, args.seconds))
+    count, bind_error = wait_for_udp(port, args.seconds)
+    line, serial_error = watch_serial(board.port, 8) if board.port else (None, "no serial port")
+
+    associated = bool(line and line.startswith("net rc=") and "ip=0.0.0.0" not in line)
+
+    head("result")
+    if associated:
+        say("  1. association and DHCP     %syes%s   %s" % (GREEN, RESET, line))
+    else:
+        say("  1. association and DHCP     %sno%s    %s" % (RED, RESET, line or serial_error))
+    if count:
+        say("  2. UDP reached this host    %syes%s   %d datagrams on udp/%d" % (GREEN, RESET, count, port))
+    else:
+        say("  2. UDP reached this host    %sno%s    %s" % (RED, RESET, bind_error or "nothing arrived"))
+    if associated and not count:
+        say()
+        say("  the board joined and took an address, and nothing reached this host. that is the")
+        say("  normal shape of a captive portal guest network, which lets a client associate and")
+        say("  then drops its traffic until a browser has agreed to something.")
+    return 0 if (associated and count) else 1
+
+
+# entry point ---------------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(prog="laxity", description=__doc__.splitlines()[0])
+    subs = parser.add_subparsers(dest="command")
+
+    def add(name, func, help_text):
+        sub = subs.add_parser(name, help=help_text)
+        sub.set_defaults(func=func)
+        return sub
+
+    sub = add("doctor", cmd_doctor, "toolchain check and board discovery")
+    sub.add_argument("--no-identify", action="store_true",
+                     help="skip the connection that reads the part number")
+
+    sub = add("boards", cmd_boards, "the boards attached, with port and profile")
+    sub.add_argument("--no-identify", action="store_true",
+                     help="skip the connection that reads the part number")
+
+    add("build", cmd_build, "build the firmware")
+
+    sub = add("flash", cmd_flash, "flash the built firmware")
+    sub.add_argument("--board", help="ST-LINK serial number")
+
+    sub = add("capture", cmd_capture, "record a telemetry run")
+    sub.add_argument("--board", help="ST-LINK serial number")
+    sub.add_argument("--seconds", type=int, default=60)
+    sub.add_argument("--out", default="run", help="run name, appended to the timestamp")
+
+    sub = add("analyse", cmd_analyse, "turn a capture into the results document")
+    sub.add_argument("capture", nargs="?", help="capture directory, newest if omitted")
+
+    sub = add("run", cmd_run, "build, flash, capture and analyse")
+    sub.add_argument("--board", help="ST-LINK serial number")
+    sub.add_argument("--seconds", type=int, default=60)
+    sub.add_argument("--out", default="run", help="run name, appended to the timestamp")
+
+    sub = add("tui", cmd_tui, "the live viewer, or a recorded capture")
+    sub.add_argument("--board", help="ST-LINK serial number")
+    sub.add_argument("--file", help="read a capture instead of a board")
+
+    sub = add("sim", cmd_sim, "replay a scenario from the simulator into the viewer")
+    sub.add_argument("scenario", help="name under scenarios/, without the extension")
+    sub.add_argument("--seed", type=int, default=1)
+    sub.add_argument("--port", type=int, default=50505)
+
+    sub = add("wifi", cmd_wifi, "put the board on a network and report what actually worked")
+    sub.add_argument("--board", help="ST-LINK serial number")
+    sub.add_argument("--ssid", help="network to join, otherwise the one this host is on")
+    sub.add_argument("--password", help="network password, empty string for an open network")
+    sub.add_argument("--host", help="address the board should send to, otherwise this host's")
+    sub.add_argument("--seconds", type=int, default=30, help="how long to wait for datagrams")
+    sub.add_argument("--write-only", action="store_true",
+                     help="write the credentials and stop, do not build or flash")
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return 0
+    os.chdir(ROOT)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

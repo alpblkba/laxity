@@ -59,6 +59,10 @@ const REPLAY_BYTES_PER_TICK: usize = 320;
 const DISPLAY_HOLD: Duration = Duration::from_millis(450);
 const WIDE_MIN_WIDTH: u16 = 110;
 const WIDE_MIN_HEIGHT: u16 = 34;
+const PROFILE_SEPARATOR: &str = " · profile ";
+const SIMULATED_SEPARATOR: &str = " · ";
+const SIMULATED_LABEL: &str = "SIMULATED";
+const SIMULATED_RECORD_SEPARATOR: &str = " · ";
 const RECORD_SEPARATOR: &str = "   ·   record ";
 
 #[derive(Clone, Debug)]
@@ -282,6 +286,15 @@ impl Input {
             Self::Serial { path, .. } => {
                 format!("serial {} · 921600 8N1", path.display())
             }
+            Self::File { path, .. } => format!("file {}", path.display()),
+            Self::Broken { label, .. } => label.clone(),
+        }
+    }
+
+    fn concise_label(&self) -> String {
+        match self {
+            Self::Udp { port, .. } => format!("udp 0.0.0.0:{port}"),
+            Self::Serial { path, .. } => format!("serial {}", path.display()),
             Self::File { path, .. } => format!("file {}", path.display()),
             Self::Broken { label, .. } => label.clone(),
         }
@@ -969,8 +982,20 @@ impl App {
         } else {
             self.record_label.clone()
         };
-        let (source_label, record_label) = fit_header_pair(
-            &self.source.label(),
+        let simulated_profile = self
+            .adapter
+            .metadata()
+            .filter(|metadata| metadata.simulated)
+            .map(|_| self.device.device.id.to_string());
+        let simulated = simulated_profile.is_some();
+        let source = if simulated && area.width < WIDE_MIN_WIDTH {
+            self.source.concise_label()
+        } else {
+            self.source.label()
+        };
+        let (source_label, profile_label, record_label) = fit_status_labels(
+            &source,
+            simulated_profile.as_deref(),
             &record_label,
             area.width.saturating_sub(2) as usize,
         );
@@ -980,6 +1005,35 @@ impl App {
             .as_ref()
             .map(|metadata| format!("{:.3} MHz CYCCNT", metadata.cyccnt_hz as f64 / 1_000_000.0))
             .unwrap_or_else(|| "clock waiting".to_string());
+        let mut source_line = vec![Span::styled(source_label, Style::default().fg(ACCENT_ALT))];
+        if let Some(profile_label) = profile_label {
+            source_line.push(Span::styled(PROFILE_SEPARATOR, Style::default().fg(FAINT)));
+            source_line.push(Span::styled(profile_label, Style::default().fg(WARNING)));
+            source_line.push(Span::styled(
+                SIMULATED_SEPARATOR,
+                Style::default().fg(FAINT),
+            ));
+            source_line.push(Span::styled(
+                SIMULATED_LABEL,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(DANGER)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        source_line.push(Span::styled(
+            if simulated {
+                SIMULATED_RECORD_SEPARATOR
+            } else {
+                RECORD_SEPARATOR
+            },
+            Style::default().fg(FAINT),
+        ));
+        source_line.push(Span::styled(
+            record_label,
+            Style::default().fg(record_style),
+        ));
+
         let lines = vec![
             Line::from(vec![
                 Span::styled("● ", Style::default().fg(health.color())),
@@ -992,12 +1046,7 @@ impl App {
                 Span::styled("   ·   m view   ·   q quit", Style::default().fg(FAINT)),
             ])
             .alignment(Alignment::Center),
-            Line::from(vec![
-                Span::styled(source_label, Style::default().fg(ACCENT_ALT)),
-                Span::styled(RECORD_SEPARATOR, Style::default().fg(FAINT)),
-                Span::styled(record_label, Style::default().fg(record_style)),
-            ])
-            .alignment(Alignment::Center),
+            Line::from(source_line).alignment(Alignment::Center),
             Line::from(vec![
                 metric(clock),
                 separator(),
@@ -2364,6 +2413,50 @@ fn fit_header_pair(source: &str, record: &str, width: usize) -> (String, String)
     )
 }
 
+fn fit_status_labels(
+    source: &str,
+    profile: Option<&str>,
+    record: &str,
+    width: usize,
+) -> (String, Option<String>, String) {
+    let Some(profile) = profile else {
+        let (source, record) = fit_header_pair(source, record, width);
+        return (source, None, record);
+    };
+
+    let fixed_width = Span::raw(PROFILE_SEPARATOR).width()
+        + Span::raw(SIMULATED_SEPARATOR).width()
+        + Span::raw(SIMULATED_LABEL).width()
+        + Span::raw(SIMULATED_RECORD_SEPARATOR).width();
+    let label_width = width.saturating_sub(fixed_width);
+    let source_width = Span::raw(source).width();
+    let profile_width = Span::raw(profile).width();
+    let record_width = Span::raw(record).width();
+    let mut remaining = label_width;
+    let mut source_budget = source_width.min(3).min(remaining);
+    remaining -= source_budget;
+    let mut profile_budget = profile_width.min(3).min(remaining);
+    remaining -= profile_budget;
+    let mut record_budget = record_width.min(3).min(remaining);
+    remaining -= record_budget;
+
+    for (budget, wanted) in [
+        (&mut profile_budget, profile_width),
+        (&mut source_budget, source_width),
+        (&mut record_budget, record_width),
+    ] {
+        let extra = wanted.saturating_sub(*budget).min(remaining);
+        *budget += extra;
+        remaining -= extra;
+    }
+
+    (
+        elide_middle(source, source_budget),
+        Some(elide_middle(profile, profile_budget)),
+        elide_middle(record, record_budget),
+    )
+}
+
 fn elide_middle(value: &str, width: usize) -> String {
     if Span::raw(value).width() <= width {
         return value.to_string();
@@ -2544,6 +2637,21 @@ mod tests {
         assert!(changed);
         app.measurements
             .begin_revision(app.device.topology_revision);
+    }
+
+    fn install_origin(app: &mut App, simulated: bool) {
+        app.adapter.apply_header(
+            &mut app.device,
+            LxHeader {
+                metadata: Metadata {
+                    version: 2,
+                    simulated,
+                    record_size: 32,
+                    ..Metadata::default()
+                },
+                placements: Vec::new(),
+            },
+        );
     }
 
     fn raw_placement(id: u8, flags: u8, name: &str, address: u32) -> LxPlacement {
@@ -2734,6 +2842,66 @@ mod tests {
                 + Span::raw(&record).width()
                 <= width
         );
+    }
+
+    #[test]
+    fn simulated_header_shows_profile_and_unmissable_origin_badge() {
+        let options = test_options(
+            SourceSpec::File(PathBuf::from("/missing")),
+            Some(PathBuf::from("telemetry-1789445000.bin")),
+        );
+        let mut app = App::with_device(&options, profile::virtual_generic().unwrap());
+        app.source = Input::Udp {
+            socket: UdpSocket::bind(("127.0.0.1", 0)).unwrap(),
+            port: 50_505,
+            peer: None,
+        };
+        install_origin(&mut app, true);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let now = Instant::now();
+        let frame = terminal
+            .draw(|frame| app.draw(frame, Duration::ZERO, now))
+            .unwrap();
+        let row: String = (0..80)
+            .filter_map(|x| frame.buffer.cell((x, 2)))
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(row.contains("udp 0.0.0.0:50505"));
+        assert!(row.contains("profile virtual-generic"));
+        assert!(row.contains("SIMULATED"));
+
+        let cells: Vec<_> = (0..80).filter_map(|x| frame.buffer.cell((x, 2))).collect();
+        let badge = cells
+            .windows("SIMULATED".len())
+            .find(|window| {
+                window.iter().map(|cell| cell.symbol()).collect::<String>() == "SIMULATED"
+            })
+            .unwrap();
+        assert!(badge.iter().all(|cell| cell.fg == Color::Black));
+        assert!(badge.iter().all(|cell| cell.bg == DANGER));
+        assert!(badge
+            .iter()
+            .all(|cell| cell.modifier.contains(Modifier::BOLD)));
+    }
+
+    #[test]
+    fn real_header_has_no_origin_or_profile_field() {
+        let options = test_options(SourceSpec::File(PathBuf::from("real.bin")), None);
+        let mut app = test_app(&options);
+        install_origin(&mut app, false);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let now = Instant::now();
+        let frame = terminal
+            .draw(|frame| app.draw(frame, Duration::ZERO, now))
+            .unwrap();
+        let row: String = (0..80)
+            .filter_map(|x| frame.buffer.cell((x, 2)))
+            .map(|cell| cell.symbol())
+            .collect();
+
+        assert!(!row.contains("SIMULATED"));
+        assert!(!row.contains("profile"));
     }
 
     #[test]
@@ -3030,11 +3198,18 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires the ignored local real capture"]
     fn known_real_capture_keeps_golden_accounting_and_experiment_state() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../results/raw/20260909T175908Z-contention-sweep/telemetry.bin");
-        assert!(path.exists(), "missing ignored capture: {}", path.display());
+        if !path.exists() {
+            writeln!(
+                io::stderr().lock(),
+                "skipping real capture regression; expected {}",
+                path.display()
+            )
+            .unwrap();
+            return;
+        }
         let bytes = fs::read(&path).unwrap();
         let options = test_options(SourceSpec::File(path), None);
         let mut app = test_app(&options);
@@ -3056,6 +3231,7 @@ mod tests {
         assert_eq!(app.telemetry.stats.dropped, 0);
         assert_eq!(app.telemetry.stats.false_sync, 0);
         assert_eq!(app.telemetry.stats.crc_rejections, 0);
+        assert!(!app.adapter.metadata().unwrap().simulated);
 
         let latest = app.measurements.latest().cloned().unwrap();
         let experiment = ExperimentState::from_model(&app.device, &app.measurements, latest);

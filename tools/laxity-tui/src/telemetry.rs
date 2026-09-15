@@ -5,6 +5,7 @@ const HEADER_V2_SIZE: usize = 40;
 const PLACEMENT_SIZE: usize = 20;
 const RECORD_SIZE: usize = 32;
 const FLAG_CYCCNT_WRAP: u8 = 1 << 0;
+const HEADER_ORIGIN_SIMULATED: u8 = 1 << 2;
 
 pub const PLACEMENT_CONTROL: u8 = 1 << 0;
 pub const PLACEMENT_ALT_ADDR: u8 = 1 << 1;
@@ -33,6 +34,7 @@ pub struct Metadata {
     pub seq_next: u32,
     pub stall_available: bool,
     pub stall_populated: bool,
+    pub simulated: bool,
     pub n_placements: u8,
     pub n_models: u8,
     pub record_size: u8,
@@ -199,6 +201,11 @@ impl TelemetryState {
             return false;
         }
 
+        let simulated = payload[16] & HEADER_ORIGIN_SIMULATED != 0
+            || self
+                .latest_header
+                .as_ref()
+                .is_some_and(|header| header.metadata.simulated);
         let metadata = Metadata {
             version,
             clock_hz: u32_at(payload, 0),
@@ -206,6 +213,7 @@ impl TelemetryState {
             seq_next: u32_at(payload, 8),
             stall_available: payload[16] & 1 != 0,
             stall_populated: payload[16] & 2 != 0,
+            simulated,
             n_placements,
             n_models: payload[18],
             record_size: payload[19],
@@ -342,11 +350,11 @@ mod tests {
         out
     }
 
-    fn header(address: u32) -> Vec<u8> {
+    fn header_with_flags(address: u32, flags: u8) -> Vec<u8> {
         let mut payload = vec![0; 60];
         payload[0..4].copy_from_slice(&160_000_000u32.to_le_bytes());
         payload[4..8].copy_from_slice(&159_999_900u32.to_le_bytes());
-        payload[16] = 1;
+        payload[16] = flags;
         payload[17] = 1;
         payload[19] = 32;
         payload[40] = 3;
@@ -355,6 +363,10 @@ mod tests {
         payload[48..52].copy_from_slice(&303_104u32.to_le_bytes());
         payload[52..57].copy_from_slice(b"SRAM3");
         frame(0, &payload)
+    }
+
+    fn header(address: u32) -> Vec<u8> {
+        header_with_flags(address, 1)
     }
 
     fn batch(seq: u32, exec: u32) -> Vec<u8> {
@@ -380,6 +392,22 @@ mod tests {
     #[test]
     fn crc_matches_ccitt_false_check_value() {
         assert_eq!(crc16(b"123456789"), 0x29b1);
+    }
+
+    #[test]
+    fn simulated_origin_survives_metadata_parsing() {
+        let mut simulated = TelemetryState::default();
+        simulated.feed(&header_with_flags(0x2004_0000, 1 | HEADER_ORIGIN_SIMULATED));
+        assert!(simulated.latest_header.as_ref().unwrap().metadata.simulated);
+
+        simulated.feed(&header(0x2004_1000));
+        assert!(simulated.latest_header.as_ref().unwrap().metadata.simulated);
+
+        let mut real = TelemetryState::default();
+        real.feed(&header(0x2004_0000));
+        assert!(!real.latest_header.as_ref().unwrap().metadata.simulated);
+        real.feed(&header_with_flags(0x2004_1000, 1 | HEADER_ORIGIN_SIMULATED));
+        assert!(real.latest_header.as_ref().unwrap().metadata.simulated);
     }
 
     #[test]

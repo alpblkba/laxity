@@ -68,7 +68,7 @@ def crc16(data):
     return crc
 
 
-def parse(data):
+def parse(data, on_batch=None):
     out = {
         "frames": 0, "header_frames": 0, "batch_frames": 0,
         "records": 0, "dropped": 0, "gaps": 0,
@@ -170,6 +170,10 @@ def parse(data):
                         out["wrapped"] += 1
                     records.append(rec)
                 out["records"] += count
+                if on_batch is not None and count:
+                    # the replay utility needs accepted batch boundaries, so it observes this
+                    # parser rather than implementing the framing and resynchronisation again.
+                    on_batch(body + plen, meta["cyccnt_hz"], tuple(records[-count:]))
 
         pos = body + plen
 

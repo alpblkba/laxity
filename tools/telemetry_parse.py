@@ -22,6 +22,7 @@ HEADER_FIXED = {1: 20, 2: 40}
 FRAME_OVERHEAD = 8
 PLACEMENT_SIZE = 20
 RECORD_SIZE = 32
+HEADER_ORIGIN_SIMULATED = 1 << 2
 
 FLAG_CYCCNT_WRAP = 1 << 0
 
@@ -76,6 +77,7 @@ def parse(data, on_batch=None):
         "wrapped": 0,
     }
     meta = {}
+    simulated_seen = False
     placements = {}
     records = []
     seen_header = False
@@ -115,6 +117,9 @@ def parse(data, on_batch=None):
                 out["false_sync"] += 1
                 continue
             clock_hz, cyccnt_hz, seq_next, dropped = struct.unpack_from("<4I", data, body)
+            simulated_seen = simulated_seen or bool(
+                data[body + 16] & HEADER_ORIGIN_SIMULATED
+            )
             meta = {
                 "version": version,
                 "clock_hz": clock_hz,
@@ -126,6 +131,8 @@ def parse(data, on_batch=None):
                 "n_models": data[body + 18],
                 "record_size": data[body + 19],
             }
+            if simulated_seen:
+                meta["origin"] = "simulated"
             if version >= 2:
                 rm, rp, pm, pp = struct.unpack_from("<4I", data, body + 20)
                 meta.update({

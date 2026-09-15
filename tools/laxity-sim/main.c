@@ -19,6 +19,7 @@
 #define LAXITY_SIM_LINE_CAP   512u
 #define LAXITY_SIM_TOKEN_CAP  16u
 #define LAXITY_SIM_DRAIN_CAP  512u
+#define LAXITY_SIM_ORIGIN_FLAG (1u << 2)
 
 typedef struct {
     const char *scenario_arg;
@@ -483,7 +484,7 @@ static bool run_scenario(FILE *file, const char *path, simulator_t *simulator, c
         if (header_step == 5u && token_count == 2 && strcmp(tokens[0], "header_flags") == 0 &&
             parse_u32(tokens[1], &values[0]) && values[0] <= 3u) {
             qos_telemetry_init(simulator->clock_hz, simulator->cyccnt_hz,
-                               (uint8_t)values[0]);
+                               (uint8_t)(values[0] | LAXITY_SIM_ORIGIN_FLAG));
             header_step++;
             continue;
         }

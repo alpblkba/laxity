@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """exercise the virtual target through its file and UDP boundaries."""
 
+import os
 import socket
 import subprocess
 import sys
@@ -26,6 +27,22 @@ def run(scenario, output, seed=1, udp=None, check=True):
 
 def parsed(path):
     return telemetry_parse.parse(path.read_bytes())
+
+
+def without_simulated_origin(stream):
+    data = bytearray(stream)
+    pos = 0
+    while pos < len(data):
+        assert data[pos:pos + 2] == b"LX"
+        payload_len = int.from_bytes(data[pos + 4:pos + 6], "little")
+        body = pos + 8
+        frame_end = body + payload_len
+        if data[pos + 3] == 0:
+            data[body + 16] &= ~telemetry_parse.HEADER_ORIGIN_SIMULATED
+            crc = telemetry_parse.crc16(data[body:frame_end])
+            data[pos + 6:pos + 8] = crc.to_bytes(2, "little")
+        pos = frame_end
+    return bytes(data)
 
 
 def scenario_text(name, actions, pace_ms=0):
@@ -55,6 +72,12 @@ def check_scenarios(temp):
     _, meta, _, _ = parsed(first)
     assert meta["clock_hz"] == 160000000
     assert meta["cyccnt_hz"] == 159999900
+    assert meta["origin"] == "simulated"
+    simulated = first.read_bytes()
+    real = without_simulated_origin(simulated)
+    assert "origin" not in telemetry_parse.parse(real)[1]
+    assert telemetry_parse.parse(simulated + real)[1]["origin"] == "simulated"
+    assert telemetry_parse.parse(real + simulated)[1]["origin"] == "simulated"
     grouped = telemetry_parse.region_stats(placements, records)
     assert grouped["SRAM1"]["median"] == 320898
     assert grouped["SRAM2"]["median"] == 320901
@@ -69,7 +92,8 @@ def check_scenarios(temp):
     for scenario, wanted in expected.items():
         path = temp / (scenario + ".bin")
         run(scenario, path)
-        stats, _, _, _ = parsed(path)
+        stats, meta, _, _ = parsed(path)
+        assert meta["origin"] == "simulated"
         for key, value in wanted.items():
             assert stats[key] == value, (scenario, key, stats[key], value)
 
@@ -86,6 +110,7 @@ def check_scenarios(temp):
         run(scenario, path)
         stats, meta, _, _ = parsed(path)
         assert meta["version"] == 2
+        assert meta["origin"] == "simulated"
         assert stats["records"] > 0
 
     unknown_stats, _, _, unknown_records = parsed(temp / "unknown-region.bin")
@@ -119,6 +144,53 @@ def check_scenarios(temp):
 
     existing = run("baseline", first, check=False)
     assert existing.returncode != 0
+
+
+def check_analyse_gate(temp):
+    run_dir = temp / "simulated-run"
+    run_dir.mkdir()
+    (run_dir / "telemetry.bin").write_bytes((temp / "baseline-a.bin").read_bytes())
+    (run_dir / "build.txt").write_text(
+        "board=virtual\n"
+        "opt=-O2\n"
+        "sysclk_hz=160000000\n"
+        "flash_latency=host\n"
+        "voltage_scale=host\n"
+        "image_sha256=0123456789abcdef\n",
+        encoding="ascii",
+    )
+    (run_dir / "run.txt").write_text("seconds=1\n", encoding="ascii")
+    (run_dir / "commit.txt").write_text("0123456789abcdef\n", encoding="ascii")
+    (run_dir / "dirty.txt").write_text("", encoding="ascii")
+    results = temp / "RESULTS.md"
+    environment = os.environ.copy()
+    environment["LAXITY_RESULTS"] = str(results)
+    command = [sys.executable, str(ROOT / "tools/analyse.py")]
+
+    rejected = subprocess.run(
+        command + [str(run_dir)],
+        cwd=ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert rejected.returncode != 0
+    assert "carries simulated telemetry" in rejected.stderr
+    assert "--allow-simulated" in rejected.stderr
+    assert not results.exists()
+
+    subprocess.run(
+        command + ["--allow-simulated", str(run_dir)],
+        cwd=ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    report = results.read_text()
+    assert report.startswith("# Results\n\nSimulated telemetry.")
+    assert "it is not evidence from the STM32 board" in report
 
 
 def check_deterministic_jitter(temp):
@@ -216,6 +288,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="laxity-sim-") as directory:
         temp = Path(directory)
         check_scenarios(temp)
+        check_analyse_gate(temp)
         check_deterministic_jitter(temp)
         check_udp(temp)
         check_live_silence(temp)

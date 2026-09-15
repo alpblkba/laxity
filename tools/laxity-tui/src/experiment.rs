@@ -1,6 +1,7 @@
-use crate::telemetry::{Parser, Placement, Record, PLACEMENT_ALT_ADDR, PLACEMENT_CONTROL};
-
-const FOOTPRINT_BYTES: [u32; 4] = [1024, 4096, 8192, 16_384];
+use crate::{
+    measurement::{MeasurementStore, SampleMetric, Statistics},
+    model::{DeviceState, Measurement, MemoryRegion, MemoryRegionId, Placement},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -11,24 +12,17 @@ pub enum Mode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Relation {
     Off,
-    SameBank,
-    CrossBank,
+    SameRegion,
+    CrossRegion,
     Unknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Activity {
     Inactive,
-    Inference,
-    Dma,
+    Workload,
+    Requester,
     Collision,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Aggressor {
-    pub region_id: Option<u8>,
-    pub footprint_index: u8,
-    pub footprint_bytes: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,8 +33,9 @@ pub struct Penalty {
 
 #[derive(Clone, Debug)]
 pub struct MemoryRegionState {
+    pub region: MemoryRegion,
     pub placement: Placement,
-    pub active_arena: Option<Placement>,
+    pub active_placement: Option<Placement>,
     pub activity: Activity,
     pub samples: usize,
 }
@@ -48,46 +43,44 @@ pub struct MemoryRegionState {
 #[derive(Clone, Debug)]
 pub struct PlacementStats {
     pub placement: Placement,
-    pub samples: usize,
-    pub median: Option<u32>,
-    pub baseline: Option<u32>,
+    pub region: Option<MemoryRegion>,
+    pub statistics: Option<Statistics>,
+    pub baseline: Option<Statistics>,
     pub penalty: Option<Penalty>,
     pub observed_best: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct ExperimentState {
-    pub record: Record,
-    pub mode: Mode,
-    pub relation: Relation,
-    pub aggressor: Aggressor,
-    pub inference: Option<Placement>,
-    pub inference_bank_id: Option<u8>,
-    pub dma_target: Option<Placement>,
-    pub current_samples: usize,
-    pub current_median: Option<u32>,
-    pub baseline: Option<u32>,
-    pub penalty: Option<Penalty>,
-    pub transfer_advanced: Option<bool>,
-    pub regions: Vec<MemoryRegionState>,
-    pub comparisons: Vec<PlacementStats>,
-    pub observed_spread: Option<u32>,
-}
+impl PlacementStats {
+    pub fn samples(&self) -> usize {
+        self.statistics.map_or(0, |statistics| statistics.count)
+    }
 
-impl Aggressor {
-    pub fn decode(index: u16) -> Self {
-        let region_id = (index & 0xff) as u8;
-        let footprint_index = (index >> 8) as u8;
-        Self {
-            region_id: (region_id != 0).then_some(region_id),
-            footprint_index,
-            footprint_bytes: FOOTPRINT_BYTES.get(footprint_index as usize).copied(),
-        }
+    pub fn p50(&self) -> Option<u64> {
+        self.statistics.map(|statistics| statistics.p50)
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct ExperimentState {
+    pub measurement: Measurement,
+    pub mode: Mode,
+    pub relation: Relation,
+    pub inference: Option<Placement>,
+    pub inference_region_id: Option<MemoryRegionId>,
+    pub requester_target: Option<Placement>,
+    pub requester_label: Option<String>,
+    pub working_set_bytes: Option<u64>,
+    pub current: Option<Statistics>,
+    pub baseline: Option<Statistics>,
+    pub penalty: Option<Penalty>,
+    pub requester_advanced: Option<bool>,
+    pub regions: Vec<MemoryRegionState>,
+    pub comparisons: Vec<PlacementStats>,
+    pub observed_spread: Option<u64>,
+}
+
 impl Penalty {
-    pub fn between(measured: u32, baseline: u32) -> Self {
+    pub fn between(measured: u64, baseline: u64) -> Self {
         let cycles = measured as i64 - baseline as i64;
         let percent = (baseline != 0).then_some(cycles as f64 * 100.0 / baseline as f64);
         Self { cycles, percent }
@@ -95,113 +88,152 @@ impl Penalty {
 }
 
 impl ExperimentState {
-    pub fn from_parser(parser: &Parser, record: Record) -> Self {
-        let aggressor = Aggressor::decode(record.aggressor_idx);
-        let mode = if aggressor.region_id.is_some() {
+    pub fn from_model(
+        device: &DeviceState,
+        measurements: &MeasurementStore,
+        measurement: Measurement,
+    ) -> Self {
+        let mode = if measurement.requester.is_some() {
             Mode::Contention
         } else {
             Mode::Baseline
         };
-        let inference = parser.placements.get(&record.region_id).cloned();
-        let dma_target = aggressor
-            .region_id
-            .and_then(|id| parser.placements.get(&id))
+        let inference = device.placements.get(&measurement.placement_id).cloned();
+        let inference_region_id = inference
+            .as_ref()
+            .and_then(|placement| placement.region_id.clone());
+        let requester_target = measurement
+            .requester
+            .as_ref()
+            .and_then(|load| load.target_placement_id.as_ref())
+            .and_then(|placement_id| device.placements.get(placement_id))
             .cloned();
-        let inference_bank_id = inference
+        let requester_region = measurement
+            .requester
             .as_ref()
-            .and_then(|placement| topology_bank_id(parser, placement));
-        let dma_bank_id = dma_target
-            .as_ref()
-            .and_then(|placement| topology_bank_id(parser, placement));
-        let relation = relation(inference_bank_id, dma_bank_id, mode);
-        let current_cell = parser.cell(record.region_id, record.aggressor_idx);
-        let current_median = current_cell.and_then(|cell| cell.median());
-        let baseline = parser.cell_median(record.region_id, 0);
-        let penalty = current_median
+            .and_then(|load| load.target_region_id.as_ref())
+            .and_then(|region_id| device.device.memory_regions.get(region_id))
+            .cloned();
+        let relation = relation(
+            inference_region_id.as_ref(),
+            requester_region.as_ref().map(|region| &region.id),
+            mode,
+        );
+        let key = measurements.key_for(&measurement);
+        let baseline_key = measurements.baseline_key_for(&measurement);
+        let current = measurements.statistics(&key, SampleMetric::ExecutionCycles);
+        let baseline = measurements.statistics(&baseline_key, SampleMetric::ExecutionCycles);
+        let penalty = current
             .zip(baseline)
-            .map(|(measured, base)| Penalty::between(measured, base));
+            .map(|(current, baseline)| Penalty::between(current.p50, baseline.p50));
 
-        let mut comparisons: Vec<_> = parser
+        let mut comparisons: Vec<_> = device
             .placements
             .values()
-            .filter(|placement| placement.is_primary())
+            .filter(|placement| placement.comparison_eligible)
             .map(|placement| {
-                let cell = parser.cell(placement.id, record.aggressor_idx);
-                let median = cell.and_then(|samples| samples.median());
-                let base = parser.cell_median(placement.id, 0);
+                let cell_key = key.with_placement(placement.id.clone());
+                let mut own_baseline_key = cell_key.clone();
+                own_baseline_key.requester_id = None;
+                own_baseline_key.target_placement_id = None;
+                own_baseline_key.target_region_id = None;
+                own_baseline_key.working_set_bytes = None;
+                let statistics = measurements.statistics(&cell_key, SampleMetric::ExecutionCycles);
+                let own_baseline =
+                    measurements.statistics(&own_baseline_key, SampleMetric::ExecutionCycles);
                 PlacementStats {
                     placement: placement.clone(),
-                    samples: cell.map_or(0, |samples| samples.len()),
-                    median,
-                    baseline: base,
-                    penalty: median
-                        .zip(base)
-                        .map(|(measured, baseline)| Penalty::between(measured, baseline)),
+                    region: placement
+                        .region_id
+                        .as_ref()
+                        .and_then(|id| device.device.memory_regions.get(id))
+                        .cloned(),
+                    statistics,
+                    baseline: own_baseline,
+                    penalty: statistics
+                        .zip(own_baseline)
+                        .map(|(measured, base)| Penalty::between(measured.p50, base.p50)),
                     observed_best: false,
                 }
             })
             .collect();
-        comparisons.sort_by_key(|stats| stats.placement.id);
+        comparisons.sort_by(|left, right| left.placement.id.cmp(&right.placement.id));
 
         let comparison_complete =
-            !comparisons.is_empty() && comparisons.iter().all(|stats| stats.median.is_some());
-        let best_median = comparison_complete
-            .then(|| comparisons.iter().filter_map(|stats| stats.median).min())
+            !comparisons.is_empty() && comparisons.iter().all(|stats| stats.statistics.is_some());
+        let best_p50 = comparison_complete
+            .then(|| comparisons.iter().filter_map(PlacementStats::p50).min())
             .flatten();
         for stats in &mut comparisons {
-            stats.observed_best = stats.median == best_median && best_median.is_some();
+            stats.observed_best = stats.p50() == best_p50 && best_p50.is_some();
         }
-
         let observed_spread = comparison_complete
             .then(|| {
                 comparisons
                     .iter()
-                    .filter_map(|stats| stats.median)
+                    .filter_map(PlacementStats::p50)
                     .min()
-                    .zip(comparisons.iter().filter_map(|stats| stats.median).max())
+                    .zip(comparisons.iter().filter_map(PlacementStats::p50).max())
                     .map(|(minimum, maximum)| maximum - minimum)
             })
             .flatten();
 
-        let regions = comparisons
-            .iter()
-            .map(|stats| {
-                let inference_here = inference_bank_id == Some(stats.placement.id);
-                let dma_here = dma_bank_id == Some(stats.placement.id);
-                let activity = match (inference_here, dma_here) {
-                    (true, true) => Activity::Collision,
-                    (true, false) => Activity::Inference,
-                    (false, true) => Activity::Dma,
-                    (false, false) => Activity::Inactive,
-                };
-                MemoryRegionState {
-                    placement: stats.placement.clone(),
-                    active_arena: inference_here.then(|| inference.clone()).flatten(),
-                    activity,
-                    samples: if inference_here {
-                        current_cell.map_or(0, |cell| cell.len())
-                    } else {
-                        stats.samples
-                    },
-                }
-            })
-            .collect();
+        let mut regions = Vec::new();
+        for stats in &comparisons {
+            let Some(region) = stats.region.as_ref() else {
+                continue;
+            };
+            if regions
+                .iter()
+                .any(|state: &MemoryRegionState| state.region.id == region.id)
+            {
+                continue;
+            }
+            let workload_here = inference_region_id.as_ref() == Some(&region.id);
+            let requester_here =
+                requester_region.as_ref().map(|target| &target.id) == Some(&region.id);
+            let activity = match (workload_here, requester_here) {
+                (true, true) => Activity::Collision,
+                (true, false) => Activity::Workload,
+                (false, true) => Activity::Requester,
+                (false, false) => Activity::Inactive,
+            };
+            regions.push(MemoryRegionState {
+                region: region.clone(),
+                placement: stats.placement.clone(),
+                active_placement: workload_here.then(|| inference.clone()).flatten(),
+                activity,
+                samples: if workload_here {
+                    current.map_or(0, |statistics| statistics.count)
+                } else {
+                    stats.samples()
+                },
+            });
+        }
 
         Self {
-            record,
+            requester_label: measurement
+                .requester
+                .as_ref()
+                .and_then(|load| device.device.requesters.get(&load.requester_id))
+                .map(|requester| requester.label.clone()),
+            working_set_bytes: measurement
+                .requester
+                .as_ref()
+                .and_then(|load| load.working_set_bytes),
+            requester_advanced: measurement
+                .requester
+                .as_ref()
+                .and_then(|_| measurements.requester_advanced(&key)),
+            measurement,
             mode,
             relation,
-            aggressor,
             inference,
-            inference_bank_id,
-            dma_target,
-            current_samples: current_cell.map_or(0, |cell| cell.len()),
-            current_median,
+            inference_region_id,
+            requester_target,
+            current,
             baseline,
             penalty,
-            transfer_advanced: aggressor
-                .region_id
-                .and_then(|_| current_cell.map(|cell| cell.transfer_advanced())),
             regions,
             comparisons,
             observed_spread,
@@ -209,41 +241,17 @@ impl ExperimentState {
     }
 }
 
-fn topology_bank_id(parser: &Parser, placement: &Placement) -> Option<u8> {
-    if placement.is_primary() {
-        return Some(placement.id);
-    }
-    if placement.flags & PLACEMENT_CONTROL != 0 {
-        return parser
-            .placements
-            .values()
-            .find(|candidate| {
-                candidate.is_primary()
-                    && candidate.arena_addr == placement.arena_addr
-                    && candidate.arena_size == placement.arena_size
-            })
-            .map(|candidate| candidate.id);
-    }
-    if placement.flags & PLACEMENT_ALT_ADDR != 0 {
-        let primary_name = placement
-            .name
-            .trim_end_matches(|character: char| character.is_ascii_lowercase());
-        return parser
-            .placements
-            .values()
-            .find(|candidate| candidate.is_primary() && candidate.name == primary_name)
-            .map(|candidate| candidate.id);
-    }
-    None
-}
-
-fn relation(inference_bank_id: Option<u8>, dma_bank_id: Option<u8>, mode: Mode) -> Relation {
+fn relation(
+    inference_region: Option<&MemoryRegionId>,
+    requester_region: Option<&MemoryRegionId>,
+    mode: Mode,
+) -> Relation {
     if mode == Mode::Baseline {
         return Relation::Off;
     }
-    match (inference_bank_id, dma_bank_id) {
-        (Some(inference), Some(dma)) if inference == dma => Relation::SameBank,
-        (Some(_), Some(_)) => Relation::CrossBank,
+    match (inference_region, requester_region) {
+        (Some(inference), Some(requester)) if inference == requester => Relation::SameRegion,
+        (Some(_), Some(_)) => Relation::CrossRegion,
         _ => Relation::Unknown,
     }
 }
@@ -251,201 +259,110 @@ fn relation(inference_bank_id: Option<u8>, dma_bank_id: Option<u8>, mode: Mode) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use crate::{
+        lx_v2::LxV2Adapter,
+        measurement::MeasurementStore,
+        model::{DeviceState, MetricSet, RequesterLoad},
+        profile,
+        telemetry::{LxHeader, LxPlacement, Metadata},
+    };
 
-    fn placement(id: u8, flags: u8, name: &str, arena_addr: u32) -> Placement {
-        Placement {
+    fn setup() -> (DeviceState, LxV2Adapter) {
+        let mut device = DeviceState::new(profile::stm32u585().unwrap());
+        let mut adapter = LxV2Adapter::default();
+        adapter.apply_header(
+            &mut device,
+            LxHeader {
+                metadata: Metadata::default(),
+                placements: vec![
+                    raw_placement(1, "SRAM1", 0x2000_2000),
+                    raw_placement(2, "SRAM2", 0x2003_0000),
+                    raw_placement(3, "SRAM3", 0x2004_0000),
+                ],
+            },
+        );
+        (device, adapter)
+    }
+
+    fn raw_placement(id: u8, name: &str, address: u32) -> LxPlacement {
+        LxPlacement {
             id,
-            flags,
+            flags: 0,
             name: name.to_string(),
             rel_cost: 1000,
-            arena_addr,
+            arena_addr: address,
             arena_size: 2944,
         }
     }
 
-    fn record(seq: u32, region_id: u8, aggressor_idx: u16, exec_cyc: u32) -> Record {
-        Record {
-            seq,
-            release_cyc: 0,
-            exec_cyc,
-            cpu_cyc: 0,
-            stall_cyc: 0,
-            model_id: 0,
-            region_id,
-            flags: 0,
-            aggressor_idx,
-            padding: 0,
-            reserved: seq,
+    fn measurement(sequence: u64, placement: &str, exec: u64) -> Measurement {
+        Measurement {
+            sequence,
+            workload_id: "lx-inference".into(),
+            placement_id: placement.into(),
+            requester: None,
+            metrics: MetricSet {
+                execution_cycles: Some(exec),
+                ..MetricSet::default()
+            },
+            counter_wrapped: false,
         }
     }
 
-    fn parser() -> Parser {
-        let mut parser = Parser::default();
-        parser.placements = BTreeMap::from([
-            (1, placement(1, 0, "SRAM1", 0x2000_2000)),
-            (2, placement(2, 0, "SRAM2", 0x2003_0000)),
-            (3, placement(3, 0, "SRAM3", 0x2004_0000)),
-            (5, placement(5, PLACEMENT_CONTROL, "SRAM1c", 0x2000_2000)),
-            (6, placement(6, PLACEMENT_ALT_ADDR, "SRAM2b", 0x2003_9000)),
-        ]);
-        for (seq, region, exec) in [(1, 1, 100), (2, 2, 101), (3, 3, 99)] {
-            parser.observe_record(record(seq, region, 0, exec));
+    #[test]
+    fn comparison_uses_each_placement_own_baseline() {
+        let (device, _adapter) = setup();
+        let mut store = MeasurementStore::default();
+        store.begin_revision(device.topology_revision);
+        for (seq, placement, exec) in [
+            (1, "lx-placement-1", 100),
+            (2, "lx-placement-2", 101),
+            (3, "lx-placement-3", 99),
+        ] {
+            store.observe(measurement(seq, placement, exec));
         }
-        parser
-    }
-
-    #[test]
-    fn aggressor_decode_preserves_region_and_footprint() {
-        assert_eq!(
-            Aggressor::decode(0),
-            Aggressor {
-                region_id: None,
-                footprint_index: 0,
-                footprint_bytes: Some(1024),
-            }
-        );
-        assert_eq!(Aggressor::decode(0x0302).region_id, Some(2));
-        assert_eq!(Aggressor::decode(0x0302).footprint_bytes, Some(16_384));
-        assert_eq!(Aggressor::decode(0x0902).footprint_bytes, None);
-    }
-
-    #[test]
-    fn exact_cells_use_the_python_upper_median_rule() {
-        let mut parser = parser();
-        for (seq, value) in [3, 1, 2, 4].into_iter().enumerate() {
-            parser.observe_record(record(10 + seq as u32, 1, 0x0001, value));
+        let mut current = measurement(4, "lx-placement-1", 120);
+        current.requester = Some(RequesterLoad {
+            requester_id: "gpdma1".into(),
+            target_placement_id: Some("lx-placement-1".into()),
+            target_region_id: Some("sram1".into()),
+            working_set_bytes: Some(1024),
+        });
+        store.observe(current.clone());
+        for (seq, placement, exec) in [(5, "lx-placement-2", 102), (6, "lx-placement-3", 103)] {
+            let mut sample = current.clone();
+            sample.sequence = seq;
+            sample.placement_id = placement.into();
+            sample.metrics.execution_cycles = Some(exec);
+            store.observe(sample);
         }
 
-        assert_eq!(parser.cell_median(1, 0x0001), Some(3));
-        assert_eq!(parser.cell(1, 0x0001).unwrap().len(), 4);
-    }
+        let state = ExperimentState::from_model(&device, &store, current);
 
-    #[test]
-    fn relation_is_same_cross_off_or_unknown_from_logical_banks() {
-        let mut parser = parser();
-        parser.observe_record(record(10, 1, 0x0001, 120));
-        assert_eq!(
-            ExperimentState::from_parser(&parser, record(10, 1, 0x0001, 120)).relation,
-            Relation::SameBank
-        );
-        assert_eq!(
-            ExperimentState::from_parser(&parser, record(11, 2, 0x0001, 102)).relation,
-            Relation::CrossBank
-        );
-        assert_eq!(
-            ExperimentState::from_parser(&parser, record(12, 2, 0, 101)).relation,
-            Relation::Off
-        );
-        assert_eq!(
-            ExperimentState::from_parser(&parser, record(13, 5, 0x0001, 101)).relation,
-            Relation::SameBank
-        );
-        assert_eq!(
-            ExperimentState::from_parser(&parser, record(14, 6, 0x0001, 101)).relation,
-            Relation::CrossBank
-        );
-    }
-
-    #[test]
-    fn penalty_handles_positive_negative_and_zero_baselines() {
-        assert_eq!(Penalty::between(120, 100).cycles, 20);
-        assert_eq!(Penalty::between(80, 100).cycles, -20);
-        assert!((Penalty::between(120, 100).percent.unwrap() - 20.0).abs() < f64::EPSILON);
-        assert_eq!(Penalty::between(1, 0).percent, None);
-    }
-
-    #[test]
-    fn comparison_uses_own_baseline_and_filters_control_labels() {
-        let mut parser = parser();
-        parser.observe_record(record(10, 1, 0x0001, 120));
-        parser.observe_record(record(11, 2, 0x0001, 102));
-        parser.observe_record(record(12, 3, 0x0001, 103));
-        parser.observe_record(record(13, 5, 0x0001, 500));
-        parser.observe_record(record(14, 6, 0x0001, 1));
-
-        let state = ExperimentState::from_parser(&parser, record(10, 1, 0x0001, 120));
-
-        assert_eq!(state.comparisons.len(), 3);
+        assert_eq!(state.relation, Relation::SameRegion);
         assert_eq!(state.comparisons[0].penalty.unwrap().cycles, 20);
         assert!(state.comparisons[1].observed_best);
         assert_eq!(state.observed_spread, Some(18));
     }
 
     #[test]
-    fn comparison_waits_for_every_primary_placement_before_naming_a_best() {
-        let mut parser = parser();
-        parser.observe_record(record(10, 2, 0x0102, 110));
+    fn missing_placement_stays_unknown() {
+        let (device, _adapter) = setup();
+        let mut store = MeasurementStore::default();
+        store.begin_revision(device.topology_revision);
+        let mut current = measurement(1, "lx-placement-99", 100);
+        current.requester = Some(RequesterLoad {
+            requester_id: "gpdma1".into(),
+            target_placement_id: Some("lx-placement-98".into()),
+            target_region_id: None,
+            working_set_bytes: None,
+        });
+        store.observe(current.clone());
 
-        let state = ExperimentState::from_parser(&parser, record(10, 2, 0x0102, 110));
-
-        assert!(state.comparisons.iter().all(|stats| !stats.observed_best));
-        assert_eq!(state.observed_spread, None);
-    }
-
-    #[test]
-    fn comparison_marks_every_tied_lowest_median() {
-        let mut parser = parser();
-        for (seq, region, cycles) in [(10, 1, 110), (11, 2, 111), (12, 3, 110)] {
-            parser.observe_record(record(seq, region, 0x0102, cycles));
-        }
-
-        let state = ExperimentState::from_parser(&parser, record(10, 1, 0x0102, 110));
-        let best: Vec<_> = state
-            .comparisons
-            .iter()
-            .filter(|stats| stats.observed_best)
-            .map(|stats| stats.placement.id)
-            .collect();
-
-        assert_eq!(best, vec![1, 3]);
-    }
-
-    #[test]
-    fn missing_placement_metadata_stays_unknown() {
-        let parser = Parser::default();
-        let state = ExperimentState::from_parser(&parser, record(1, 9, 0x0001, 100));
+        let state = ExperimentState::from_model(&device, &store, current);
 
         assert_eq!(state.relation, Relation::Unknown);
         assert!(state.inference.is_none());
-        assert!(state.dma_target.is_none());
-        assert!(state.regions.is_empty());
-    }
-
-    #[test]
-    fn state_follows_an_off_to_contention_transition() {
-        let parser = parser();
-        let off = ExperimentState::from_parser(&parser, record(1, 1, 0, 100));
-        let on = ExperimentState::from_parser(&parser, record(2, 1, 0x0001, 120));
-
-        assert_eq!(off.mode, Mode::Baseline);
-        assert_eq!(off.relation, Relation::Off);
-        assert_eq!(on.mode, Mode::Contention);
-        assert_eq!(on.relation, Relation::SameBank);
-    }
-
-    #[test]
-    fn control_and_alternate_addresses_map_to_their_logical_bank() {
-        let parser = parser();
-        let control = ExperimentState::from_parser(&parser, record(1, 5, 0, 100));
-        let alternate = ExperimentState::from_parser(&parser, record(2, 6, 0, 101));
-
-        let sram1 = control
-            .regions
-            .iter()
-            .find(|region| region.placement.id == 1)
-            .unwrap();
-        assert_eq!(sram1.activity, Activity::Inference);
-        assert_eq!(sram1.active_arena.as_ref().unwrap().name, "SRAM1c");
-        assert_eq!(control.inference_bank_id, Some(1));
-
-        let sram2 = alternate
-            .regions
-            .iter()
-            .find(|region| region.placement.id == 2)
-            .unwrap();
-        assert_eq!(sram2.activity, Activity::Inference);
-        assert_eq!(sram2.active_arena.as_ref().unwrap().arena_addr, 0x2003_9000);
-        assert_eq!(alternate.inference_bank_id, Some(2));
+        assert!(state.requester_target.is_none());
     }
 }

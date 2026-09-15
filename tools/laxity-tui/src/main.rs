@@ -1,8 +1,13 @@
 mod experiment;
+mod lx_v2;
+mod measurement;
+mod model;
+mod profile;
+mod scene;
 mod telemetry;
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     env,
     fs::{File, OpenOptions},
     io::{self, Read, Write},
@@ -28,7 +33,14 @@ use tachyonfx::{fx, EffectManager, Interpolation};
 use experiment::{
     Activity, ExperimentState, MemoryRegionState, Mode, Penalty, PlacementStats, Relation,
 };
-use telemetry::{ParseDelta, Parser, Placement, Stats, CELL_SAMPLE_LIMIT};
+use lx_v2::LxV2Adapter;
+use measurement::{MeasurementStore, SAMPLE_LIMIT};
+use model::{Device, DeviceState, MemoryRegionId, Placement};
+use scene::{
+    transition_effects, EffectKind, EffectTarget, MemorySceneModel, RegionScene, SemanticEffect,
+    ViewMetric,
+};
+use telemetry::{LxEvent, ParseDelta, Stats, TelemetryState};
 
 const FG: Color = Color::Rgb(220, 223, 228);
 const DIM: Color = Color::Rgb(138, 145, 158);
@@ -45,7 +57,6 @@ const MAX_READS_PER_TICK: usize = 64;
 const MAX_LOG_LINES: usize = 256;
 const REPLAY_BYTES_PER_TICK: usize = 320;
 const DISPLAY_HOLD: Duration = Duration::from_millis(450);
-const RELATION_EFFECT_COOLDOWN: Duration = Duration::from_millis(1200);
 const WIDE_MIN_WIDTH: u16 = 110;
 const WIDE_MIN_HEIGHT: u16 = 34;
 const RECORD_SEPARATOR: &str = "   ·   record ";
@@ -61,6 +72,7 @@ enum SourceSpec {
 struct Options {
     source: SourceSpec,
     record: Option<PathBuf>,
+    profile: Option<PathBuf>,
     headless: bool,
     duration: Option<Duration>,
 }
@@ -124,7 +136,10 @@ struct LogBuffer {
 
 struct App {
     source: Input,
-    parser: Parser,
+    telemetry: TelemetryState,
+    adapter: LxV2Adapter,
+    device: DeviceState,
+    measurements: MeasurementStore,
     logs: LogBuffer,
     recorder: Option<File>,
     record_path: Option<PathBuf>,
@@ -142,9 +157,22 @@ struct App {
     memory_area: Rect,
     last_health: Option<Health>,
     display_state: Option<ExperimentState>,
+    display_revision: u64,
     last_display_update: Option<Instant>,
-    last_relation: Option<Relation>,
-    last_relation_effect: Option<Instant>,
+    view: View,
+    metric: ViewMetric,
+    selected_region: usize,
+    semantic_effects: Vec<SemanticEffect>,
+    region_areas: BTreeMap<MemoryRegionId, Rect>,
+    memory_scene_key: Option<(u64, Option<u64>, ViewMetric, Option<MemoryRegionId>)>,
+    memory_scene: Option<MemorySceneModel>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum View {
+    #[default]
+    Telemetry,
+    Memory,
 }
 
 impl Input {
@@ -354,7 +382,7 @@ impl LogBuffer {
 }
 
 impl App {
-    fn new(options: &Options) -> Self {
+    fn with_device(options: &Options, device: Device) -> Self {
         let now = Instant::now();
         let source = Input::open(&options.source);
         let mut logs = LogBuffer::new();
@@ -369,7 +397,10 @@ impl App {
 
         Self {
             source,
-            parser: Parser::default(),
+            telemetry: TelemetryState::default(),
+            adapter: LxV2Adapter::default(),
+            device: DeviceState::new(device),
+            measurements: MeasurementStore::default(),
             logs,
             recorder: None,
             record_path: options.record.clone(),
@@ -387,9 +418,15 @@ impl App {
             memory_area: Rect::default(),
             last_health: None,
             display_state: None,
+            display_revision: 0,
             last_display_update: None,
-            last_relation: None,
-            last_relation_effect: None,
+            view: View::Telemetry,
+            metric: ViewMetric::P50,
+            selected_region: 0,
+            semantic_effects: Vec::new(),
+            region_areas: BTreeMap::new(),
+            memory_scene_key: None,
+            memory_scene: None,
         }
     }
 
@@ -415,7 +452,7 @@ impl App {
                 }
                 Ok(ReadResult::Empty) => break,
                 Ok(ReadResult::Eof) => {
-                    let delta = self.parser.finish();
+                    let delta = self.telemetry.finish();
                     let now = Instant::now();
                     self.accept_delta(delta, now);
                     self.update_display_record(now, true);
@@ -450,22 +487,32 @@ impl App {
         self.total_bytes += bytes.len() as u64;
         self.rate.add(bytes.len());
         self.last_byte = Some(now);
-        let delta = self.parser.feed(bytes);
+        let delta = self.telemetry.feed(bytes);
         self.accept_delta(delta, now);
     }
 
     fn update_display_record(&mut self, now: Instant, force: bool) {
-        let Some(latest) = self.parser.latest_record else {
+        let Some(latest) = self.measurements.latest().cloned() else {
             return;
         };
-        if self.display_state.as_ref().map(|state| state.record.seq) == Some(latest.seq) {
+        if self
+            .display_state
+            .as_ref()
+            .map(|state| state.measurement.sequence)
+            == Some(latest.sequence)
+            && self.display_revision == self.device.topology_revision
+        {
             return;
         }
         let ready = self
             .last_display_update
             .is_none_or(|last| now.duration_since(last) >= DISPLAY_HOLD);
         if force || ready {
-            self.display_state = Some(ExperimentState::from_parser(&self.parser, latest));
+            let next = ExperimentState::from_model(&self.device, &self.measurements, latest);
+            self.semantic_effects
+                .extend(transition_effects(self.display_state.as_ref(), &next));
+            self.display_state = Some(next);
+            self.display_revision = self.device.topology_revision;
             self.last_display_update = Some(now);
         }
     }
@@ -505,6 +552,25 @@ impl App {
         }
         if delta.rejected_candidates > 0 {
             self.last_reject = Some(now);
+            self.semantic_effects.push(SemanticEffect {
+                target: EffectTarget::TransportHeader,
+                kind: EffectKind::Warning,
+            });
+        }
+        for event in delta.events {
+            match event {
+                LxEvent::Header(header) => {
+                    if self.adapter.apply_header(&mut self.device, header) {
+                        self.measurements
+                            .begin_revision(self.device.topology_revision);
+                        self.display_state = None;
+                    }
+                }
+                LxEvent::Record(record) => {
+                    let measurement = self.adapter.adapt_record(&self.device, record);
+                    self.measurements.observe(measurement);
+                }
+            }
         }
         self.logs.push_bytes(&delta.ascii);
     }
@@ -517,7 +583,7 @@ impl App {
             return Health::RecordError;
         }
         if self.source_finished {
-            return if self.parser.stats.accepted_frames > 0 {
+            return if self.telemetry.stats.accepted_frames > 0 {
                 Health::ReplayDone
             } else {
                 Health::ReplayInvalid
@@ -565,41 +631,68 @@ impl App {
                     | Health::SourceError
             )
         {
-            self.effects.add_unique_effect(
-                "health",
-                fx::fade_from_fg(health.color(), (180, Interpolation::SineOut))
-                    .with_area(self.header_area),
-            );
+            let kind = match health {
+                Health::SourceError | Health::RecordError | Health::ReplayInvalid => {
+                    EffectKind::SourceError
+                }
+                Health::Rejecting | Health::Stale | Health::TextOnly => EffectKind::Warning,
+                _ => EffectKind::Arrival,
+            };
+            self.semantic_effects.push(SemanticEffect {
+                target: EffectTarget::TransportHeader,
+                kind,
+            });
         }
         self.last_health = Some(health);
     }
 
-    fn prepare_relation_effect(&mut self, now: Instant) {
-        let Some(state) = self.display_state.as_ref() else {
-            return;
-        };
-        let relation = state.relation;
-        if self.last_relation == Some(relation) || self.memory_area.is_empty() {
-            return;
-        }
-
-        let had_relation = self.last_relation.is_some();
-        self.last_relation = Some(relation);
-        let cooled_down = self
-            .last_relation_effect
-            .is_none_or(|last| now.duration_since(last) >= RELATION_EFFECT_COOLDOWN);
-        if had_relation && cooled_down {
-            self.effects.add_unique_effect(
-                "relation",
-                fx::fade_from_fg(relation_color(relation), (180, Interpolation::SineOut))
-                    .with_area(self.memory_area),
+    fn prepare_semantic_effects(&mut self) {
+        for request in std::mem::take(&mut self.semantic_effects) {
+            let area = match &request.target {
+                EffectTarget::TransportHeader => self.header_area,
+                EffectTarget::MemoryRegion(region_id) => self
+                    .region_areas
+                    .get(region_id)
+                    .copied()
+                    .unwrap_or(self.memory_area),
+                EffectTarget::Placement(placement_id) => self
+                    .device
+                    .placements
+                    .get(placement_id)
+                    .and_then(|placement| placement.region_id.as_ref())
+                    .and_then(|region_id| self.region_areas.get(region_id))
+                    .copied()
+                    .unwrap_or(self.memory_area),
+                EffectTarget::RequesterPath(_, region_id) => region_id
+                    .as_ref()
+                    .and_then(|region_id| self.region_areas.get(region_id))
+                    .copied()
+                    .unwrap_or(self.memory_area),
+            };
+            if area.is_empty() {
+                continue;
+            }
+            let (color, duration) = match request.kind {
+                EffectKind::Arrival => (ACCENT_ALT, 100),
+                EffectKind::RelationChange => (WARNING, 220),
+                EffectKind::Warning => (DANGER, 180),
+                EffectKind::SourceError => (DANGER, 240),
+            };
+            self.effects.add_effect(
+                fx::fade_from_fg(color, (duration, Interpolation::SineOut)).with_area(area),
             );
-            self.last_relation_effect = Some(now);
         }
     }
 
     fn draw(&mut self, frame: &mut Frame, elapsed: Duration, now: Instant) {
         let screen = frame.area();
+        self.region_areas.clear();
+        if self.view == View::Memory {
+            self.draw_memory_view(frame, screen, now);
+            self.effects
+                .process_effects(elapsed.into(), frame.buffer_mut(), screen);
+            return;
+        }
         let experiment = self.display_state.as_ref();
 
         if screen.width >= WIDE_MIN_WIDTH && screen.height >= WIDE_MIN_HEIGHT {
@@ -641,6 +734,229 @@ impl App {
             .process_effects(elapsed.into(), frame.buffer_mut(), screen);
     }
 
+    fn draw_memory_view(&mut self, frame: &mut Frame, screen: Rect, now: Instant) {
+        let areas = Layout::vertical([
+            Constraint::Length(7),
+            Constraint::Min(10),
+            Constraint::Length(4),
+        ])
+        .split(screen);
+        self.header_area = areas[0];
+        self.memory_area = areas[1];
+        self.draw_status(frame, areas[0], now);
+
+        let region_count = self.device.device.memory_regions.len();
+        if region_count > 0 {
+            self.selected_region %= region_count;
+        }
+        let selected = self
+            .device
+            .device
+            .memory_regions
+            .keys()
+            .nth(self.selected_region)
+            .cloned();
+        let scene_key = (
+            self.device.topology_revision,
+            self.display_state
+                .as_ref()
+                .map(|state| state.measurement.sequence),
+            self.metric,
+            selected.clone(),
+        );
+        if self.memory_scene_key.as_ref() != Some(&scene_key) {
+            self.memory_scene = Some(MemorySceneModel::build(
+                &self.device,
+                &self.measurements,
+                self.display_state.as_ref(),
+                self.metric,
+                selected.as_ref(),
+            ));
+            self.memory_scene_key = Some(scene_key);
+        }
+        let scene = self
+            .memory_scene
+            .as_ref()
+            .expect("a memory scene is built before rendering");
+        Self::draw_memory_scene(frame, areas[1], scene, &mut self.region_areas);
+        Self::draw_memory_footer(frame, areas[2], scene);
+    }
+
+    fn draw_memory_scene(
+        frame: &mut Frame,
+        area: Rect,
+        scene: &MemorySceneModel,
+        region_areas: &mut BTreeMap<MemoryRegionId, Rect>,
+    ) {
+        let title = format!(
+            " logical address slabs ╱ {} ╱ {} ",
+            scene.metric.label(),
+            scene.device_label
+        );
+        let block = panel(title, BORDER);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        if scene.regions.is_empty() {
+            frame.render_widget(
+                Paragraph::new("device profile declares no memory regions")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(WARNING)),
+                inner,
+            );
+            return;
+        }
+
+        let max_size = scene
+            .regions
+            .iter()
+            .map(|region| region.range.size)
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let max_bar_width = inner.width.saturating_sub(5).clamp(8, 72) as usize;
+        let values: Vec<_> = scene
+            .regions
+            .iter()
+            .flat_map(|region| {
+                region
+                    .placements
+                    .iter()
+                    .filter_map(|placement| placement.metric_value)
+                    .chain(region.metric_value)
+            })
+            .collect();
+        let value_max = values.iter().copied().map(f64::abs).fold(0.0_f64, f64::max);
+        let compact = inner.height < scene.regions.len() as u16 * 3;
+        let stride = if compact { 2 } else { 3 };
+        let mut lines = Vec::new();
+
+        for (index, region) in scene.regions.iter().enumerate() {
+            let y = inner.y.saturating_add(lines.len() as u16);
+            if y >= inner.bottom() {
+                break;
+            }
+            let color = if region.selected {
+                SUCCESS
+            } else if region.activity == Activity::Inactive {
+                region_color(index)
+            } else {
+                activity_color(region.activity)
+            };
+            region_areas.insert(
+                region.id.clone(),
+                Rect::new(inner.x, y, inner.width, stride.min(inner.bottom() - y)),
+            );
+            let metric = region
+                .metric_value
+                .map(|value| format!("{} {:.1}", scene.metric.label(), value))
+                .unwrap_or_else(|| format!("{} unavailable", scene.metric.label()));
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if region.selected { "▎ " } else { "· " },
+                    Style::default().fg(color),
+                ),
+                Span::styled(
+                    format!("{:<8}", region.label),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "{}..{}  ",
+                        format_address(region.range.start),
+                        region
+                            .range
+                            .end()
+                            .map(format_address)
+                            .unwrap_or_else(|| "invalid".to_string())
+                    ),
+                    Style::default().fg(DIM),
+                ),
+                Span::styled(
+                    metric,
+                    Style::default().fg(metric_color(scene.metric, region.metric_value)),
+                ),
+            ]));
+
+            let width = ((region.range.size.saturating_mul(max_bar_width as u64) / max_size)
+                as usize)
+                .clamp(4, max_bar_width);
+            lines.push(memory_slab_line(region, width, value_max, color));
+            if !compact {
+                let placement_text = if region.placements.is_empty() {
+                    "no measured placement ranges".to_string()
+                } else {
+                    region
+                        .placements
+                        .iter()
+                        .map(|placement| {
+                            let value = placement
+                                .metric_value
+                                .map(|value| format!(" · {} {value:.1}", scene.metric.label()))
+                                .unwrap_or_default();
+                            format!(
+                                "{} {}{value}",
+                                placement.label,
+                                format_range(placement.range.start, placement.range.end())
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("    {placement_text}"),
+                    Style::default().fg(FAINT),
+                )));
+            }
+        }
+
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn draw_memory_footer(frame: &mut Frame, area: Rect, scene: &MemorySceneModel) {
+        let selected = scene.regions.iter().find(|region| region.selected);
+        let first = selected
+            .map(|region| {
+                format!(
+                    "selected {} · {} · {} placement range(s)",
+                    region.label,
+                    format_range(region.range.start, region.range.end()),
+                    region.placements.len()
+                )
+            })
+            .unwrap_or_else(|| "no memory region selected".to_string());
+        let flow = scene.flows.first().map(|flow| {
+            let target = flow
+                .target_region_id
+                .as_ref()
+                .and_then(|id| scene.regions.iter().find(|region| &region.id == id))
+                .map(|region| region.label.as_str())
+                .unwrap_or("unknown target");
+            format!("   ·   {} ───► {target}", flow.label)
+        });
+        let topology = if scene.physical_topology_available {
+            "profile declares verified physical topology"
+        } else {
+            "logical address view · physical interconnect unavailable"
+        };
+        let lines = vec![
+            Line::from(vec![
+                Span::styled(first, Style::default().fg(FG)),
+                Span::styled(flow.unwrap_or_default(), Style::default().fg(WARNING)),
+            ]),
+            Line::from(vec![
+                Span::styled(topology, Style::default().fg(FAINT)),
+                Span::styled(
+                    "   ·   ↑/↓ select   tab metric   m dashboard   q quit",
+                    Style::default().fg(DIM),
+                ),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(lines).block(panel(" memory view controls ", BORDER)),
+            area,
+        );
+    }
+
     fn draw_status(&self, frame: &mut Frame, area: Rect, now: Instant) {
         let health = self.health(now);
         let record_style = if self.record_error.is_some() {
@@ -659,8 +975,8 @@ impl App {
             area.width.saturating_sub(2) as usize,
         );
         let clock = self
-            .parser
-            .metadata
+            .adapter
+            .metadata()
             .as_ref()
             .map(|metadata| format!("{:.3} MHz CYCCNT", metadata.cyccnt_hz as f64 / 1_000_000.0))
             .unwrap_or_else(|| "clock waiting".to_string());
@@ -673,7 +989,7 @@ impl App {
                         .fg(health.color())
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("   ·   q quit", Style::default().fg(FAINT)),
+                Span::styled("   ·   m view   ·   q quit", Style::default().fg(FAINT)),
             ])
             .alignment(Alignment::Center),
             Line::from(vec![
@@ -689,23 +1005,23 @@ impl App {
                 separator(),
                 metric(format!(
                     "{} frames",
-                    comma(self.parser.stats.accepted_frames)
+                    comma(self.telemetry.stats.accepted_frames)
                 )),
                 separator(),
-                metric(format!("{} records", comma(self.parser.stats.records))),
+                metric(format!("{} records", comma(self.telemetry.stats.records))),
             ])
             .alignment(Alignment::Center),
             Line::from(vec![
                 warning_metric(format!(
                     "{} crc rejects",
-                    comma(self.parser.stats.crc_rejections)
+                    comma(self.telemetry.stats.crc_rejections)
                 )),
                 separator(),
-                warning_metric(format!("{} seq gaps", comma(self.parser.stats.gaps))),
+                warning_metric(format!("{} seq gaps", comma(self.telemetry.stats.gaps))),
                 separator(),
                 warning_metric(format!(
                     "{} target drops",
-                    comma(self.parser.stats.dropped as u64)
+                    comma(self.telemetry.stats.dropped as u64)
                 )),
             ])
             .alignment(Alignment::Center),
@@ -731,13 +1047,13 @@ impl App {
     }
 
     fn draw_memory_topology(&self, frame: &mut Frame, area: Rect, state: Option<&ExperimentState>) {
-        let title = " logical SRAM topology ╱ traffic flow ";
+        let title = " logical memory topology ╱ traffic flow ";
         let Some(state) = state else {
             frame.render_widget(
                 waiting_panel(
                     title,
                     "waiting for placement metadata",
-                    "banks appear after a valid header",
+                    "regions appear after profile and placement metadata",
                 ),
                 area,
             );
@@ -752,8 +1068,8 @@ impl App {
                 )),
                 Line::from(Span::styled(
                     format!(
-                        "inference label id{} · topology not inferred",
-                        state.record.region_id
+                        "placement {} · containing region unavailable",
+                        state.measurement.placement_id
                     ),
                     Style::default().fg(DIM),
                 )),
@@ -767,15 +1083,31 @@ impl App {
             return;
         }
 
-        let inference = placement_name(state.inference.as_ref(), state.record.region_id);
-        let dma = state
-            .aggressor
-            .region_id
-            .map(|id| placement_name(state.dma_target.as_ref(), id))
+        let inference = placement_name(
+            state.inference.as_ref(),
+            state.measurement.placement_id.to_string(),
+        );
+        let requester = state
+            .measurement
+            .requester
+            .as_ref()
+            .map(|load| {
+                placement_name(
+                    state.requester_target.as_ref(),
+                    load.target_placement_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "unknown".to_string()),
+                )
+            })
             .unwrap_or_else(|| "off".to_string());
         let mut lines = vec![
-            flow_line("CPU / inference", &inference, ACCENT),
-            flow_line("GPDMA traffic", &dma, WARNING),
+            flow_line("workload", &inference, ACCENT),
+            flow_line(
+                state.requester_label.as_deref().unwrap_or("requester"),
+                &requester,
+                WARNING,
+            ),
             Line::from(Span::styled(
                 relation_message(state.relation),
                 Style::default()
@@ -789,7 +1121,10 @@ impl App {
             area.height.saturating_sub(2) >= (state.regions.len() as u16).saturating_mul(2) + 4;
         for region in &state.regions {
             let color = activity_color(region.activity);
-            let arena = region.active_arena.as_ref().unwrap_or(&region.placement);
+            let arena = region
+                .active_placement
+                .as_ref()
+                .unwrap_or(&region.placement);
             let activity = region_activity_label(region);
             let marker = if region.activity == Activity::Inactive {
                 "·"
@@ -799,7 +1134,7 @@ impl App {
             if detailed {
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("{marker} {:<8}", region.placement.name),
+                        format!("{marker} {:<8}", region.region.label),
                         Style::default().fg(color),
                     ),
                     Span::styled(
@@ -811,7 +1146,7 @@ impl App {
                     format!(
                         "    arena {} · {} · cell n {}",
                         arena_range(arena),
-                        format_arena_size(arena.arena_size),
+                        format_arena_size(arena.range.size),
                         comma(region.samples as u64)
                     ),
                     Style::default().fg(DIM),
@@ -819,14 +1154,14 @@ impl App {
             } else {
                 lines.push(Line::from(vec![
                     Span::styled(
-                        format!("{marker} {:<7}", region.placement.name),
+                        format!("{marker} {:<7}", region.region.label),
                         Style::default().fg(color),
                     ),
                     Span::styled(
                         format!(
                             " {} + {} ",
-                            format_address(arena.arena_addr),
-                            format_arena_size(arena.arena_size)
+                            format_address(arena.range.start),
+                            format_arena_size(arena.range.size)
                         ),
                         Style::default().fg(DIM),
                     ),
@@ -836,7 +1171,7 @@ impl App {
         }
         lines.push(
             Line::from(Span::styled(
-                "logical regions from telemetry metadata · not die geometry",
+                "logical regions from device profile · placements are measured ranges",
                 Style::default().fg(FAINT),
             ))
             .alignment(Alignment::Center),
@@ -859,27 +1194,40 @@ impl App {
             return;
         };
 
-        let clock_hz = observed_clock(&self.parser);
-        let inference = placement_name(state.inference.as_ref(), state.record.region_id);
+        let clock_hz = observed_clock(&self.adapter);
+        let inference = placement_name(
+            state.inference.as_ref(),
+            state.measurement.placement_id.to_string(),
+        );
         let arena = state
             .inference
             .as_ref()
             .map(|placement| {
                 format!(
                     "{} + {}",
-                    format_address(placement.arena_addr),
-                    format_arena_size(placement.arena_size)
+                    format_address(placement.range.start),
+                    format_arena_size(placement.range.size)
                 )
             })
             .unwrap_or_else(|| "metadata unavailable".to_string());
-        let dma = match state.aggressor.region_id {
-            None => "off".to_string(),
-            Some(id) => format!(
-                "{} · {}",
-                placement_name(state.dma_target.as_ref(), id),
-                footprint_label(state)
-            ),
-        };
+        let requester = state
+            .measurement
+            .requester
+            .as_ref()
+            .map(|load| {
+                format!(
+                    "{} · {}",
+                    placement_name(
+                        state.requester_target.as_ref(),
+                        load.target_placement_id
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown".to_string()),
+                    ),
+                    footprint_label(state)
+                )
+            })
+            .unwrap_or_else(|| "off".to_string());
         let mut lines = vec![
             key_value(
                 "mode",
@@ -892,22 +1240,31 @@ impl App {
             ),
             key_value("inference", inference, ACCENT),
             key_value("arena", arena, FG),
-            key_value("DMA target", dma, WARNING),
+            key_value("requester", requester, WARNING),
             key_value(
                 "latest",
-                format_cycle_time(state.record.exec_cyc, clock_hz),
+                state
+                    .measurement
+                    .metrics
+                    .execution_cycles
+                    .map(|cycles| format_cycle_time(cycles, clock_hz))
+                    .unwrap_or_else(|| "unavailable".to_string()),
                 FG,
             ),
-            key_value("off p50", optional_cycles(state.baseline), ACCENT_ALT),
+            key_value(
+                "off p50",
+                optional_cycles(state.baseline.map(|statistics| statistics.p50)),
+                ACCENT_ALT,
+            ),
             key_value(
                 "cell p50",
                 state
-                    .current_median
-                    .map(|cycles| {
+                    .current
+                    .map(|statistics| {
                         format!(
                             "{} · n {}",
-                            comma_u32(cycles),
-                            comma(state.current_samples as u64)
+                            comma(statistics.p50),
+                            comma(statistics.count as u64)
                         )
                     })
                     .unwrap_or_else(|| "waiting".to_string()),
@@ -923,12 +1280,17 @@ impl App {
             ),
         ];
         if state.mode == Mode::Contention {
-            let proof = match state.transfer_advanced {
-                Some(true) => format!("advanced · counter {}", comma(state.record.reserved as u64)),
-                Some(false) => format!("pending · counter {}", comma(state.record.reserved as u64)),
+            let progress = state
+                .measurement
+                .metrics
+                .requester_progress
+                .unwrap_or_default();
+            let proof = match state.requester_advanced {
+                Some(true) => format!("advanced · counter {}", comma(progress)),
+                Some(false) => format!("pending · counter {}", comma(progress)),
                 None => "unavailable".to_string(),
             };
-            lines.push(key_value("DMA proof", proof, DIM));
+            lines.push(key_value("requester proof", proof, DIM));
         }
         lines.push(Line::from(Span::styled(
             "wall cycles mix preemption + contention",
@@ -937,7 +1299,7 @@ impl App {
         lines.push(Line::from(Span::styled(
             format!(
                 "p50 windows retain ≤ {} samples/cell",
-                comma(CELL_SAMPLE_LIMIT as u64)
+                comma(SAMPLE_LIMIT as u64)
             ),
             Style::default().fg(FAINT),
         )));
@@ -961,12 +1323,12 @@ impl App {
         let minimum = state
             .comparisons
             .iter()
-            .filter_map(|stats| stats.median)
+            .filter_map(PlacementStats::p50)
             .min();
         let maximum = state
             .comparisons
             .iter()
-            .filter_map(|stats| stats.median)
+            .filter_map(PlacementStats::p50)
             .max();
         let max_penalty = state
             .comparisons
@@ -979,8 +1341,8 @@ impl App {
         let max_median = maximum.unwrap_or(1).max(1);
         let bar_width = area.width.saturating_sub(99).clamp(8, 28) as usize;
 
-        let rows = state.comparisons.iter().map(|stats| {
-            let current = state.inference_bank_id == Some(stats.placement.id);
+        let rows = state.comparisons.iter().enumerate().map(|(index, stats)| {
+            let current = state.measurement.placement_id == stats.placement.id;
             let marker = if current { "▎" } else { " " };
             let best = if stats.observed_best {
                 " · observed best"
@@ -988,9 +1350,9 @@ impl App {
                 ""
             };
             let change = comparison_change(state.mode, stats, minimum);
-            let fill = match (state.mode, stats.median, stats.penalty) {
+            let fill = match (state.mode, stats.p50(), stats.penalty) {
                 (Mode::Baseline, Some(median), _) => {
-                    (median as u64 * bar_width as u64 / max_median as u64) as usize
+                    (median * bar_width as u64 / max_median) as usize
                 }
                 (Mode::Contention, _, Some(penalty)) => {
                     (penalty.cycles.unsigned_abs() * bar_width as u64 / max_penalty) as usize
@@ -1003,7 +1365,7 @@ impl App {
             } else if stats.observed_best {
                 SUCCESS
             } else {
-                region_color(stats.placement.id)
+                region_color(index)
             };
             let bar_color = if state.mode == Mode::Baseline {
                 row_color
@@ -1015,13 +1377,15 @@ impl App {
                 Cell::from(Line::from(vec![
                     Span::styled(marker, Style::default().fg(ACCENT)),
                     Span::styled(
-                        format!(" {}{}", stats.placement.name, best),
+                        format!(" {}{}", placement_label(&stats.placement), best),
                         Style::default().fg(row_color),
                     ),
                 ])),
-                Cell::from(comma(stats.samples as u64)),
-                Cell::from(optional_cycles(stats.median)),
-                Cell::from(optional_cycles(stats.baseline)),
+                Cell::from(comma(stats.samples() as u64)),
+                Cell::from(optional_cycles(stats.p50())),
+                Cell::from(optional_cycles(
+                    stats.baseline.map(|statistics| statistics.p50),
+                )),
                 Cell::from(change),
                 Cell::from(Line::from(vec![
                     Span::styled("█".repeat(fill), Style::default().fg(bar_color)),
@@ -1036,7 +1400,7 @@ impl App {
                 " placement comparison ╱ rolling aggressor-off p50 ╱ observed spread {} ",
                 state
                     .observed_spread
-                    .map(|cycles| format!("{} cyc", comma_u32(cycles)))
+                    .map(|cycles| format!("{} cyc", comma(cycles)))
                     .unwrap_or_else(|| "waiting".to_string())
             ),
             Mode::Contention => {
@@ -1097,11 +1461,23 @@ impl App {
             return;
         };
 
-        let inference = placement_name(state.inference.as_ref(), state.record.region_id);
-        let dma = state
-            .aggressor
-            .region_id
-            .map(|id| placement_name(state.dma_target.as_ref(), id))
+        let inference = placement_name(
+            state.inference.as_ref(),
+            state.measurement.placement_id.to_string(),
+        );
+        let requester = state
+            .measurement
+            .requester
+            .as_ref()
+            .map(|load| {
+                placement_name(
+                    state.requester_target.as_ref(),
+                    load.target_placement_id
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "unknown".to_string()),
+                )
+            })
             .unwrap_or_else(|| "off".to_string());
         let mut lines = vec![
             Line::from(Span::styled(
@@ -1115,10 +1491,16 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(vec![
-                Span::styled("CPU/inference ► ", Style::default().fg(FAINT)),
+                Span::styled("workload ► ", Style::default().fg(FAINT)),
                 Span::styled(inference, Style::default().fg(ACCENT)),
-                Span::styled("   GPDMA ► ", Style::default().fg(FAINT)),
-                Span::styled(dma, Style::default().fg(WARNING)),
+                Span::styled(
+                    format!(
+                        "   {} ► ",
+                        state.requester_label.as_deref().unwrap_or("requester")
+                    ),
+                    Style::default().fg(FAINT),
+                ),
+                Span::styled(requester, Style::default().fg(WARNING)),
                 Span::styled(
                     if state.mode == Mode::Contention {
                         format!(" / {}", footprint_label(state))
@@ -1131,7 +1513,10 @@ impl App {
         ];
         for region in &state.regions {
             let color = activity_color(region.activity);
-            let arena = region.active_arena.as_ref().unwrap_or(&region.placement);
+            let arena = region
+                .active_placement
+                .as_ref()
+                .unwrap_or(&region.placement);
             lines.push(Line::from(vec![
                 Span::styled(
                     if region.activity == Activity::Inactive {
@@ -1142,14 +1527,14 @@ impl App {
                     Style::default().fg(color),
                 ),
                 Span::styled(
-                    format!("{:<7}", region.placement.name),
+                    format!("{:<7}", region.region.label),
                     Style::default().fg(color),
                 ),
                 Span::styled(
                     format!(
                         "{} + {:<8}",
-                        format_address(arena.arena_addr),
-                        format_arena_size(arena.arena_size)
+                        format_address(arena.range.start),
+                        format_arena_size(arena.range.size)
                     ),
                     Style::default().fg(DIM),
                 ),
@@ -1161,11 +1546,19 @@ impl App {
         }
         lines.push(Line::from(vec![
             Span::styled("latest ", Style::default().fg(FAINT)),
-            Span::styled(comma_u32(state.record.exec_cyc), Style::default().fg(FG)),
+            Span::styled(
+                state
+                    .measurement
+                    .metrics
+                    .execution_cycles
+                    .map(comma)
+                    .unwrap_or_else(|| "unavailable".to_string()),
+                Style::default().fg(FG),
+            ),
             separator(),
             Span::styled("off p50 ", Style::default().fg(FAINT)),
             Span::styled(
-                optional_cycles(state.baseline),
+                optional_cycles(state.baseline.map(|statistics| statistics.p50)),
                 Style::default().fg(ACCENT_ALT),
             ),
             separator(),
@@ -1181,7 +1574,7 @@ impl App {
         let minimum = state
             .comparisons
             .iter()
-            .filter_map(|stats| stats.median)
+            .filter_map(PlacementStats::p50)
             .min();
         lines.push(Line::from(Span::styled(
             if state.mode == Mode::Baseline {
@@ -1189,7 +1582,7 @@ impl App {
                     "rolling p50 · preemption possible · aggressor-off spread {}",
                     state
                         .observed_spread
-                        .map(|cycles| format!("{} cyc", comma_u32(cycles)))
+                        .map(|cycles| format!("{} cyc", comma(cycles)))
                         .unwrap_or_else(|| "waiting".to_string())
                 )
             } else {
@@ -1198,7 +1591,7 @@ impl App {
             Style::default().fg(FAINT),
         )));
         for stats in &state.comparisons {
-            let current = state.inference_bank_id == Some(stats.placement.id);
+            let current = state.measurement.placement_id == stats.placement.id;
             let color = if current {
                 ACCENT
             } else if stats.observed_best {
@@ -1212,11 +1605,11 @@ impl App {
                     Style::default().fg(ACCENT),
                 ),
                 Span::styled(
-                    format!("{:<7}", stats.placement.name),
+                    format!("{:<7}", placement_label(&stats.placement)),
                     Style::default().fg(color),
                 ),
                 Span::styled(
-                    format!("{:>9}  ", optional_cycles(stats.median)),
+                    format!("{:>9}  ", optional_cycles(stats.p50())),
                     Style::default().fg(FG),
                 ),
                 Span::styled(
@@ -1285,6 +1678,73 @@ fn waiting_panel(title: &str, message: &str, detail: &str) -> Paragraph<'static>
     .block(panel(title.to_string(), BORDER))
 }
 
+fn memory_slab_line(
+    region: &RegionScene,
+    width: usize,
+    value_max: f64,
+    color: Color,
+) -> Line<'static> {
+    let mut cells = vec![("░", Style::default().fg(FAINT)); width];
+    for placement in &region.placements {
+        if !region.range.contains(placement.range) {
+            continue;
+        }
+        let offset = placement.range.start - region.range.start;
+        let start = (offset.saturating_mul(width as u64) / region.range.size) as usize;
+        let end_offset = offset.saturating_add(placement.range.size);
+        let end = end_offset
+            .saturating_mul(width as u64)
+            .div_ceil(region.range.size) as usize;
+        let intensity = placement
+            .metric_value
+            .map(|value| {
+                if value_max <= f64::EPSILON {
+                    0
+                } else {
+                    (value.abs() / value_max * 3.0).round() as usize
+                }
+            })
+            .unwrap_or(0)
+            .min(3);
+        let symbol = ["░", "▒", "▓", "█"][intensity];
+        let placement_style = Style::default().fg(if placement.active { ACCENT } else { color });
+        for cell in cells
+            .iter_mut()
+            .take(end.clamp(start + 1, width))
+            .skip(start.min(width.saturating_sub(1)))
+        {
+            *cell = (symbol, placement_style);
+        }
+    }
+
+    let mut spans = Vec::with_capacity(width + 3);
+    spans.push(Span::styled("   ╱", Style::default().fg(color)));
+    spans.extend(
+        cells
+            .into_iter()
+            .map(|(symbol, style)| Span::styled(symbol, style)),
+    );
+    spans.push(Span::styled("╱│", Style::default().fg(color)));
+    Line::from(spans)
+}
+
+fn metric_color(metric: ViewMetric, value: Option<f64>) -> Color {
+    match (metric, value) {
+        (_, None) => FAINT,
+        (ViewMetric::Slack, Some(value)) if value < 0.0 => DANGER,
+        (ViewMetric::Slack, Some(_)) => SUCCESS,
+        (ViewMetric::Penalty, Some(value)) if value < 0.0 => SUCCESS,
+        (ViewMetric::Penalty, Some(value)) if value > 0.0 => WARNING,
+        (ViewMetric::Penalty, Some(_)) => DIM,
+        (_, Some(_)) => ACCENT_ALT,
+    }
+}
+
+fn format_range(start: u64, end: Option<u64>) -> String {
+    end.map(|end| format!("[{}, {})", format_address(start), format_address(end)))
+        .unwrap_or_else(|| "invalid address range".to_string())
+}
+
 fn flow_line(label: &str, target: &str, color: Color) -> Line<'static> {
     Line::from(vec![
         Span::styled(format!("{label:<18}"), Style::default().fg(DIM)),
@@ -1303,11 +1763,15 @@ fn key_value(label: &str, value: String, color: Color) -> Line<'static> {
     ])
 }
 
-fn placement_name(placement: Option<&Placement>, fallback_id: u8) -> String {
+fn placement_name(placement: Option<&Placement>, fallback_id: String) -> String {
     placement
-        .map(|placement| placement.name.clone())
+        .and_then(|placement| placement.label.clone())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| format!("id{fallback_id}"))
+        .unwrap_or(fallback_id)
+}
+
+fn placement_label(placement: &Placement) -> String {
+    placement_name(Some(placement), placement.id.to_string())
 }
 
 fn mode_label(mode: Mode) -> &'static str {
@@ -1320,17 +1784,17 @@ fn mode_label(mode: Mode) -> &'static str {
 fn relation_label(relation: Relation) -> &'static str {
     match relation {
         Relation::Off => "AGGRESSOR OFF",
-        Relation::SameBank => "SAME BANK",
-        Relation::CrossBank => "CROSS BANK",
+        Relation::SameRegion => "SAME REGION",
+        Relation::CrossRegion => "CROSS REGION",
         Relation::Unknown => "RELATION UNKNOWN",
     }
 }
 
 fn relation_message(relation: Relation) -> &'static str {
     match relation {
-        Relation::Off => "GPDMA AGGRESSOR OFF · BASELINE CELL",
-        Relation::SameBank => "SAME BANK · SHARED SRAM TARGET",
-        Relation::CrossBank => "CROSS BANK · DISTINCT SRAM TARGETS / SHARED FABRIC",
+        Relation::Off => "REQUESTER OFF · BASELINE CELL",
+        Relation::SameRegion => "SAME REGION · SHARED MEMORY TARGET",
+        Relation::CrossRegion => "CROSS REGION · DISTINCT TARGETS / SHARED PATH POSSIBLE",
         Relation::Unknown => "RELATION UNKNOWN · METADATA INCOMPLETE",
     }
 }
@@ -1338,8 +1802,8 @@ fn relation_message(relation: Relation) -> &'static str {
 fn relation_color(relation: Relation) -> Color {
     match relation {
         Relation::Off => SUCCESS,
-        Relation::SameBank => DANGER,
-        Relation::CrossBank => ACCENT_ALT,
+        Relation::SameRegion => DANGER,
+        Relation::CrossRegion => ACCENT_ALT,
         Relation::Unknown => WARNING,
     }
 }
@@ -1347,19 +1811,23 @@ fn relation_color(relation: Relation) -> Color {
 fn activity_label(activity: Activity) -> &'static str {
     match activity {
         Activity::Inactive => "idle",
-        Activity::Inference => "INFERENCE",
-        Activity::Dma => "DMA",
-        Activity::Collision => "INFERENCE + DMA",
+        Activity::Workload => "WORKLOAD",
+        Activity::Requester => "REQUESTER",
+        Activity::Collision => "WORKLOAD + REQUESTER",
     }
 }
 
 fn region_activity_label(region: &MemoryRegionState) -> String {
     match region
-        .active_arena
+        .active_placement
         .as_ref()
         .filter(|arena| arena.id != region.placement.id)
     {
-        Some(arena) => format!("{} · {}", activity_label(region.activity), arena.name),
+        Some(arena) => format!(
+            "{} · {}",
+            activity_label(region.activity),
+            placement_label(arena)
+        ),
         None => activity_label(region.activity).to_string(),
     }
 }
@@ -1367,72 +1835,69 @@ fn region_activity_label(region: &MemoryRegionState) -> String {
 fn activity_color(activity: Activity) -> Color {
     match activity {
         Activity::Inactive => DIM,
-        Activity::Inference => ACCENT,
-        Activity::Dma => WARNING,
+        Activity::Workload => ACCENT,
+        Activity::Requester => WARNING,
         Activity::Collision => DANGER,
     }
 }
 
 fn footprint_label(state: &ExperimentState) -> String {
     state
-        .aggressor
-        .footprint_bytes
+        .working_set_bytes
         .map(format_footprint_size)
-        .unwrap_or_else(|| format!("footprint index {}", state.aggressor.footprint_index))
+        .unwrap_or_else(|| "working set unavailable".to_string())
 }
 
 fn arena_range(placement: &Placement) -> String {
     placement
-        .arena_end()
+        .range
+        .end()
         .map(|end| {
             format!(
                 "[{}, {})",
-                format_address(placement.arena_addr),
+                format_address(placement.range.start),
                 format_address(end)
             )
         })
         .unwrap_or_else(|| "invalid address range".to_string())
 }
 
-fn format_address(address: u32) -> String {
+fn format_address(address: u64) -> String {
     format!("0x{address:08x}")
 }
 
-fn format_arena_size(bytes: u32) -> String {
-    format!("{} B", comma(bytes as u64))
+fn format_arena_size(bytes: u64) -> String {
+    format!("{} B", comma(bytes))
 }
 
-fn format_footprint_size(bytes: u32) -> String {
+fn format_footprint_size(bytes: u64) -> String {
     if bytes.is_multiple_of(1024) {
-        format!("{} KiB", comma((bytes / 1024) as u64))
+        format!("{} KiB", comma(bytes / 1024))
     } else {
         format_arena_size(bytes)
     }
 }
 
-fn observed_clock(parser: &Parser) -> Option<u32> {
-    parser
-        .metadata
-        .as_ref()
+fn observed_clock(adapter: &LxV2Adapter) -> Option<u32> {
+    adapter
+        .metadata()
         .map(|metadata| metadata.cyccnt_hz)
         .filter(|clock| *clock != 0)
 }
 
-fn format_cycle_time(cycles: u32, clock_hz: Option<u32>) -> String {
+fn format_cycle_time(cycles: u64, clock_hz: Option<u32>) -> String {
     match clock_hz {
         Some(clock) => format!(
             "{} cyc · {:.3} ms",
-            comma_u32(cycles),
+            comma(cycles),
             cycles as f64 * 1000.0 / clock as f64
         ),
-        None => format!("{} cyc", comma_u32(cycles)),
+        None => format!("{} cyc", comma(cycles)),
     }
 }
 
-fn optional_cycles(cycles: Option<u32>) -> String {
-    cycles
-        .map(comma_u32)
-        .unwrap_or_else(|| "waiting".to_string())
+fn optional_cycles(cycles: Option<u64>) -> String {
+    cycles.map(comma).unwrap_or_else(|| "waiting".to_string())
 }
 
 fn format_penalty(penalty: Penalty) -> String {
@@ -1459,10 +1924,10 @@ fn penalty_color(penalty: Option<Penalty>) -> Color {
     }
 }
 
-fn comparison_change(mode: Mode, stats: &PlacementStats, lowest: Option<u32>) -> String {
+fn comparison_change(mode: Mode, stats: &PlacementStats, lowest: Option<u64>) -> String {
     let penalty = match mode {
         Mode::Baseline => stats
-            .median
+            .p50()
             .zip(lowest)
             .map(|(median, base)| Penalty::between(median, base)),
         Mode::Contention => stats.penalty,
@@ -1519,14 +1984,20 @@ fn main() -> ExitCode {
 }
 
 fn run(options: Options) -> Result<(), String> {
+    let device = match options.profile.as_deref() {
+        Some(path) => profile::load_profile(path)
+            .map_err(|error| format!("cannot load device profile {}: {error}", path.display()))?,
+        None => profile::stm32u585()
+            .map_err(|error| format!("invalid built-in STM32U585 profile: {error}"))?,
+    };
     if options.headless {
-        return run_headless(&options);
+        return run_headless(&options, device);
     }
-    ratatui::run(|terminal| run_tui(terminal, &options)).map_err(|error| error.to_string())
+    ratatui::run(|terminal| run_tui(terminal, &options, device)).map_err(|error| error.to_string())
 }
 
-fn run_tui(terminal: &mut DefaultTerminal, options: &Options) -> io::Result<()> {
-    let mut app = App::new(options);
+fn run_tui(terminal: &mut DefaultTerminal, options: &Options, device: Device) -> io::Result<()> {
+    let mut app = App::with_device(options, device);
     let started = Instant::now();
     let mut last_draw = Instant::now();
 
@@ -1542,19 +2013,42 @@ fn run_tui(terminal: &mut DefaultTerminal, options: &Options) -> io::Result<()> 
         app.update_display_record(now, false);
         app.rate.update(now);
         app.prepare_health_effect(now);
-        app.prepare_relation_effect(now);
+        app.prepare_semantic_effects();
         let elapsed = now.duration_since(last_draw);
         last_draw = now;
         terminal.draw(|frame| app.draw(frame, elapsed, now))?;
 
         if event::poll(Duration::from_millis(33))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press
-                    && (matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                        || key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL))
-                {
-                    app.should_quit = true;
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.should_quit = true
+                        }
+                        KeyCode::Char('m') => {
+                            app.view = match app.view {
+                                View::Telemetry => View::Memory,
+                                View::Memory => View::Telemetry,
+                            }
+                        }
+                        KeyCode::Tab if app.view == View::Memory => {
+                            app.metric = app.metric.next();
+                        }
+                        KeyCode::Up if app.view == View::Memory => {
+                            let count = app.device.device.memory_regions.len();
+                            if count > 0 {
+                                app.selected_region = (app.selected_region + count - 1) % count;
+                            }
+                        }
+                        KeyCode::Down if app.view == View::Memory => {
+                            let count = app.device.device.memory_regions.len();
+                            if count > 0 {
+                                app.selected_region = (app.selected_region + 1) % count;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -1563,26 +2057,36 @@ fn run_tui(terminal: &mut DefaultTerminal, options: &Options) -> io::Result<()> 
     app.finish_recording()
 }
 
-fn run_headless(options: &Options) -> Result<(), String> {
-    if !matches!(options.source, SourceSpec::File(_)) {
-        return Err("--headless requires --file".to_string());
+fn run_headless(options: &Options, device: Device) -> Result<(), String> {
+    let live = !matches!(options.source, SourceSpec::File(_));
+    if live && options.duration.is_none() {
+        return Err("live --headless requires --duration".to_string());
     }
 
-    let mut app = App::new(options);
+    let mut app = App::with_device(options, device);
+    let started = Instant::now();
     if let Some(error) = app.source.error() {
         return Err(format!("source open failed: {error}"));
     }
-    while !app.source_finished {
+    loop {
         app.poll_source();
         if let Some(error) = app.source.error() {
             return Err(format!("source read failed: {error}"));
         }
+        if app.source_finished
+            || options
+                .duration
+                .is_some_and(|duration| started.elapsed() >= duration)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
 
     app.finish_recording().map_err(|error| error.to_string())?;
 
-    print!("{}", headless_summary(&app.parser.stats));
-    if app.parser.metadata.is_none() {
+    print!("{}", headless_summary(&app.telemetry.stats));
+    if app.telemetry.latest_header.is_none() {
         return Err("no valid header frame".to_string());
     }
     Ok(())
@@ -1610,6 +2114,7 @@ fn parse_args() -> Result<Args, String> {
     let mut args = env::args().skip(1).peekable();
     let mut source = None;
     let mut record = None;
+    let mut profile = None;
     let mut headless = false;
     let mut duration = None;
 
@@ -1637,6 +2142,7 @@ fn parse_args() -> Result<Args, String> {
                 set_source(&mut source, SourceSpec::File(path))?;
             }
             "--record" => record = Some(PathBuf::from(required_value(&mut args, "--record")?)),
+            "--profile" => profile = Some(PathBuf::from(required_value(&mut args, "--profile")?)),
             "--duration" => {
                 let value = required_value(&mut args, "--duration")?;
                 duration = Some(parse_duration(&value)?);
@@ -1662,6 +2168,7 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args::Run(Options {
         source,
         record,
+        profile,
         headless,
         duration,
     }))
@@ -1915,49 +2422,60 @@ fn comma(value: u64) -> String {
     out
 }
 
-fn comma_u32(value: u32) -> String {
-    comma(value as u64)
-}
-
-fn region_color(region_id: u8) -> Color {
-    match region_id {
-        1 => ACCENT,
-        2 => ACCENT_ALT,
-        3 => WARNING,
-        5 => SUCCESS,
-        6 => Color::Rgb(174, 154, 214),
+fn region_color(index: usize) -> Color {
+    match index % 5 {
+        0 => ACCENT,
+        1 => ACCENT_ALT,
+        2 => WARNING,
+        3 => SUCCESS,
+        4 => Color::Rgb(174, 154, 214),
         _ => FG,
     }
 }
 
 fn print_help() {
     println!(
-        "laxity-tui\n\n\
-         logical SRAM topology and exact-cell telemetry for the Laxity placement sweep\n\n\
-         usage:\n  \
-           laxity-tui --udp PORT [--record PATH] [--duration SECONDS]\n  \
-           laxity-tui --serial [PATH] [--record PATH] [--duration SECONDS]\n  \
-           laxity-tui --file PATH [--headless] [--record PATH]\n\n\
-         sources:\n  \
-           --udp PORT       listen on 0.0.0.0:PORT\n  \
-           --serial [PATH]  read 921600 8N1; auto-detect one ST-LINK when omitted\n  \
-           --file PATH      replay a byte-for-byte capture at demo pace\n\n\
-         live control:\n  \
-           --duration SEC   stop a UDP or serial session cleanly after SEC; default is no limit\n\n\
-         recording:\n  \
-           live sources write telemetry.bin in the launch directory and rotate if it exists\n  \
-           file replay does not record unless --record is provided\n\n\
-         interpretation:\n  \
-           p50 retains the newest 4,096 samples per exact cell\n  \
-           off p50 is this placement with aggressor_idx zero\n  \
-           contention cells match the exact DMA region and footprint index\n  \
-           cross bank means distinct SRAM targets on a shared fabric\n  \
-           observed best is measured, not a planner decision\n  \
-           exec_cyc can contain both preemption and memory contention\n\n\
-         serial ownership:\n  \
-           run either this TUI or capture.sh on one serial port, never both\n\n\
-         keys:\n  \
-           q, esc, ctrl-c   quit"
+        r#"laxity-tui
+
+hardware-independent logical memory and exact-cell Laxity telemetry
+
+usage:
+  laxity-tui --udp PORT [--record PATH] [--duration SECONDS] [--profile PATH]
+  laxity-tui --serial [PATH] [--record PATH] [--duration SECONDS] [--profile PATH]
+  laxity-tui --file PATH [--headless] [--record PATH] [--profile PATH]
+
+sources:
+  --udp PORT       listen on 0.0.0.0:PORT
+  --serial [PATH]  read 921600 8N1; auto-detect one ST-LINK when omitted
+  --file PATH      replay a byte-for-byte capture at demo pace
+
+device model:
+  --profile PATH   load a capability and logical-memory profile; default is STM32U585
+
+live control:
+  --duration SEC   stop a UDP or serial session cleanly after SEC; default is no limit
+  --headless       print counters; live sources also require --duration
+
+recording:
+  live sources write telemetry.bin in the launch directory and rotate if it exists
+  file replay does not record unless --record is provided
+
+interpretation:
+  p50 retains the newest 4,096 samples per exact cell
+  off p50 is this placement with aggressor_idx zero
+  LX v2 contention cells match the exact requester target and footprint index
+  cross region means distinct logical targets; the physical path may be shared
+  observed best is measured, not a planner decision
+  exec_cyc can contain both preemption and memory contention
+
+serial ownership:
+  run either this TUI or capture.sh on one serial port, never both
+
+keys:
+  m                switch telemetry and memory views
+  tab              change memory metric
+  up, down         select a logical memory region
+  q, esc, ctrl-c   quit"#
     );
 }
 
@@ -1966,7 +2484,9 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
     use std::fs;
-    use telemetry::{Record, PLACEMENT_ALT_ADDR, PLACEMENT_CONTROL};
+    use telemetry::{
+        LxHeader, LxPlacement, LxRecord, Metadata, PLACEMENT_ALT_ADDR, PLACEMENT_CONTROL,
+    };
 
     fn temp_path(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
@@ -1976,20 +2496,71 @@ mod tests {
         env::temp_dir().join(format!("laxity-tui-{label}-{}-{nonce}", std::process::id()))
     }
 
-    fn test_record(seq: u32, region_id: u8, aggressor_idx: u16, exec_cyc: u32) -> Record {
-        Record {
+    fn test_record(seq: u32, placement_id: u8, aggressor_idx: u16, exec_cyc: u32) -> LxRecord {
+        LxRecord {
             seq,
             release_cyc: 0,
             exec_cyc,
             cpu_cyc: 0,
             stall_cyc: 0,
             model_id: 0,
-            region_id,
+            placement_id,
             flags: 0,
             aggressor_idx,
             padding: 0,
             reserved: seq,
         }
+    }
+
+    fn test_options(source: SourceSpec, record: Option<PathBuf>) -> Options {
+        Options {
+            source,
+            record,
+            profile: None,
+            headless: false,
+            duration: None,
+        }
+    }
+
+    fn test_app(options: &Options) -> App {
+        App::with_device(options, profile::stm32u585().unwrap())
+    }
+
+    fn install_placements(app: &mut App, placements: Vec<LxPlacement>) {
+        let changed = app.adapter.apply_header(
+            &mut app.device,
+            LxHeader {
+                metadata: Metadata {
+                    version: 2,
+                    clock_hz: 160_000_000,
+                    cyccnt_hz: 159_999_900,
+                    n_placements: placements.len() as u8,
+                    record_size: 32,
+                    ..Metadata::default()
+                },
+                placements,
+            },
+        );
+        assert!(changed);
+        app.measurements
+            .begin_revision(app.device.topology_revision);
+    }
+
+    fn raw_placement(id: u8, flags: u8, name: &str, address: u32) -> LxPlacement {
+        LxPlacement {
+            id,
+            flags,
+            name: name.to_string(),
+            rel_cost: 1000,
+            arena_addr: address,
+            arena_size: 2944,
+        }
+    }
+
+    fn observe_record(app: &mut App, record: LxRecord) -> model::Measurement {
+        let measurement = app.adapter.adapt_record(&app.device, record);
+        app.measurements.observe(measurement.clone());
+        measurement
     }
 
     fn assert_centered(buffer: &Buffer, area: Rect, needle: &str) {
@@ -2022,58 +2593,46 @@ mod tests {
     }
 
     fn populated_app() -> App {
-        let options = Options {
-            source: SourceSpec::File(PathBuf::from("/missing")),
-            record: None,
-            headless: false,
-            duration: None,
-        };
-        let mut app = App::new(&options);
-        for (id, flags, name, address) in [
-            (1, 0, "SRAM1", 0x2000_2000),
-            (2, 0, "SRAM2", 0x2003_0000),
-            (3, 0, "SRAM3", 0x2004_0000),
-            (5, PLACEMENT_CONTROL, "SRAM1c", 0x2000_2000),
-            (6, PLACEMENT_ALT_ADDR, "SRAM2b", 0x2003_9000),
-        ] {
-            app.parser.placements.insert(
-                id,
-                Placement {
-                    id,
-                    flags,
-                    name: name.to_string(),
-                    rel_cost: 1000,
-                    arena_addr: address,
-                    arena_size: 2944,
-                },
-            );
-        }
+        let options = test_options(SourceSpec::File(PathBuf::from("/missing")), None);
+        let mut app = test_app(&options);
+        install_placements(
+            &mut app,
+            vec![
+                raw_placement(1, 0, "SRAM1", 0x2000_2000),
+                raw_placement(2, 0, "SRAM2", 0x2003_0000),
+                raw_placement(3, 0, "SRAM3", 0x2004_0000),
+                raw_placement(5, PLACEMENT_CONTROL, "SRAM1c", 0x2000_2000),
+                raw_placement(6, PLACEMENT_ALT_ADDR, "SRAM2b", 0x2003_9000),
+            ],
+        );
         for (seq, region, cycles) in [(1, 1, 320_898), (2, 2, 320_901), (3, 3, 320_899)] {
-            app.parser
-                .observe_record(test_record(seq, region, 0, cycles));
+            observe_record(&mut app, test_record(seq, region, 0, cycles));
         }
+        let mut current = None;
         for (seq, region, cycles) in [(10, 1, 338_414), (11, 2, 321_414), (12, 3, 321_535)] {
-            app.parser
-                .observe_record(test_record(seq, region, 0x0001, cycles));
+            let measurement = observe_record(&mut app, test_record(seq, region, 0x0001, cycles));
+            if seq == 10 {
+                current = Some(measurement);
+            }
         }
-        app.display_state = Some(ExperimentState::from_parser(
-            &app.parser,
-            test_record(10, 1, 0x0001, 338_414),
+        app.display_state = Some(ExperimentState::from_model(
+            &app.device,
+            &app.measurements,
+            current.unwrap(),
         ));
+        app.display_revision = app.device.topology_revision;
         app
     }
 
     #[test]
     fn missing_source_renders_diagnostics_instead_of_a_blank_screen() {
-        let options = Options {
-            source: SourceSpec::File(PathBuf::from(
+        let options = test_options(
+            SourceSpec::File(PathBuf::from(
                 "/path/that/does/not/exist/laxity-telemetry.bin",
             )),
-            record: None,
-            headless: false,
-            duration: None,
-        };
-        let mut app = App::new(&options);
+            None,
+        );
+        let mut app = test_app(&options);
         let mut terminal = Terminal::new(TestBackend::new(120, 34)).unwrap();
         let now = Instant::now();
         let frame = terminal
@@ -2088,7 +2647,7 @@ mod tests {
 
         assert!(screen.contains("source error"));
         assert!(screen.contains("source open failed"));
-        assert!(screen.contains("logical SRAM topology"));
+        assert!(screen.contains("logical memory topology"));
         assert!(screen.contains("placement comparison"));
         assert!(screen.contains("board log"));
 
@@ -2116,13 +2675,8 @@ mod tests {
 
     #[test]
     fn compact_waiting_state_is_complete_and_centered() {
-        let options = Options {
-            source: SourceSpec::File(PathBuf::from("/missing")),
-            record: None,
-            headless: false,
-            duration: None,
-        };
-        let mut app = App::new(&options);
+        let options = test_options(SourceSpec::File(PathBuf::from("/missing")), None);
+        let mut app = test_app(&options);
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let now = Instant::now();
         let frame = terminal
@@ -2143,13 +2697,8 @@ mod tests {
             "/mnt/user-data/uploads/laxity/results/raw/20260909T175908Z-contention-sweep/telemetry.bin",
         );
         for (width, height) in [(80, 24), (120, 34)] {
-            let options = Options {
-                source: SourceSpec::File(path.clone()),
-                record: None,
-                headless: false,
-                duration: None,
-            };
-            let mut app = App::new(&options);
+            let options = test_options(SourceSpec::File(path.clone()), None);
+            let mut app = test_app(&options);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             let now = Instant::now();
             let frame = terminal
@@ -2188,46 +2737,93 @@ mod tests {
     }
 
     #[test]
+    fn metric_colors_treat_negative_slack_as_a_miss() {
+        assert_eq!(metric_color(ViewMetric::Slack, Some(-1.0)), DANGER);
+        assert_eq!(metric_color(ViewMetric::Slack, Some(1.0)), SUCCESS);
+        assert_eq!(metric_color(ViewMetric::Penalty, Some(-1.0)), SUCCESS);
+        assert_eq!(metric_color(ViewMetric::Penalty, Some(1.0)), WARNING);
+        assert_eq!(metric_color(ViewMetric::P50, None), FAINT);
+    }
+
+    #[test]
     fn pending_record_becomes_visible_after_the_display_hold() {
         let mut app = populated_app();
-        let before = app.display_state.as_ref().unwrap().record.seq;
+        let before = app.display_state.as_ref().unwrap().measurement.sequence;
         let now = Instant::now();
         app.last_display_update = Some(now);
-        app.parser
-            .observe_record(test_record(99, 2, 0x0103, 330_000));
+        observe_record(&mut app, test_record(99, 2, 0x0103, 330_000));
 
         app.update_display_record(now + DISPLAY_HOLD - Duration::from_millis(1), false);
-        assert_eq!(app.display_state.as_ref().unwrap().record.seq, before);
+        assert_eq!(
+            app.display_state.as_ref().unwrap().measurement.sequence,
+            before
+        );
 
         app.update_display_record(now + DISPLAY_HOLD, false);
-        assert_eq!(app.display_state.as_ref().unwrap().record.seq, 99);
+        assert_eq!(app.display_state.as_ref().unwrap().measurement.sequence, 99);
+    }
+
+    #[test]
+    fn placement_metadata_change_starts_a_fresh_measurement_revision() {
+        let mut app = populated_app();
+        let old_revision = app.device.topology_revision;
+        let changed = LxHeader {
+            metadata: Metadata {
+                version: 2,
+                n_placements: 1,
+                record_size: 32,
+                ..Metadata::default()
+            },
+            placements: vec![raw_placement(2, 0, "moved", 0x2003_1000)],
+        };
+
+        app.accept_delta(
+            ParseDelta {
+                events: vec![LxEvent::Header(changed)],
+                valid_frames: 1,
+                ..ParseDelta::default()
+            },
+            Instant::now(),
+        );
+
+        assert!(app.device.topology_revision > old_revision);
+        assert!(app.measurements.latest().is_none());
+        assert!(app.display_state.is_none());
+    }
+
+    #[test]
+    fn crc_rejection_requests_a_local_transport_warning() {
+        let options = test_options(SourceSpec::File(PathBuf::from("/missing")), None);
+        let mut app = test_app(&options);
+
+        app.accept_delta(
+            ParseDelta {
+                rejected_candidates: 1,
+                ..ParseDelta::default()
+            },
+            Instant::now(),
+        );
+
+        assert_eq!(
+            app.semantic_effects.last(),
+            Some(&SemanticEffect {
+                target: EffectTarget::TransportHeader,
+                kind: EffectKind::Warning,
+            })
+        );
     }
 
     #[test]
     fn zero_cycle_median_renders_without_dividing_by_zero() {
-        let options = Options {
-            source: SourceSpec::File(PathBuf::from("/missing")),
-            record: None,
-            headless: false,
-            duration: None,
-        };
-        let mut app = App::new(&options);
-        app.parser.placements.insert(
-            3,
-            Placement {
-                id: 3,
-                flags: 0,
-                name: "SRAM3".to_string(),
-                rel_cost: 1000,
-                arena_addr: 0x2004_0000,
-                arena_size: 2944,
-            },
-        );
-        app.parser.observe_record(test_record(1, 3, 0, 0));
-        app.parser.observe_record(test_record(2, 3, 3, 1));
-        app.display_state = Some(ExperimentState::from_parser(
-            &app.parser,
-            test_record(2, 3, 3, 1),
+        let options = test_options(SourceSpec::File(PathBuf::from("/missing")), None);
+        let mut app = test_app(&options);
+        install_placements(&mut app, vec![raw_placement(3, 0, "SRAM3", 0x2004_0000)]);
+        observe_record(&mut app, test_record(1, 3, 0, 0));
+        let current = observe_record(&mut app, test_record(2, 3, 3, 1));
+        app.display_state = Some(ExperimentState::from_model(
+            &app.device,
+            &app.measurements,
+            current,
         ));
         let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
         let now = Instant::now();
@@ -2255,10 +2851,56 @@ mod tests {
         for name in ["SRAM1", "SRAM2", "SRAM3"] {
             assert!(screen.contains(name), "missing {name}");
         }
-        assert!(screen.contains("SAME BANK"));
+        assert!(screen.contains("SAME REGION"));
         assert!(screen.contains("0x20002000"));
         assert!(screen.contains("observed best"));
         assert!(!screen.contains("SRAM1c"));
+    }
+
+    #[test]
+    fn memory_view_renders_address_slabs_and_requester_flow_at_eighty_by_twenty_four() {
+        let mut app = populated_app();
+        app.view = View::Memory;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let now = Instant::now();
+        let frame = terminal
+            .draw(|frame| app.draw(frame, Duration::ZERO, now))
+            .unwrap();
+        let screen: String = frame
+            .buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        for text in ["logical address slabs", "SRAM1", "0x20000000", "GPDMA1"] {
+            assert!(screen.contains(text), "missing {text}");
+        }
+        assert!(screen.contains("physical interconnect unavailable"));
+    }
+
+    #[test]
+    fn memory_view_accepts_an_arbitrary_non_stm32_profile() {
+        let options = test_options(SourceSpec::File(PathBuf::from("/missing")), None);
+        let mut app = App::with_device(&options, profile::virtual_generic().unwrap());
+        app.view = View::Memory;
+        let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+        let now = Instant::now();
+        let frame = terminal
+            .draw(|frame| app.draw(frame, Duration::ZERO, now))
+            .unwrap();
+        let screen: String = frame
+            .buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+
+        for text in ["Virtual generic target", "MEM-A", "MEM-B", "MEM-C"] {
+            assert!(screen.contains(text), "missing {text}");
+        }
+        assert!(screen.contains("p50 unavailable"));
+        assert!(!screen.contains("SRAM"));
     }
 
     #[test]
@@ -2277,10 +2919,10 @@ mod tests {
             .collect();
 
         for text in [
-            "logical SRAM topology",
+            "logical memory topology",
             "current observed cell",
             "placement comparison",
-            "SAME BANK",
+            "SAME REGION",
             "0x20002000",
             "+17,516 cyc / +5.46%",
             "observed best",
@@ -2307,7 +2949,7 @@ mod tests {
 
         for text in [
             "p50 penalty",
-            "DMA proof",
+            "requester proof",
             "preemption + contention",
             "p50 windows retain",
         ] {
@@ -2319,13 +2961,8 @@ mod tests {
     fn active_file_source_is_labeled_as_replay() {
         let path = temp_path("replay-health");
         fs::write(&path, b"").unwrap();
-        let options = Options {
-            source: SourceSpec::File(path.clone()),
-            record: None,
-            headless: false,
-            duration: None,
-        };
-        let mut app = App::new(&options);
+        let options = test_options(SourceSpec::File(path.clone()), None);
+        let mut app = test_app(&options);
         let now = Instant::now();
         app.last_byte = Some(now);
         app.last_frame = Some(now);
@@ -2337,14 +2974,12 @@ mod tests {
     #[test]
     fn recorder_writes_received_bytes_exactly_once() {
         let path = temp_path("record-exact");
-        let options = Options {
-            source: SourceSpec::File(PathBuf::from("/missing")),
-            record: Some(path.clone()),
-            headless: false,
-            duration: None,
-        };
+        let options = test_options(
+            SourceSpec::File(PathBuf::from("/missing")),
+            Some(path.clone()),
+        );
         let bytes = b"boot\r\nLX\x02\x01\x00\x00\xff\xff\x00";
-        let mut app = App::new(&options);
+        let mut app = test_app(&options);
 
         app.ingest(bytes);
         app.finish_recording().unwrap();
@@ -2358,13 +2993,11 @@ mod tests {
     fn recorder_refuses_to_merge_with_an_existing_capture() {
         let path = temp_path("record-existing");
         fs::write(&path, b"existing capture").unwrap();
-        let options = Options {
-            source: SourceSpec::File(PathBuf::from("/missing")),
-            record: Some(path.clone()),
-            headless: false,
-            duration: None,
-        };
-        let mut app = App::new(&options);
+        let options = test_options(
+            SourceSpec::File(PathBuf::from("/missing")),
+            Some(path.clone()),
+        );
+        let mut app = test_app(&options);
 
         app.ingest(b"new bytes");
 
@@ -2397,10 +3030,89 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the ignored local real capture"]
+    fn known_real_capture_keeps_golden_accounting_and_experiment_state() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../results/raw/20260909T175908Z-contention-sweep/telemetry.bin");
+        assert!(path.exists(), "missing ignored capture: {}", path.display());
+        let bytes = fs::read(&path).unwrap();
+        let options = test_options(SourceSpec::File(path), None);
+        let mut app = test_app(&options);
+        for chunk in bytes.chunks(997) {
+            app.ingest(chunk);
+        }
+        let delta = app.telemetry.finish();
+        app.accept_delta(delta, Instant::now());
+
+        assert_eq!(bytes.len(), 1_769_499);
+        assert_eq!(app.telemetry.stats.frames, 18_124);
+        assert_eq!(app.telemetry.stats.accepted_frames, 18_124);
+        assert_eq!(app.telemetry.stats.header_frames, 9_062);
+        assert_eq!(app.telemetry.stats.batch_frames, 9_062);
+        assert_eq!(app.telemetry.stats.records, 9_062);
+        assert_eq!(app.telemetry.stats.skipped_bytes, 65_843);
+        assert_eq!(app.telemetry.stats.wrapped, 1);
+        assert_eq!(app.telemetry.stats.gaps, 0);
+        assert_eq!(app.telemetry.stats.dropped, 0);
+        assert_eq!(app.telemetry.stats.false_sync, 0);
+        assert_eq!(app.telemetry.stats.crc_rejections, 0);
+
+        let latest = app.measurements.latest().cloned().unwrap();
+        let experiment = ExperimentState::from_model(&app.device, &app.measurements, latest);
+        assert_eq!(experiment.mode, Mode::Contention);
+        assert_eq!(experiment.relation, Relation::CrossRegion);
+        assert_eq!(
+            experiment.inference.as_ref().unwrap().label.as_deref(),
+            Some("SRAM2")
+        );
+        assert_eq!(
+            experiment
+                .requester_target
+                .as_ref()
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("SRAM1")
+        );
+        assert_eq!(experiment.working_set_bytes, Some(1024));
+        assert_eq!(experiment.current.unwrap().p50, 321_414);
+        assert_eq!(experiment.baseline.unwrap().p50, 320_901);
+        assert_eq!(experiment.penalty.unwrap().cycles, 513);
+        assert_eq!(experiment.observed_spread, Some(17_000));
+        assert_eq!(
+            experiment
+                .comparisons
+                .iter()
+                .find(|stats| stats.observed_best)
+                .unwrap()
+                .placement
+                .label
+                .as_deref(),
+            Some("SRAM2")
+        );
+    }
+
+    #[test]
     fn duration_requires_positive_whole_seconds() {
         assert_eq!(parse_duration("10").unwrap(), Duration::from_secs(10));
         assert!(parse_duration("0").is_err());
         assert!(parse_duration("1.5").is_err());
+    }
+
+    #[test]
+    fn live_headless_mode_requires_a_duration() {
+        let options = Options {
+            source: SourceSpec::Udp(50505),
+            record: None,
+            profile: None,
+            headless: true,
+            duration: None,
+        };
+
+        assert_eq!(
+            run_headless(&options, profile::stm32u585().unwrap()).unwrap_err(),
+            "live --headless requires --duration"
+        );
     }
 
     #[test]

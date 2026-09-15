@@ -8,4 +8,6 @@ publish = false
 crossterm = "=0.29.0"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 serialport = { version = "=4.10.1", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
 tachyonfx = { version = "=0.25.1", default-features = false, features = ["std"] }
+toml = "=1.1.6"

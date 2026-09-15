@@ -83,6 +83,14 @@ extern UART_HandleTypeDef huart1;
 /* every arena starts on the same 4 KB boundary, so offset within a region is held constant and the region is the only thing that differs between the four labels. 4096 is a bound rather than a measured bank size: the SRAM bank structure is in RM0456, which is the one thing this block could not source, so the alignment is chosen large enough to cover any plausible granularity instead of matching a known one. */
 #define LAXITY_ARENA_ALIGN   4096u
 
+/* the arena may not reach the aggressor source buffer. laxity_place() puts that buffer at the
+ * arena base plus LAXITY_ARENA_ALIGN and checks only that it stays inside its region, so an arena
+ * larger than the alignment would overlap it in all three regions and the run would still look
+ * healthy. this is next to the size constant rather than next to the placement, because the size
+ * comes from the model and this is where a new model changes it. */
+_Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
+               "activation arena is larger than LAXITY_ARENA_ALIGN, so it overlaps the aggressor source buffer that laxity_place() puts at arena base + LAXITY_ARENA_ALIGN in SRAM1, SRAM2 and SRAM3");
+
 /* one reservation that reaches from wherever bss puts it up to SRAM3, so all three arenas come out of memory the linker actually allocated. sized for the worst case of starting at the base of SRAM1; starting later only makes it reach further.
  *
  * the alternative was a linker script edit, and it was rejected on a real failure mode rather than on taste. the generated script maps SRAM1, SRAM2 and SRAM3 as one 768K RAM region with _estack at its top, so placing sections in the upper two means either overlapping MEMORY regions, which GNU ld does not check for collisions between, or splitting RAM, which moves the stack out of SRAM3 and changes the vendor default layout every comparison is made against. one C object cannot overlap anything, because the linker allocated it. */

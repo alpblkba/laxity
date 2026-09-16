@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""read the interference campaign captures and print the tables the report is written from.
+
+    ./bench/sweeps/campaign_report.py [results/raw/...]
+
+with no argument it takes every capture whose stress.txt names this campaign. the framed stream is
+parsed by tools/telemetry_parse.py rather than re-read here, so there is one implementation of the
+format, and bench/sweeps/stress_stats.py stays the per point view of a single capture.
+
+the coefficient reported for a cell is a slope and not a single measurement. cost per aggressor
+transaction is the least squares slope of the victim's median delta against the number of aggressor
+transactions the window contains, fitted through the origin over the points below the saturation
+the earlier sweeps found. transactions in a window are the requested transaction rate times the
+uncontended window, so the normaliser does not move with the effect being measured.
+"""
+
+import pathlib
+import statistics
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
+import telemetry_parse
+
+CAMPAIGN = "interference-2026-09-15"
+
+# the knob values each point index stands for, in the same order as laxity_sweeps in the firmware.
+# point 0 is the aggressor off in every sweep. this is a second copy of what the firmware holds,
+# and the status line stored in stress.txt is what checks the two against each other.
+SWEEPS = {
+    "bw":     ["off", "50kHz", "100kHz", "200kHz", "400kHz", "800kHz"],
+    "xact":   ["off", "w4", "w2", "w1"],
+    "chan":   ["off", "1ch", "2ch", "4ch"],
+    "stride": ["off", "s0", "s4", "s12", "s28", "s60", "s124"],
+    "sat":    ["off", "w2 800kHz", "w1 800kHz", "ungated w4", "ungated w1", "armed, no trigger"],
+}
+
+# requested bytes and transactions per second at each point. requested is the word that matters on
+# the saturation sweep, where the hardware is not expected to deliver what the configuration asks.
+RATES = {
+    "bw":     [(0, 0), (12800000, 3200000), (25600000, 6400000), (51200000, 12800000),
+               (102400000, 25600000), (204800000, 51200000)],
+    "xact":   [(0, 0), (51200000, 12800000), (51200000, 25600000), (51200000, 51200000)],
+    "chan":   [(0, 0), (102400000, 25600000), (102400000, 25600000), (102400000, 25600000)],
+    "stride": [(0, 0)] + [(51200000, 12800000)] * 6,
+    # the two ungated points and the armed point carry no requested rate. ungated means the rate is
+    # whatever the matrix allows, and armed means there is no traffic at all.
+    "sat":    [(0, 0), (204800000, 102400000), (204800000, 204800000), (0, 0), (0, 0), (0, 0)],
+}
+
+# the fit stays below the rate where the earlier bandwidth sweep saturated in SRAM3.
+FIT_MAX_XACT = 12800000
+
+REGION_ID = {"sram1": 1, "sram2": 2, "sram3": 3, "sram4": 4}
+
+
+def read_kv(path):
+    out = {}
+    if path.exists():
+        for line in path.read_text().splitlines():
+            if "=" in line:
+                k, _, v = line.partition("=")
+                out[k.strip()] = v.strip()
+    return out
+
+
+def load(run_dir):
+    meta_kv = read_kv(run_dir / "stress.txt")
+    if meta_kv.get("campaign") != CAMPAIGN:
+        return None
+    # a capture whose stress.txt was voided by hand is kept on disk, since results/raw is append
+    # only, and is excluded from every table here. the reason is in the key.
+    if "void" in meta_kv:
+        return None
+    stats, meta, _, records = telemetry_parse.parse((run_dir / "telemetry.bin").read_bytes())
+    if not records:
+        return None
+
+    # the sequence number restarts at zero when the board resets, and a capture that spans a reset
+    # holds records from two different configurations, since the firmware comes back running the
+    # arena cross rather than whatever the console had selected. it is detected rather than
+    # averaged, because the second half looks like a plausible measurement.
+    restarts = sum(1 for a, b in zip(records, records[1:]) if b["seq"] < a["seq"])
+
+    groups, xfer, wrong_region = {}, {}, 0
+    want_aggr = REGION_ID[meta_kv["aggressor_region"]]
+    for rec in records:
+        point = (rec["aggressor_idx"] >> 8) & 0xFF
+        region = rec["aggressor_idx"] & 0xFF
+        # the record carries the aggressor region and stress.txt carries the name the capture was
+        # filed under, so a capture whose records disagree with its own filing is caught here
+        # rather than reported as a result.
+        if point > 0 and region != want_aggr:
+            wrong_region += 1
+        groups.setdefault(point, []).append(rec["exec_cyc"])
+        xfer.setdefault(point, []).append(rec["reserved"])
+
+    rows = []
+    base = statistics.median(groups[0]) if groups.get(0) else None
+    sweep = meta_kv["sweep"]
+    for point in sorted(groups):
+        cyc = sorted(groups[point])
+        rate = RATES[sweep][point] if point < len(RATES[sweep]) else (0, 0)
+        med = statistics.median(cyc)
+        rows.append({
+            "point": point,
+            "label": SWEEPS[sweep][point] if point < len(SWEEPS[sweep]) else str(point),
+            "n": len(cyc),
+            "median": med,
+            "p99": cyc[min(len(cyc) - 1, int(0.99 * len(cyc)))],
+            "delta": med - base if base is not None else 0,
+            "bytes_s": rate[0],
+            "xact_s": rate[1],
+            "advanced": point == 0 or max(xfer[point]) > min(xfer[point]),
+        })
+    return {"dir": run_dir.name, "kv": meta_kv, "rows": rows, "base": base,
+            "stats": stats, "cyccnt_hz": meta.get("cyccnt_hz", 160000000),
+            "wrong_region": wrong_region, "records": len(records), "restarts": restarts}
+
+
+def coefficient(cap):
+    """least squares slope through the origin of delta cycles against aggressor transactions."""
+    hz = cap["cyccnt_hz"]
+    window_s = cap["base"] / hz
+    num = den = 0.0
+    used = []
+    for r in cap["rows"]:
+        if r["point"] == 0 or r["xact_s"] == 0 or r["xact_s"] > FIT_MAX_XACT:
+            continue
+        x = r["xact_s"] * window_s
+        num += x * r["delta"]
+        den += x * x
+        used.append(r["label"])
+    if den == 0.0:
+        return None, [], 0.0
+    k = num / den
+    worst = 0.0
+    for r in cap["rows"]:
+        if r["point"] == 0 or r["xact_s"] == 0 or r["xact_s"] > FIT_MAX_XACT:
+            continue
+        x = r["xact_s"] * window_s
+        worst = max(worst, abs(r["delta"] - k * x))
+    return k, used, worst
+
+
+def per_point_table(cap):
+    print("  %-18s %6s %10s %10s %10s %13s %13s" %
+          ("point", "n", "median", "p99", "delta", "bytes/s", "xact/s"))
+    for r in cap["rows"]:
+        flag = "" if r["advanced"] else "  NO TRANSFER"
+        print("  %-18s %6d %10d %10d %+10d %13d %13d%s" %
+              (r["label"], r["n"], r["median"], r["p99"], r["delta"],
+               r["bytes_s"], r["xact_s"], flag))
+
+
+def main():
+    args = sys.argv[1:]
+    dirs = [pathlib.Path(a) for a in args] if args else sorted(pathlib.Path("results/raw").iterdir())
+    caps = []
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        cap = load(d)
+        if cap is not None:
+            caps.append(cap)
+    if not caps:
+        raise SystemExit("no campaign captures found")
+
+    by_name = {c["dir"].split("-", 1)[1]: c for c in caps}
+
+    print("# campaign inventory\n")
+    print("  %-26s %8s %8s %6s %6s %7s %7s %s" %
+          ("capture", "records", "min n", "drop", "gaps", "badregn", "resets", "experiment"))
+    for c in sorted(caps, key=lambda c: c["dir"]):
+        print("  %-26s %8d %8d %6d %6d %7d %7d %s%s" %
+              (c["dir"].split("-", 1)[1], c["records"], min(r["n"] for r in c["rows"]),
+               c["stats"]["dropped"], c["stats"]["gaps"], c["wrong_region"], c["restarts"],
+               c["kv"].get("experiment", "?"),
+               "   SPANS A RESET" if c["restarts"] else ""))
+
+    print("\n# experiment 1, cycles per aggressor transaction\n")
+    print("  %-8s %10s %10s %10s %10s" % ("victim", "a:sram1", "a:sram2", "a:sram3", "a:sram4"))
+    for v in (1, 2, 3):
+        cells = []
+        for a in (1, 2, 3, 4):
+            c = by_name.get("stress-k-v%d-a%d" % (v, a))
+            if c is None:
+                cells.append("        --")
+                continue
+            k, _, _ = coefficient(c)
+            cells.append("%10.3f" % k if k is not None else "        --")
+        print("  %-8s %s" % ("sram%d" % v, " ".join(cells)))
+
+    print("\n  uncontended victim median and fit residual per cell\n")
+    print("  %-16s %10s %10s %12s" % ("cell", "baseline", "coeff", "max residual"))
+    for v in (1, 2, 3):
+        for a in (1, 2, 3, 4):
+            c = by_name.get("stress-k-v%d-a%d" % (v, a))
+            if c is None:
+                continue
+            k, used, worst = coefficient(c)
+            print("  %-16s %10d %10.3f %12.1f" % ("v%d-a%d" % (v, a), c["base"], k, worst))
+
+    print("\n# experiment 1, full per point tables\n")
+    for v in (1, 2, 3):
+        for a in (1, 2, 3, 4):
+            c = by_name.get("stress-k-v%d-a%d" % (v, a))
+            if c is None:
+                continue
+            print("victim sram%d, aggressor sram%d   (%s)" % (v, a, c["dir"]))
+            per_point_table(c)
+            print()
+
+    print("# experiment 2, victim footprint\n")
+    print("  %-10s %8s %8s %10s %12s %14s %12s" %
+          ("footprint", "words", "loads", "baseline", "delta@12.8M", "cycles/access", "coeff"))
+    for name in ("1k", "2k", "4k", "8k", "16k", "32k", "64k", "128k"):
+        c = by_name.get("stress-foot-%s" % name)
+        if c is None:
+            continue
+        loads = int(c["kv"]["loads_per_window"])
+        hit = [r for r in c["rows"] if r["xact_s"] == 12800000]
+        k, _, _ = coefficient(c)
+        d = hit[0]["delta"] if hit else 0
+        print("  %-10s %8s %8d %10d %+12d %14.5f %12.3f" %
+              (name, c["kv"]["victim_words"], loads, c["base"], d, d / loads, k))
+
+    print("\n  per point tables\n")
+    for name in ("1k", "2k", "4k", "8k", "16k", "32k", "64k", "128k"):
+        c = by_name.get("stress-foot-%s" % name)
+        if c is None:
+            continue
+        print("footprint %s, %s loads   (%s)" % (name, c["kv"]["loads_per_window"], c["dir"]))
+        per_point_table(c)
+        print()
+
+    print("# experiment 3, past saturation\n")
+    for key in ("stress-sat-a1", "stress-sat-a2", "stress-sat-a2-4096loads",
+                "stress-sat-a3", "stress-sat-a4"):
+        c = by_name.get(key)
+        if c is None:
+            continue
+        print("%s, aggressor in %s, %s loads   (%s)" %
+              (key, c["kv"]["aggressor_region"], c["kv"]["loads_per_window"], c["dir"]))
+        per_point_table(c)
+        print("  saving per victim load at the largest saving: %.4f cycles" %
+              (min(r["delta"] for r in c["rows"]) / int(c["kv"]["loads_per_window"])))
+        print()
+
+    holds = [c for c in caps if c["kv"].get("experiment") == "contamination"]
+    if holds:
+        print("# the mem2mem aggressor left running through a stress pass, as the earlier captures had it\n")
+        for c in sorted(holds, key=lambda c: c["dir"]):
+            print("mem2mem in %s at 16 KiB, plus the stress sweep   (%s)" %
+                  (c["kv"]["aggressor_region"], c["dir"]))
+            per_point_table(c)
+            print()
+
+    others = [c for c in caps if c["kv"].get("experiment") == "re-measure"]
+    if others:
+        print("# the transaction and channel sweeps, re-measured with no second aggressor\n")
+        for c in sorted(others, key=lambda c: c["dir"]):
+            print("%s sweep, aggressor in %s   (%s)" %
+                  (c["kv"]["sweep"], c["kv"]["aggressor_region"], c["dir"]))
+            per_point_table(c)
+            print()
+
+    print("# experiment 4, the two victims under the same aggressor\n")
+    print("  %-18s %-10s %10s %10s %12s" %
+          ("capture", "victim", "baseline", "coeff", "window us"))
+    for a in (1, 2, 3):
+        for key, victim in (("stress-k-v1-a%d" % a, "read_loop"),
+                            ("stress-infer-a%d" % a, "inference")):
+            c = by_name.get(key)
+            if c is None:
+                continue
+            k, _, _ = coefficient(c)
+            print("  %-18s %-10s %10d %10.3f %12.1f" %
+                  (key, victim, c["base"], k, 1e6 * c["base"] / c["cyccnt_hz"]))
+    print()
+    for a in (1, 2, 3):
+        c = by_name.get("stress-infer-a%d" % a)
+        if c is None:
+            continue
+        print("inference victim, aggressor sram%d   (%s)" % (a, c["dir"]))
+        per_point_table(c)
+        print()
+
+
+if __name__ == "__main__":
+    main()

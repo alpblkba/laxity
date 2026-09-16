@@ -41,7 +41,9 @@ static bool trigger_start(uint32_t hz)
     TIM_MasterConfigTypeDef master = {0};
     uint32_t ticks;
 
-    if (hz == 0u) {
+    /* ungated and armed both leave TIM2 alone. ungated masks the trigger in the node so the channel
+     * runs flat out, and armed selects a trigger from a timer this function never starts. */
+    if (hz == 0u || hz == QOS_STRESS_TRIGGER_ARMED) {
         return true;
     }
 
@@ -114,15 +116,17 @@ static uint32_t width_dst(uint8_t width)
 
 uint32_t qos_stress_bytes_per_s(const qos_stress_cfg_t *cfg)
 {
-    if (cfg->trigger_hz == 0u) {
-        return 0u;  /* ungated, so the rate is whatever the matrix allows and is not declared */
+    if (cfg->trigger_hz == 0u || cfg->trigger_hz == QOS_STRESS_TRIGGER_ARMED) {
+        /* ungated means the rate is whatever the matrix allows and is not declared. armed means
+         * there is no traffic at all, and both are wrong to report as a number. */
+        return 0u;
     }
     return cfg->block_bytes * cfg->trigger_hz * (uint32_t)cfg->channels;
 }
 
 uint32_t qos_stress_xacts_per_s(const qos_stress_cfg_t *cfg)
 {
-    if (cfg->trigger_hz == 0u || cfg->width == 0u) {
+    if (cfg->trigger_hz == 0u || cfg->trigger_hz == QOS_STRESS_TRIGGER_ARMED || cfg->width == 0u) {
         return 0u;
     }
     return (cfg->block_bytes / cfg->width) * cfg->trigger_hz * (uint32_t)cfg->channels;

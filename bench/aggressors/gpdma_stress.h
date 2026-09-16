@@ -23,6 +23,18 @@
 
 #define QOS_STRESS_MAX_CHANNELS  4u
 
+/* a trigger_hz value meaning "configure and enable the channels, then never trigger them".
+ *
+ * the channels are armed on the same TIM2 trigger every gated point uses and the timer is left
+ * stopped, so they move zero bytes while everything else about the hardware state matches a point
+ * that does move bytes. it exists to separate a channel being active from the traffic it carries,
+ * which is the only way to ask whether an effect comes from the transfers or from the matrix
+ * having a master attached to it. a point using this moves no data, so its completion count stays
+ * flat on purpose and the usual reading of a flat count as a channel that failed to start does
+ * not apply to it.
+ */
+#define QOS_STRESS_TRIGGER_ARMED 0xFFFFFFFFu
+
 typedef struct {
     /* how many channels move data at once, 1, 2 or 4. each one gets its own buffer pair inside
      * the same region, so more channels means more masters on the matrix rather than more bytes

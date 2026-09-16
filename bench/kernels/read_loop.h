@@ -14,24 +14,31 @@
 
 #include <stdint.h>
 
-/* words read per pass. 1024 words is 4 KB, which is one arena alignment, so the victim buffer is
+/* the default footprint. 1024 words is 4 KB, which is one arena alignment, so the victim buffer is
  * the same size and the same shape as an activation arena and sits where one would sit. */
 #define QOS_READ_LOOP_WORDS   1024u
 
-/* passes over the buffer per measured window. eight passes is 8192 loads, long enough that the
- * DWT window is thousands of cycles and short enough that a window never approaches a counter
+/* the default pass count. eight passes over the default footprint is 8192 loads, long enough that
+ * the DWT window is thousands of cycles and short enough that a window never approaches a counter
  * wrap at 160 MHz. */
 #define QOS_READ_LOOP_PASSES  8u
 
 #define QOS_READ_LOOP_LOADS   (QOS_READ_LOOP_WORDS * QOS_READ_LOOP_PASSES)
 
-/* read the buffer QOS_READ_LOOP_PASSES times and return the accumulated value.
+/* read words of buf, passes times, and return the accumulated value.
+ *
+ * the footprint and the pass count are arguments rather than constants because the question of how
+ * the contention cost scales with the victim's working set needs both to move, and a build per
+ * footprint would put a relink inside every point of that curve. holding words times passes fixed
+ * sweeps the footprint at a constant load count, which is what makes the points comparable.
+ *
+ * words is rounded down to a multiple of eight, since the body is unrolled by eight and a count
+ * that is not a multiple would read past the end of the buffer.
  *
  * the return value is the reason the loads cannot be deleted. the caller consumes it, so nothing
  * in the chain is dead, which matters at any optimisation level above -O0 and costs nothing at
- * -O0. the body is unrolled by eight so the loop counter and the branch do not dominate what the
- * window measures.
+ * -O0. the unroll is what keeps the loop counter and the branch from dominating the window.
  */
-uint32_t qos_read_loop(const volatile uint32_t *buf);
+uint32_t qos_read_loop(const volatile uint32_t *buf, uint32_t words, uint32_t passes);
 
 #endif /* LAXITY_READ_LOOP_H */

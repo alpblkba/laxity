@@ -21,7 +21,9 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
 import telemetry_parse
 
-CAMPAIGN = "interference-2026-09-15"
+# both rounds are read by one script, since the second one re-measures cells the first one
+# reported and the two tables only mean something side by side.
+CAMPAIGNS = ("interference-2026-09-15", "mechanism-2026-09-16")
 
 # the knob values each point index stands for, in the same order as laxity_sweeps in the firmware.
 # point 0 is the aggressor off in every sweep. this is a second copy of what the firmware holds,
@@ -32,7 +34,14 @@ SWEEPS = {
     "chan":   ["off", "1ch", "2ch", "4ch"],
     "stride": ["off", "s0", "s4", "s12", "s28", "s60", "s124"],
     "sat":    ["off", "w2 800kHz", "w1 800kHz", "ungated w4", "ungated w1", "armed, no trigger"],
+    "low":    ["off", "6.25kHz", "12.5kHz", "25kHz", "50kHz"],
+    # not a victim sweep. each point is one block moved once and timed on the DMA side, and the
+    # label is the transaction count that block contains.
+    "dmat":   ["-", "1024 xact", "2048 xact", "4096 xact", "512 xact"],
 }
+
+# transactions in one timed block, by point, for the dmat sweep.
+DMAT_XACTS = {1: 1024, 2: 2048, 3: 4096, 4: 512}
 
 # requested bytes and transactions per second at each point. requested is the word that matters on
 # the saturation sweep, where the hardware is not expected to deliver what the configuration asks.
@@ -45,6 +54,8 @@ RATES = {
     # the two ungated points and the armed point carry no requested rate. ungated means the rate is
     # whatever the matrix allows, and armed means there is no traffic at all.
     "sat":    [(0, 0), (204800000, 102400000), (204800000, 204800000), (0, 0), (0, 0), (0, 0)],
+    "low":    [(0, 0), (1600000, 400000), (3200000, 800000), (6400000, 1600000), (12800000, 3200000)],
+    "dmat":   [(0, 0)] * 5,
 }
 
 # the fit stays below the rate where the earlier bandwidth sweep saturated in SRAM3.
@@ -65,7 +76,7 @@ def read_kv(path):
 
 def load(run_dir):
     meta_kv = read_kv(run_dir / "stress.txt")
-    if meta_kv.get("campaign") != CAMPAIGN:
+    if meta_kv.get("campaign") not in CAMPAIGNS:
         return None
     # a capture whose stress.txt was voided by hand is kept on disk, since results/raw is append
     # only, and is excluded from every table here. the reason is in the key.
@@ -115,6 +126,49 @@ def load(run_dir):
     return {"dir": run_dir.name, "kv": meta_kv, "rows": rows, "base": base,
             "stats": stats, "cyccnt_hz": meta.get("cyccnt_hz", 160000000),
             "wrong_region": wrong_region, "records": len(records), "restarts": restarts}
+
+
+# blocks per second at each point of a sweep, which is the trigger rate times the channel count.
+# the per block term of the cost model is charged once per block, so this is its x axis.
+BLOCKS = {
+    "bw":     [0, 50000, 100000, 200000, 400000, 800000],
+    "xact":   [0, 200000, 200000, 200000],
+    "chan":   [0, 200000, 400000, 800000],
+    "stride": [0] + [200000] * 6,
+    "sat":    [0, 800000, 800000, 0, 0, 0],
+    "low":    [0, 6250, 12500, 25000, 50000],
+    "dmat":   [0] * 5,
+}
+
+
+def per_block(cap):
+    """cycles of victim delay per aggressor block, fitted through the origin."""
+    hz = cap["cyccnt_hz"]
+    window_s = cap["base"] / hz
+    blocks = BLOCKS[cap["kv"]["sweep"]]
+    num = den = 0.0
+    for r in cap["rows"]:
+        if r["point"] == 0 or r["point"] >= len(blocks) or blocks[r["point"]] == 0:
+            continue
+        x = blocks[r["point"]] * window_s
+        num += x * r["delta"]
+        den += x * x
+    return (num / den) if den else None
+
+
+def dma_fit(cap):
+    """time against transactions for a timed block, with a slope and an intercept."""
+    import statistics as st
+    pts = [(DMAT_XACTS[r["point"]], r["median"]) for r in cap["rows"] if r["point"] in DMAT_XACTS]
+    if len(pts) < 2:
+        return None, None
+    n = len(pts)
+    mx = st.mean(x for x, _ in pts)
+    my = st.mean(y for _, y in pts)
+    sxy = sum((x - mx) * (y - my) for x, y in pts)
+    sxx = sum((x - mx) ** 2 for x, _ in pts)
+    slope = sxy / sxx
+    return slope, my - slope * mx
 
 
 def coefficient(cap):
@@ -176,6 +230,88 @@ def main():
                c["stats"]["dropped"], c["stats"]["gaps"], c["wrong_region"], c["restarts"],
                c["kv"].get("experiment", "?"),
                "   SPANS A RESET" if c["restarts"] else ""))
+
+    dma = {c["kv"]["aggressor_region"]: c for c in caps
+           if c["kv"].get("experiment") == "dma-throughput"}
+    if dma:
+        print("\n# DMA side, one block timed with no victim running\n")
+        print("  %-8s %10s %10s %10s %10s %12s %12s" %
+              ("region", "512 xact", "1024", "2048", "4096", "cyc/xact", "intercept"))
+        for r in ("sram1", "sram2", "sram3", "sram4"):
+            c = dma.get(r)
+            if c is None:
+                continue
+            by = {p: None for p in DMAT_XACTS}
+            for row in c["rows"]:
+                if row["point"] in DMAT_XACTS:
+                    by[row["point"]] = row["median"]
+            slope, icept = dma_fit(c)
+            print("  %-8s %10s %10s %10s %10s %12.3f %12.1f" %
+                  (r, by[4], by[1], by[2], by[3], slope, icept))
+        base = dma.get("sram2")
+        if base is not None:
+            b, _ = dma_fit(base)
+            print("\n  ratio against sram2: " + ", ".join(
+                "%s %.2f" % (r, dma_fit(dma[r])[0] / b) for r in
+                ("sram1", "sram2", "sram3", "sram4") if r in dma))
+
+    k2 = {c["dir"].split("-", 1)[1]: c for c in caps if c["kv"].get("experiment") == "k-matrix-2"}
+    if k2:
+        print("\n# the twelve cells again, with the victim stack in SRAM1\n")
+        print("  %-8s %10s %10s %10s %10s" %
+              ("victim", "a:sram1", "a:sram2", "a:sram3", "a:sram4"))
+        for v in (1, 2, 3):
+            cells = []
+            for a in (1, 2, 3, 4):
+                c = k2.get("stress-k2-v%d-a%d" % (v, a))
+                k, _, _ = coefficient(c) if c else (None, None, None)
+                cells.append("%10.3f" % k if k is not None else "        --")
+            print("  %-8s %s" % ("sram%d" % v, " ".join(cells)))
+        print("\n  %-16s %10s %10s %12s %s" %
+              ("cell", "baseline", "coeff", "residual", "victim access mix"))
+        for v in (1, 2, 3):
+            for a in (1, 2, 3, 4):
+                c = k2.get("stress-k2-v%d-a%d" % (v, a))
+                if c is None:
+                    continue
+                k, _, worst = coefficient(c)
+                print("  %-16s %10d %10.3f %12.1f %s" %
+                      ("v%d-a%d" % (v, a), c["base"], k, worst,
+                       c["kv"].get("victim_access_mix", "?").split(" ", 3)[-1]))
+
+    low = {c["dir"].split("-", 1)[1]: c for c in caps if c["kv"].get("experiment") == "low-rate"}
+    if low:
+        print("\n# below the bandwidth sweep, where a saturated port should have room again\n")
+        for name in sorted(low):
+            c = low[name]
+            k, _, _ = coefficient(c)
+            print("%s   (%s)   coefficient %.3f" % (name, c["dir"], k))
+            per_point_table(c)
+            print()
+
+    desc = {c["dir"].split("-", 1)[1]: c for c in caps if c["kv"].get("experiment") == "descriptor"}
+    if desc:
+        print("\n# where the linked list descriptors live, against the per block cost\n")
+        print("  %-16s %-22s %10s %12s %12s" %
+              ("capture", "descriptor page", "baseline", "cyc/block", "coeff/xact"))
+        for name in sorted(desc):
+            c = desc[name]
+            page = "?"
+            for f in c["kv"].get("status_line", "").split():
+                if f.startswith("desc="):
+                    page = f[5:]
+            k, _, _ = coefficient(c)
+            # the channel sweep runs above the rate the per transaction fit is allowed to use, so
+            # the coefficient is absent there by design and the per block figure is the one to read.
+            print("  %-16s %-22s %10d %12.3f %12s" %
+                  (name, page, c["base"], per_block(c) or 0.0,
+                   "%.3f" % k if k is not None else "n/a"))
+        print()
+        for name in sorted(desc):
+            c = desc[name]
+            print("%s   (%s)" % (name, c["dir"]))
+            per_point_table(c)
+            print()
 
     print("\n# experiment 1, cycles per aggressor transaction\n")
     print("  %-8s %10s %10s %10s %10s" % ("victim", "a:sram1", "a:sram2", "a:sram3", "a:sram4"))

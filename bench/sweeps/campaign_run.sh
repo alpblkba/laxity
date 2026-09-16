@@ -23,17 +23,23 @@ SECS="${LAXITY_SECS:-50}"
 # 328 inferences at 50 Hz, which is 6.6 seconds, and it is the longest one the board can be in.
 SETTLE="${LAXITY_SETTLE:-8}"
 CONFIRM="${LAXITY_CONFIRM:-20}"
-CAMPAIGN=interference-2026-09-15
+CAMPAIGN=mechanism-2026-09-16
 
 TIMEOUT="$(laxity_timeout)" || { echo "no timeout(1) or gtimeout(1) on PATH, install coreutils" >&2; exit 1; }
 PORT="$(laxity_stlink_ports | cut -f2 | head -1)"
 [ -c "$PORT" ] || { echo "no ST-LINK serial port" >&2; exit 1; }
 
 # the console byte alphabet, from laxity_poll_console() in firmware/stm32u585/Src/app_threadx.c.
-sweep_name()  { case "$1" in 0) echo bw ;; 1) echo xact ;; 2) echo chan ;; 3) echo stride ;; 4) echo sat ;; esac; }
+sweep_name()  { case "$1" in 0) echo bw ;; 1) echo xact ;; 2) echo chan ;; 3) echo stride ;; 4) echo sat ;;
+                             5) echo low ;; 6) echo dmat ;; esac; }
 region_name() { case "$1" in a|X) echo sram1 ;; b|Y) echo sram2 ;; c|Z) echo sram3 ;; d) echo sram4 ;; esac; }
 region_id()   { case "$1" in a|X) echo 1 ;; b|Y) echo 2 ;; c|Z) echo 3 ;; d) echo 4 ;; esac; }
-victim_name() { case "$1" in r) echo read_loop ;; i) echo inference ;; esac; }
+victim_name() { case "$1" in r) echo read_loop ;; i) echo inference ;; t) echo dma_only ;; esac; }
+# the descriptor page each region keeps, from laxity_place() in the firmware. the status line
+# carries the address, so what is waited for is the page rather than the request.
+desc_addr()   { case "$1" in 1) echo 0x2000e000 ;; 2) echo 0x2003e000 ;; 3) echo 0x2004b000 ;;
+                             4) echo 0x28003000 ;; esac; }
+desc_id()     { case "$1" in *P*) echo 1 ;; *Q*) echo 2 ;; *S*) echo 4 ;; *) echo 3 ;; esac; }
 foot_bytes()  { case "$1" in A) echo 1024 ;; B) echo 2048 ;; C) echo 4096 ;; D) echo 8192 ;;
                              E) echo 16384 ;; F) echo 32768 ;; G) echo 65536 ;; H) echo 131072 ;; esac; }
 load_count()  { case "$1" in L) echo 8192 ;; l) echo 4096 ;; esac; }
@@ -91,16 +97,26 @@ run_one() {
   passes=$(( $(load_count "$loads") / words ))
   [ "$passes" -eq 0 ] && passes=1
 
-  want="stress victim=$([ "$vic" = r ] && echo read || echo infer-stress)"
-  want="$want m2m=$([ "$extra" = M ] && echo 1 || echo 0)"
+  local vname did m2m
+  case "$vic" in r) vname=read ;; t) vname=dma ;; *) vname=infer-stress ;; esac
+  did="$(desc_id "$extra")"
+  m2m=0
+  case "$extra" in *M*) m2m=1 ;; esac
+  want="stress victim=$vname"
+  want="$want m2m=$m2m"
+  # the stack region and the descriptor page are part of what a capture is filed under, since both
+  # decide where the address stream goes and neither is visible in a record.
+  want="$want stack=1 desc=$did($(desc_addr "$did"))"
   want="$want vregion=$(region_id "$vreg") vwords=$words vpasses=$passes vloads=$(( words * passes ))"
   want="$want sweep=$(sweep_name "$sweep") region=$(region_id "$aggr") ok=1"
 
   echo "=== $name: $experiment, victim $(victim_name "$vic") in $(region_name "$vreg"), aggressor in $(region_name "$aggr"), $(sweep_name "$sweep") sweep"
+  # the extra column is a string of console bytes for anything the six main knobs cannot express.
+  # "-" sends the two bytes that put the board back in its default state.
   if [ "$extra" = "-" ]; then
-    send_bytes "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" N
+    send_bytes "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" N R
   else
-    send_bytes "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" "$extra"
+    send_bytes "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" $(echo "$extra" | sed 's/./& /g')
   fi
   sleep "$SETTLE"
 
@@ -130,48 +146,45 @@ run_one() {
     printf 'channels_used=GPDMA1_12..15\n'
     printf 'console_bytes=%s\n' "$vic$sweep$aggr$vreg$foot$loads$extra"
     printf 'status_line=%s\n' "$(printf '%s' "$status" | tr -d '\r')"
+    # what the victim's address stream actually does, counted from the disassembly of the image that
+    # ran rather than taken from the knob. only the read loop has one.
+    if [ "$vic" = r ]; then
+      ./bench/sweeps/victim_access_mix.py --elf build/target/laxity-u585.elf \
+        --words "$words" --passes "$passes" \
+        --buffer-region "$(region_name "$vreg")" --stack-region sram1
+    else
+      printf 'victim_access_mix=not applicable, the victim is %s\n' "$(victim_name "$vic")"
+    fi
   } > "$dir/stress.txt"
   echo "wrote $dir/stress.txt"
 }
 
-# name                        experiment   victim sweep aggressor victim-region footprint loads
+# name                        experiment     victim sweep aggressor victim-region footprint loads extra
 TABLE="
-stress-k-v1-a1                k-matrix     r 0 a X C L
-stress-k-v1-a2                k-matrix     r 0 b X C L
-stress-k-v1-a3                k-matrix     r 0 c X C L
-stress-k-v1-a4                k-matrix     r 0 d X C L
-stress-k-v2-a1                k-matrix     r 0 a Y C L
-stress-k-v2-a2                k-matrix     r 0 b Y C L
-stress-k-v2-a3                k-matrix     r 0 c Y C L
-stress-k-v2-a4                k-matrix     r 0 d Y C L
-stress-k-v3-a1                k-matrix     r 0 a Z C L
-stress-k-v3-a2                k-matrix     r 0 b Z C L
-stress-k-v3-a3                k-matrix     r 0 c Z C L
-stress-k-v3-a4                k-matrix     r 0 d Z C L
-stress-foot-1k                footprint    r 0 c X A L
-stress-foot-2k                footprint    r 0 c X B L
-stress-foot-4k                footprint    r 0 c X C L
-stress-foot-8k                footprint    r 0 c X D L
-stress-foot-16k               footprint    r 0 c X E L
-stress-foot-32k               footprint    r 0 c X F L
-stress-foot-64k               footprint    r 0 c X G L
-stress-foot-128k              footprint    r 0 c X H L
-stress-sat-a2                 saturation   r 4 b X C L
-stress-sat-a2-4096loads       saturation   r 4 b X C l
-stress-sat-a4                 saturation   r 4 d X C L
-stress-sat-a1                 saturation   r 4 a X C L
-stress-sat-a3                 saturation   r 4 c X C L
-stress-infer-a1               two-victims  i 0 a X C L
-stress-infer-a2               two-victims  i 0 b X C L
-stress-infer-a3               two-victims  i 0 c X C L
-stress-xact-clean-a1          re-measure   r 1 a X C L
-stress-xact-clean-a2          re-measure   r 1 b X C L
-stress-xact-clean-a3          re-measure   r 1 c X C L
-stress-chan-clean-a1          re-measure   r 2 a X C L
-stress-chan-clean-a2          re-measure   r 2 b X C L
-stress-chan-clean-a3          re-measure   r 2 c X C L
-stress-m2mhold-a1             contamination r 0 a X C L M
-stress-m2mhold-a3             contamination r 0 c X C L M
+stress-dma-a1                 dma-throughput t 6 a X C L -
+stress-dma-a2                 dma-throughput t 6 b X C L -
+stress-dma-a3                 dma-throughput t 6 c X C L -
+stress-dma-a4                 dma-throughput t 6 d X C L -
+stress-k2-v1-a1               k-matrix-2     r 0 a X C L -
+stress-k2-v1-a2               k-matrix-2     r 0 b X C L -
+stress-k2-v1-a3               k-matrix-2     r 0 c X C L -
+stress-k2-v1-a4               k-matrix-2     r 0 d X C L -
+stress-k2-v2-a1               k-matrix-2     r 0 a Y C L -
+stress-k2-v2-a2               k-matrix-2     r 0 b Y C L -
+stress-k2-v2-a3               k-matrix-2     r 0 c Y C L -
+stress-k2-v2-a4               k-matrix-2     r 0 d Y C L -
+stress-k2-v3-a1               k-matrix-2     r 0 a Z C L -
+stress-k2-v3-a2               k-matrix-2     r 0 b Z C L -
+stress-k2-v3-a3               k-matrix-2     r 0 c Z C L -
+stress-k2-v3-a4               k-matrix-2     r 0 d Z C L -
+stress-low-v1-a1              low-rate       r 5 a X C L -
+stress-low-v1-a3              low-rate       r 5 c X C L -
+stress-low-v3-a1              low-rate       r 5 a Z C L -
+stress-low-v3-a3              low-rate       r 5 c Z C L -
+stress-desc-p1                descriptor     r 2 b X C L P
+stress-desc-p2                descriptor     r 2 b X C L Q
+stress-desc-p3                descriptor     r 2 b X C L R
+stress-desc-p4                descriptor     r 2 b X C L S
 "
 
 # a plain string rather than an array, since an empty array under set -u is an error in the bash

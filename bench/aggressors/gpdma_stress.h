@@ -75,6 +75,35 @@ uint32_t qos_stress_completions(void);
 
 bool qos_stress_running(void);
 
+/* where the linked list nodes the hardware fetches at every block boundary are kept.
+ *
+ * by default they are static objects in bss, which on this build lands in SRAM3 for every
+ * aggressor region. that makes the descriptor fetch a constant of the rig rather than a property
+ * of the region under test, and the per block term of the cost model is the same everywhere,
+ * which is what a constant looks like. passing an address here moves the nodes and turns that
+ * constant into a variable. zero restores the static storage.
+ *
+ * the memory has to hold QOS_STRESS_MAX_CHANNELS nodes, be 32 bit aligned, and sit in the same
+ * 64 KiB block as itself, since the hardware carries only the low 16 bits of the next node
+ * address in the link register. */
+void qos_stress_descriptors(uint32_t addr, uint32_t bytes);
+uint32_t qos_stress_descriptor_addr(void);
+
+/* one block, once, timed by the caller.
+ *
+ * the sweeps measure what an aggressor costs a victim. this measures what the transfer itself
+ * takes, with no victim in the window, which is the only way to ask whether a region is slower on
+ * the DMA side without the victim's own access pattern in the answer. the caller owns the cycle
+ * counter, because every other measured window in this project is taken by the measurement thread
+ * and this one should not be different.
+ *
+ * start returns false when the configuration does not fit or the hardware refuses it. done returns
+ * true once the transfer complete flag is set, and clears it. */
+bool qos_stress_once_arm(uint32_t base, uint32_t span, const qos_stress_cfg_t *cfg);
+bool qos_stress_once_fire(void);
+bool qos_stress_once_pending(void);
+bool qos_stress_once_settle(void);
+
 /* the byte and transaction rates the configuration asks for, so a capture can be read against
  * what was requested rather than against what someone remembers requesting. */
 uint32_t qos_stress_bytes_per_s(const qos_stress_cfg_t *cfg);

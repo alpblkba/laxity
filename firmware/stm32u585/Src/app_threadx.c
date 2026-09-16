@@ -113,7 +113,7 @@ _Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
  * SRAM4 is 16 KiB in total. no base moves, so the addresses the aggressor touches are the ones the
  * earlier campaign measured and the two matrices stay comparable. */
 #define LAXITY_STRESS_BYTES_S1 (12u * 1024u)
-#define LAXITY_STRESS_BYTES_S2 (16u * 1024u)
+#define LAXITY_STRESS_BYTES_S2 (12u * 1024u)
 #define LAXITY_STRESS_BYTES_S3 (20u * 1024u)
 #define LAXITY_STRESS_BYTES_S4 (12u * 1024u)
 
@@ -126,14 +126,29 @@ _Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
 #define LAXITY_DESC_OFF_S4 0x03000u
 #define LAXITY_DESC_BYTES  4096u
 
-/* the measurement thread's stack, one page of SRAM1.
+/* the measurement thread's stack, one page in each region.
  *
  * ThreadX allocates thread stacks from a byte pool that sits in SRAM3, and at -O0 four of every
- * five victim accesses are stack accesses, so the victim region knob controlled a fifth of the
- * victim's traffic and the rest went to SRAM3 whatever it was set to. this is a validity condition
- * for the matrix rather than a tuning change. */
+ * five read loop accesses are stack accesses, so the victim region knob controlled a fifth of the
+ * victim's traffic and the rest went to SRAM3 whatever it was set to. the published matrix was
+ * measured with the inference victim on that same pool, and whether its rows mean placement or
+ * mean stack exposure is what the three pages below exist to separate.
+ *
+ * the bottom quarter of a page is not handed to ThreadX. an overflow descends into it and shows up
+ * as a guard word that changed, rather than as silent corruption of whatever sits underneath. */
 #define LAXITY_STACK_OFF_S1 0x0F000u
+#define LAXITY_STACK_OFF_S2 0x0D000u
+#define LAXITY_STACK_OFF_S3 0x0C000u
 #define LAXITY_STACK_BYTES  4096u
+#define LAXITY_STACK_GUARD  1024u
+#define LAXITY_STACK_FILL   0xA5A5A5A5u
+
+/* which region the stack comes from survives a reset in a word of SRAM4, which carries no section
+ * and which the startup code does not clear. a thread's stack is fixed when the thread is created,
+ * so a run time choice has to arrive before that, and a reset is the only way to get there without
+ * a binary per configuration. */
+#define LAXITY_BOOT_SEL_ADDR  (QOS_SRAM4_BASE + 0x3FF0u)
+#define LAXITY_BOOT_SEL_MAGIC 0x4C580000u
 
 /* the SRAM1 window moved down from 0x10000 to sit immediately above the mem2mem buffers, which
  * frees the top 128 KiB of SRAM1 in one piece for the victim footprint sweep. it is still SRAM1
@@ -360,6 +375,14 @@ static uint8_t  laxity_desc_ok;
 /* where the measurement thread's stack actually is, resolved from its address rather than from the
  * request, because a fallback that nobody noticed would invalidate every capture after it. */
 static uint8_t  laxity_stack_region = QOS_REGION_NONE;
+/* the page the thread actually got, or NULL when it fell back to the byte pool. the high water
+ * reading uses this rather than the region, so a fallback cannot be read as a stack that was never
+ * there. */
+static uint8_t *laxity_stack_used_page;
+
+/* which placement the stress schedule's inference runs against. the arena cross picks its own slot
+ * per cell; this is the one the decomposition varies. */
+static uint8_t  laxity_arena_slot;
 static uint32_t laxity_read_acc;               /* consumes the loads so none of them is dead */
 
 /* where the read loop victim runs, how much of its window it walks and how many loads it issues.
@@ -474,21 +497,72 @@ static uint8_t laxity_region_of(uintptr_t a)
   return QOS_REGION_NONE;
 }
 
-/* the measurement thread's stack, at a fixed page of SRAM1 inside the span reservation.
+/* the measurement thread's stack page in one region, inside the span reservation.
  *
- * it returns NULL rather than the address when the page is not inside the reservation, because the
+ * it returns NULL rather than an address when the page is not inside the reservation, because the
  * span starts wherever bss puts it and an address that drifted outside it would be memory the
  * linker gave to something else. the caller falls back to the byte pool and the status line says
- * which one the run got. */
-static uint8_t *laxity_stack_page(void)
+ * which region the run actually got. */
+static uint8_t *laxity_stack_page(uint8_t region)
 {
-  uintptr_t lo = (uintptr_t)QOS_SRAM1_BASE + LAXITY_STACK_OFF_S1;
+  const qos_mem_region_t *reg = qos_mem_region(region);
   uintptr_t span_lo = (uintptr_t)laxity_arena_span;
   uintptr_t span_hi = span_lo + sizeof laxity_arena_span;
+  uintptr_t lo;
+  uint32_t off;
 
+  switch (region)
+  {
+    case QOS_REGION_SRAM1: off = LAXITY_STACK_OFF_S1; break;
+    case QOS_REGION_SRAM2: off = LAXITY_STACK_OFF_S2; break;
+    case QOS_REGION_SRAM3: off = LAXITY_STACK_OFF_S3; break;
+    default: return NULL;
+  }
+  if (reg == NULL) { return NULL; }
+  lo = (uintptr_t)reg->base + off;
+  if ((lo + LAXITY_STACK_BYTES) > ((uintptr_t)reg->base + reg->size)) { return NULL; }
   if (lo < span_lo || (lo + LAXITY_STACK_BYTES) > span_hi) { return NULL; }
-  if ((lo + LAXITY_STACK_BYTES) > ((uintptr_t)QOS_SRAM1_BASE + QOS_SRAM1_SIZE)) { return NULL; }
   return (uint8_t *)lo;
+}
+
+static uint8_t laxity_boot_sel_read(void)
+{
+  uint32_t w;
+  __HAL_RCC_SRAM4_CLK_ENABLE();
+  w = *(volatile uint32_t *)LAXITY_BOOT_SEL_ADDR;
+  if ((w & 0xFFFFFF00u) != LAXITY_BOOT_SEL_MAGIC) { return QOS_REGION_SRAM1; }
+  w &= 0xFFu;
+  return (w >= QOS_REGION_SRAM1 && w <= QOS_REGION_SRAM3) ? (uint8_t)w : QOS_REGION_SRAM1;
+}
+
+static void laxity_boot_sel_write(uint8_t region)
+{
+  __HAL_RCC_SRAM4_CLK_ENABLE();
+  *(volatile uint32_t *)LAXITY_BOOT_SEL_ADDR = LAXITY_BOOT_SEL_MAGIC | (uint32_t)region;
+}
+
+/* how deep the measurement thread's stack has been, and whether it went past what it was given.
+ *
+ * ThreadX fills a new stack with TX_STACK_FILL, so the lowest word that is not that pattern is the
+ * deepest the thread has reached. the guard below carries a different pattern, which is what makes
+ * an overflow distinguishable from ordinary depth instead of being read as more of it. inference
+ * through a vendor runtime can be expensive in stack and an overflow corrupts silently. */
+static uint32_t laxity_stack_high_water(uint8_t *guard_hit)
+{
+  const uint32_t *p = (const uint32_t *)laxity_stack_used_page;
+  uint32_t i;
+
+  *guard_hit = 0u;
+  if (p == NULL) { return 0u; }
+  for (i = 0u; i < (LAXITY_STACK_GUARD / 4u); ++i)
+  {
+    if (p[i] != LAXITY_STACK_FILL) { *guard_hit = 1u; break; }
+  }
+  for (i = (LAXITY_STACK_GUARD / 4u); i < (LAXITY_STACK_BYTES / 4u); ++i)
+  {
+    if (p[i] != 0xEFEFEFEFu) { break; }
+  }
+  return ((LAXITY_STACK_BYTES / 4u) - i) * 4u;
 }
 
 /* USER CODE END PFP */
@@ -517,8 +591,23 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   }
 
   /* the measurement thread's stack does not come from the pool, since the pool is in SRAM3 and the
-     victim's stack traffic would then land in the region half the experiment is about. */
-  infer_stack = (CHAR *)laxity_stack_page();
+     victim's stack traffic would then land in the region half the experiment is about.
+     every page is filled, including the two this run will not use, so a page that is not a stack
+     reads as untouched and a high water figure cannot be taken from the wrong one. */
+  {
+    uint8_t want;
+    for (uint8_t reg = QOS_REGION_SRAM1; reg <= QOS_REGION_SRAM3; ++reg)
+    {
+      uint32_t *page = (uint32_t *)laxity_stack_page(reg);
+      if (page == NULL) { continue; }
+      for (uint32_t i = 0u; i < (LAXITY_STACK_BYTES / 4u); ++i) { page[i] = LAXITY_STACK_FILL; }
+    }
+    want = laxity_boot_sel_read();
+    laxity_stack_used_page = laxity_stack_page(want);
+    if (laxity_stack_used_page == NULL) { laxity_stack_used_page = laxity_stack_page(QOS_REGION_SRAM1); }
+    infer_stack = (CHAR *)laxity_stack_used_page;
+    if (infer_stack != NULL) { infer_stack += LAXITY_STACK_GUARD; }
+  }
   if (infer_stack == NULL &&
       tx_byte_allocate(byte_pool, (VOID **)&infer_stack, LAXITY_INFER_STACK,
                        TX_NO_WAIT) != TX_SUCCESS)
@@ -741,26 +830,25 @@ static uint8_t laxity_place(void)
       {
         uintptr_t dlo = (uintptr_t)reg->base + desc_off[r];
         uintptr_t dhi = dlo + LAXITY_DESC_BYTES;
+        uintptr_t klo = (uintptr_t)laxity_stack_page((uint8_t)(QOS_REGION_SRAM1 + r));
+        uintptr_t khi = klo + LAXITY_STACK_BYTES;
+
         if (dhi > reg_hi) { return 0u; }
         if (dlo < span_lo || dhi > span_hi) { return 0u; }
         if (dlo < taken) { return 0u; }
         if (dlo < hi && lo < dhi) { return 0u; }
         if (dlo < vhi && vlo < dhi) { return 0u; }
         laxity_desc_base[r] = (uint32_t)dlo;
-      }
-    }
 
-    /* the stack page, which the thread has been running on since before any of this was checked.
-     * it is verified here as well because everything else in this function is, and a stack that
-     * overlapped the victim window would corrupt a measurement rather than fail one. */
-    {
-      uintptr_t slo = (uintptr_t)QOS_SRAM1_BASE + LAXITY_STACK_OFF_S1;
-      uintptr_t shi = slo + LAXITY_STACK_BYTES;
-      if (laxity_stack_region == QOS_REGION_SRAM1)
-      {
-        if (slo < span_lo || shi > span_hi) { return 0u; }
-        if (slo < ((uintptr_t)laxity_stress_base[0] + laxity_stress_span[0])) { return 0u; }
-        if (shi > (uintptr_t)laxity_victim_base[0]) { return 0u; }
+        /* the stack page for this region. the thread has been running on one of the three since
+         * before this function existed in the boot order, so what is still possible here is to
+         * refuse to measure when a page overlaps something rather than to move it. */
+        if (klo == 0u) { return 0u; }
+        if (khi > reg_hi) { return 0u; }
+        if (klo < taken) { return 0u; }
+        if (klo < hi && lo < khi) { return 0u; }
+        if (klo < vhi && vlo < khi) { return 0u; }
+        if (klo < dhi && dlo < khi) { return 0u; }
       }
     }
 
@@ -1081,7 +1169,7 @@ static VOID laxity_infer_entry(ULONG argument)
       qos_infer_record_t rec = {0};
       uint32_t cycles = 0u;
       bool wrapped = false;
-      uint32_t slot = 0u;
+      uint32_t slot = (victim == LAXITY_VICTIM_ISTRESS) ? (uint32_t)laxity_arena_slot : 0u;
       uint8_t  point = 0u;
       int run = 0;
 
@@ -1185,7 +1273,7 @@ static VOID laxity_infer_entry(ULONG argument)
            record has no field left and the wire format is not being changed for this. */
         rec.region_id = (victim == LAXITY_VICTIM_READ) ? (uint8_t)(QOS_REGION_SRAM1 + vr)
                       : (victim == LAXITY_VICTIM_DMATIME) ? laxity_stress_region
-                      : laxity_placements[0].id;
+                      : laxity_placements[slot].id;
         rec.aggressor_idx = (uint16_t)(((uint16_t)point << 8)
                                        | (point ? laxity_stress_region : 0u));
         rec.reserved = qos_stress_completions();
@@ -1273,11 +1361,27 @@ static void laxity_say(char *line, int n)
  *   X  read loop victim in SRAM1           Y  SRAM2        Z  SRAM3
  *   A to H  victim footprint 1, 2, 4, 8, 16, 32, 64 and 128 KiB
  *   P  descriptors in SRAM1                  Q  SRAM2        R  SRAM3        S  SRAM4
+ *   j  stack in SRAM1                        k  SRAM2        n  SRAM3
+ *      the stack is fixed when the thread is created, so these reset the board through a word of
+ *      SRAM4 and the board comes back on the page that was asked for
+ *   7  inference arena in SRAM1              8  SRAM2        9  SRAM3
  *   l  4096 loads per window               L  8192 loads per window
  *   M  run the mem2mem aggressor through a stress pass, in the aggressor region, largest
  *      footprint, which reproduces the contamination the earlier stress captures were taken with
  *   N  stop it again, which is the normal state
  */
+/* ask for a stack region, which means asking for a reset.
+ *
+ * nothing here can move a running thread onto another stack, so the choice is written where a warm
+ * reset preserves it and the board comes back having made it. a request for the region already in
+ * use resets nothing, so a capture that repeats the current setting costs no reboot. */
+static void laxity_set_stack_region(uint8_t region)
+{
+  if (region == laxity_stack_region) { return; }
+  laxity_boot_sel_write(region);
+  NVIC_SystemReset();
+}
+
 static void laxity_poll_console(void)
 {
   uint8_t c;
@@ -1306,6 +1410,12 @@ static void laxity_poll_console(void)
     case 'Q': laxity_desc_region = QOS_REGION_SRAM2; laxity_stress_point = 0xFFu; break;
     case 'R': laxity_desc_region = QOS_REGION_SRAM3; laxity_stress_point = 0xFFu; break;
     case 'S': laxity_desc_region = QOS_REGION_SRAM4; laxity_stress_point = 0xFFu; break;
+    case 'j': laxity_set_stack_region(QOS_REGION_SRAM1); break;
+    case 'k': laxity_set_stack_region(QOS_REGION_SRAM2); break;
+    case 'n': laxity_set_stack_region(QOS_REGION_SRAM3); break;
+    case '7': laxity_arena_slot = 0u; break;
+    case '8': laxity_arena_slot = 1u; break;
+    case '9': laxity_arena_slot = 2u; break;
     case 'X': laxity_victim_region = QOS_REGION_SRAM1; break;
     case 'Y': laxity_victim_region = QOS_REGION_SRAM2; break;
     case 'Z': laxity_victim_region = QOS_REGION_SRAM3; break;
@@ -1385,17 +1495,20 @@ static VOID laxity_export_entry(ULONG argument)
         /* the active configuration, so a capture taken while this was on the wire can be checked
            against the name it was filed under rather than against someone's memory of it. */
         uint8_t  pt = (laxity_stress_point == 0xFFu) ? 0u : laxity_stress_point;
+        uint8_t  sguard = 0u;
         const qos_stress_cfg_t *c = (pt > 0u) ? &laxity_sweeps[laxity_sweep].pt[pt - 1u] : NULL;
         laxity_say(line, snprintf(line, sizeof line,
-                     "stress victim=%s m2m=%u stack=%u desc=%u(0x%08lx) "
+                     "stress victim=%s m2m=%u stack=%u arena=%u desc=%u(0x%08lx) "
                      "vregion=%u vwords=%lu vpasses=%lu vloads=%lu "
                      "sweep=%s region=%u ok=%u point=%u/%u "
-                     "chan=%u width=%u block=%lu stride=%lu hz=%lu Bps=%lu xps=%lu run=%u xfer=%lu\r\n",
+                     "chan=%u width=%u block=%lu stride=%lu hz=%lu Bps=%lu xps=%lu run=%u xfer=%lu "
+                     "shw=%lu sguard=%u\r\n",
                      (laxity_victim == LAXITY_VICTIM_READ) ? "read"
                        : (laxity_victim == LAXITY_VICTIM_DMATIME) ? "dma"
                        : (laxity_victim == LAXITY_VICTIM_ISTRESS) ? "infer-stress" : "infer",
                      (unsigned)laxity_m2m_hold,
                      (unsigned)laxity_stack_region,
+                     (unsigned)laxity_placements[laxity_arena_slot].id,
                      (unsigned)laxity_region_of((uintptr_t)qos_stress_descriptor_addr()),
                      (unsigned long)qos_stress_descriptor_addr(),
                      (unsigned)laxity_victim_region,
@@ -1416,7 +1529,8 @@ static VOID laxity_export_entry(ULONG argument)
                         transfer count is a configured channel carrying no traffic, and a point
                         with run=0 is a channel that did not start. */
                      (unsigned)(qos_stress_running() ? 1u : 0u),
-                     (unsigned long)qos_stress_completions()));
+                     (unsigned long)qos_stress_completions(),
+                     (unsigned long)laxity_stack_high_water(&sguard), (unsigned)sguard));
       }
 
       {

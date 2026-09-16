@@ -23,7 +23,12 @@ SECS="${LAXITY_SECS:-50}"
 # 328 inferences at 50 Hz, which is 6.6 seconds, and it is the longest one the board can be in.
 SETTLE="${LAXITY_SETTLE:-8}"
 CONFIRM="${LAXITY_CONFIRM:-20}"
-CAMPAIGN=mechanism-2026-09-16
+# the stack region is fixed when the thread is created, so a change to it resets the board and the
+# rest of the configuration has to wait for the board to come back. bytes that arrive during boot
+# are dropped, which is how the first attempt at this lost its victim byte.
+REBOOT="${LAXITY_REBOOT:-12}"
+LAST_STACK=""
+CAMPAIGN=arena-or-stack-2026-09-16
 
 TIMEOUT="$(laxity_timeout)" || { echo "no timeout(1) or gtimeout(1) on PATH, install coreutils" >&2; exit 1; }
 PORT="$(laxity_stlink_ports | cut -f2 | head -1)"
@@ -40,6 +45,8 @@ victim_name() { case "$1" in r) echo read_loop ;; i) echo inference ;; t) echo d
 desc_addr()   { case "$1" in 1) echo 0x2000e000 ;; 2) echo 0x2003e000 ;; 3) echo 0x2004b000 ;;
                              4) echo 0x28003000 ;; esac; }
 desc_id()     { case "$1" in *P*) echo 1 ;; *Q*) echo 2 ;; *S*) echo 4 ;; *) echo 3 ;; esac; }
+stack_id()    { case "$1" in j) echo 1 ;; k) echo 2 ;; n) echo 3 ;; esac; }
+arena_id()    { case "$1" in 7) echo 1 ;; 8) echo 2 ;; 9) echo 3 ;; esac; }
 foot_bytes()  { case "$1" in A) echo 1024 ;; B) echo 2048 ;; C) echo 4096 ;; D) echo 8192 ;;
                              E) echo 16384 ;; F) echo 32768 ;; G) echo 65536 ;; H) echo 131072 ;; esac; }
 load_count()  { case "$1" in L) echo 8192 ;; l) echo 4096 ;; esac; }
@@ -77,6 +84,7 @@ run_one() {
   # an optional extra console byte, for a configuration the six main knobs cannot express. "-" is
   # the normal case and sends nothing.
   local extra="${9:--}"
+  local stackb="${10:-j}" arenab="${11:-7}"
   local dir words passes want status
 
   # a capture whose stress.txt carries a void line does not count as done, so a configuration that
@@ -106,17 +114,25 @@ run_one() {
   want="$want m2m=$m2m"
   # the stack region and the descriptor page are part of what a capture is filed under, since both
   # decide where the address stream goes and neither is visible in a record.
-  want="$want stack=1 desc=$did($(desc_addr "$did"))"
+  want="$want stack=$(stack_id "$stackb") arena=$(arena_id "$arenab") desc=$did($(desc_addr "$did"))"
   want="$want vregion=$(region_id "$vreg") vwords=$words vpasses=$passes vloads=$(( words * passes ))"
   want="$want sweep=$(sweep_name "$sweep") region=$(region_id "$aggr") ok=1"
 
-  echo "=== $name: $experiment, victim $(victim_name "$vic") in $(region_name "$vreg"), aggressor in $(region_name "$aggr"), $(sweep_name "$sweep") sweep"
+  echo "=== $name: $experiment, victim $(victim_name "$vic"), arena sram$(arena_id "$arenab"), stack sram$(stack_id "$stackb"), aggressor in $(region_name "$aggr"), $(sweep_name "$sweep") sweep"
+
+  # the stack request goes first and on its own. a region that is already in use resets nothing, so
+  # a run that keeps the same stack across rows pays the reboot once rather than per capture.
+  if [ "$stackb" != "$LAST_STACK" ]; then
+    send_bytes "$stackb"
+    sleep "$REBOOT"
+    LAST_STACK="$stackb"
+  fi
   # the extra column is a string of console bytes for anything the six main knobs cannot express.
   # "-" sends the two bytes that put the board back in its default state.
   if [ "$extra" = "-" ]; then
-    send_bytes "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" N R
+    send_bytes "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" "$arenab" N R
   else
-    send_bytes "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" $(echo "$extra" | sed 's/./& /g')
+    send_bytes "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" "$arenab" $(echo "$extra" | sed 's/./& /g')
   fi
   sleep "$SETTLE"
 
@@ -124,6 +140,16 @@ run_one() {
   if [ -z "$status" ]; then
     echo "board never reported \"$want\" within ${CONFIRM}s, refusing to capture $name" >&2
     exit 1
+  fi
+
+  # the golden vector is the only end to end check this firmware has, and a stack page that landed
+  # somewhere wrong would break the setup rather than the measurement. a capture is not taken
+  # against a board that is no longer classifying the known window correctly.
+  if [ "$vic" = i ] || [ "$vic" = v ]; then
+    if [ -z "$(await_status "MATCH mismatch=0")" ]; then
+      echo "golden check is not reading MATCH with a zero mismatch count, stopping before $name" >&2
+      exit 1
+    fi
   fi
 
   ./tools/stm32/capture.sh "$name" "$SECS"
@@ -144,7 +170,9 @@ run_one() {
     printf 'aggressor_region=%s\n' "$(region_name "$aggr")"
     printf 'aggressor=gpdma_stress\n'
     printf 'channels_used=GPDMA1_12..15\n'
-    printf 'console_bytes=%s\n' "$vic$sweep$aggr$vreg$foot$loads$extra"
+    printf 'console_bytes=%s\n' "$stackb$vic$sweep$aggr$vreg$foot$loads$arenab$extra"
+    printf 'arena_region=sram%s\n' "$(arena_id "$arenab")"
+    printf 'stack_region=sram%s\n' "$(stack_id "$stackb")"
     printf 'status_line=%s\n' "$(printf '%s' "$status" | tr -d '\r')"
     # what the victim's address stream actually does, counted from the disassembly of the image that
     # ran rather than taken from the knob. only the read loop has one.
@@ -152,6 +180,11 @@ run_one() {
       ./bench/sweeps/victim_access_mix.py --elf build/target/laxity-u585.elf \
         --words "$words" --passes "$passes" \
         --buffer-region "$(region_name "$vreg")" --stack-region sram1
+    elif [ "$vic" = i ]; then
+      # inference has a data dependent call graph, so the static count the read loop gets is not
+      # available. what is known from the code is which regions it touches at all.
+      printf 'victim_access_mix=not counted for inference; regions touched: arena@sram%s stack@sram%s statics@sram3(88B) weights@flash(12256B)\n' \
+        "$(arena_id "$arenab")" "$(stack_id "$stackb")"
     else
       printf 'victim_access_mix=not applicable, the victim is %s\n' "$(victim_name "$vic")"
     fi
@@ -159,43 +192,55 @@ run_one() {
   echo "wrote $dir/stress.txt"
 }
 
-# name                        experiment     victim sweep aggressor victim-region footprint loads extra
+# name                        experiment     victim sweep aggressor victim-region footprint loads extra stack arena
 TABLE="
-stress-dma-a1                 dma-throughput t 6 a X C L -
-stress-dma-a2                 dma-throughput t 6 b X C L -
-stress-dma-a3                 dma-throughput t 6 c X C L -
-stress-dma-a4                 dma-throughput t 6 d X C L -
-stress-k2-v1-a1               k-matrix-2     r 0 a X C L -
-stress-k2-v1-a2               k-matrix-2     r 0 b X C L -
-stress-k2-v1-a3               k-matrix-2     r 0 c X C L -
-stress-k2-v1-a4               k-matrix-2     r 0 d X C L -
-stress-k2-v2-a1               k-matrix-2     r 0 a Y C L -
-stress-k2-v2-a2               k-matrix-2     r 0 b Y C L -
-stress-k2-v2-a3               k-matrix-2     r 0 c Y C L -
-stress-k2-v2-a4               k-matrix-2     r 0 d Y C L -
-stress-k2-v3-a1               k-matrix-2     r 0 a Z C L -
-stress-k2-v3-a2               k-matrix-2     r 0 b Z C L -
-stress-k2-v3-a3               k-matrix-2     r 0 c Z C L -
-stress-k2-v3-a4               k-matrix-2     r 0 d Z C L -
-stress-low-v1-a1              low-rate       r 5 a X C L -
-stress-low-v1-a3              low-rate       r 5 c X C L -
-stress-low-v3-a1              low-rate       r 5 a Z C L -
-stress-low-v3-a3              low-rate       r 5 c Z C L -
-stress-desc-p1                descriptor     r 2 b X C L P
-stress-desc-p2                descriptor     r 2 b X C L Q
-stress-desc-p3                descriptor     r 2 b X C L R
-stress-desc-p4                descriptor     r 2 b X C L S
+stress-as-a1-s1-g1           decomposition  i 0 a X C L - j 7
+stress-as-a1-s1-g2           decomposition  i 0 b X C L - j 7
+stress-as-a1-s1-g3           decomposition  i 0 c X C L - j 7
+stress-as-a1-s1-g4           decomposition  i 0 d X C L - j 7
+stress-as-a1-s2-g1           decomposition  i 0 a X C L - k 7
+stress-as-a1-s2-g2           decomposition  i 0 b X C L - k 7
+stress-as-a1-s2-g3           decomposition  i 0 c X C L - k 7
+stress-as-a1-s2-g4           decomposition  i 0 d X C L - k 7
+stress-as-a1-s3-g1           decomposition  i 0 a X C L - n 7
+stress-as-a1-s3-g2           decomposition  i 0 b X C L - n 7
+stress-as-a1-s3-g3           decomposition  i 0 c X C L - n 7
+stress-as-a1-s3-g4           decomposition  i 0 d X C L - n 7
+stress-as-a2-s1-g1           decomposition  i 0 a X C L - j 8
+stress-as-a2-s1-g2           decomposition  i 0 b X C L - j 8
+stress-as-a2-s1-g3           decomposition  i 0 c X C L - j 8
+stress-as-a2-s1-g4           decomposition  i 0 d X C L - j 8
+stress-as-a2-s2-g1           decomposition  i 0 a X C L - k 8
+stress-as-a2-s2-g2           decomposition  i 0 b X C L - k 8
+stress-as-a2-s2-g3           decomposition  i 0 c X C L - k 8
+stress-as-a2-s2-g4           decomposition  i 0 d X C L - k 8
+stress-as-a2-s3-g1           decomposition  i 0 a X C L - n 8
+stress-as-a2-s3-g2           decomposition  i 0 b X C L - n 8
+stress-as-a2-s3-g3           decomposition  i 0 c X C L - n 8
+stress-as-a2-s3-g4           decomposition  i 0 d X C L - n 8
+stress-as-a3-s1-g1           decomposition  i 0 a X C L - j 9
+stress-as-a3-s1-g2           decomposition  i 0 b X C L - j 9
+stress-as-a3-s1-g3           decomposition  i 0 c X C L - j 9
+stress-as-a3-s1-g4           decomposition  i 0 d X C L - j 9
+stress-as-a3-s2-g1           decomposition  i 0 a X C L - k 9
+stress-as-a3-s2-g2           decomposition  i 0 b X C L - k 9
+stress-as-a3-s2-g3           decomposition  i 0 c X C L - k 9
+stress-as-a3-s2-g4           decomposition  i 0 d X C L - k 9
+stress-as-a3-s3-g1           decomposition  i 0 a X C L - n 9
+stress-as-a3-s3-g2           decomposition  i 0 b X C L - n 9
+stress-as-a3-s3-g3           decomposition  i 0 c X C L - n 9
+stress-as-a3-s3-g4           decomposition  i 0 d X C L - n 9
 "
 
 # a plain string rather than an array, since an empty array under set -u is an error in the bash
 # that ships with macOS.
 WANTED=" $* "
-while read -r name experiment vic sweep aggr vreg foot loads extra; do
+while read -r name experiment vic sweep aggr vreg foot loads extra stackb arenab; do
   [ -z "${name:-}" ] && continue
   if [ -n "$*" ]; then
     case "$WANTED" in *" $name "*) ;; *) continue ;; esac
   fi
-  run_one "$name" "$experiment" "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" "${extra:--}"
+  run_one "$name" "$experiment" "$vic" "$sweep" "$aggr" "$vreg" "$foot" "$loads" "${extra:--}" "${stackb:-j}" "${arenab:-7}"
 done <<< "$TABLE"
 
 echo "campaign done"

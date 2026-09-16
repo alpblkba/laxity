@@ -23,7 +23,7 @@ import telemetry_parse
 
 # both rounds are read by one script, since the second one re-measures cells the first one
 # reported and the two tables only mean something side by side.
-CAMPAIGNS = ("interference-2026-09-15", "mechanism-2026-09-16")
+CAMPAIGNS = ("interference-2026-09-15", "mechanism-2026-09-16", "arena-or-stack-2026-09-16")
 
 # the knob values each point index stands for, in the same order as laxity_sweeps in the firmware.
 # point 0 is the aggressor off in every sweep. this is a second copy of what the firmware holds,
@@ -230,6 +230,41 @@ def main():
                c["stats"]["dropped"], c["stats"]["gaps"], c["wrong_region"], c["restarts"],
                c["kv"].get("experiment", "?"),
                "   SPANS A RESET" if c["restarts"] else ""))
+
+    dec = {c["dir"].split("-", 1)[1]: c for c in caps
+           if c["kv"].get("experiment") == "decomposition"}
+    if dec:
+        print("\n# inference victim, arena and stack as separate knobs\n")
+        print("  cycles of victim delay per aggressor transaction, three point slope\n")
+        for ar in (1, 2, 3):
+            rows = [k for k in dec if k.startswith("stress-as-a%d-" % ar)]
+            if not rows:
+                continue
+            print("  arena in SRAM%d" % ar)
+            print("    %-10s %10s %10s %10s %10s" %
+                  ("stack", "a:sram1", "a:sram2", "a:sram3", "a:sram4"))
+            for st in (1, 2, 3):
+                cells = []
+                for ag in (1, 2, 3, 4):
+                    c = dec.get("stress-as-a%d-s%d-g%d" % (ar, st, ag))
+                    k, _, _ = coefficient(c) if c else (None, None, None)
+                    cells.append("%10.3f" % k if k is not None else "        --")
+                print("    %-10s %s" % ("sram%d" % st, " ".join(cells)))
+            print()
+        print("  %-22s %10s %10s %12s %8s %8s" %
+              ("cell", "baseline", "coeff", "residual", "stack hw", "guard"))
+        for name in sorted(dec):
+            c = dec[name]
+            k, _, worst = coefficient(c)
+            hw, guard = "?", "?"
+            for f in c["kv"].get("status_line", "").split():
+                if f.startswith("shw="):
+                    hw = f[4:]
+                if f.startswith("sguard="):
+                    guard = f[7:]
+            print("  %-22s %10d %10.3f %12.1f %8s %8s" %
+                  (name, c["base"], k, worst, hw, guard))
+        print()
 
     dma = {c["kv"]["aggressor_region"]: c for c in caps
            if c["kv"].get("experiment") == "dma-throughput"}

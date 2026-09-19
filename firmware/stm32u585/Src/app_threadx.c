@@ -70,7 +70,7 @@ extern UART_HandleTypeDef huart1;
  *
  * the sensor and telemetry paths do not need it, so it is opt in until that is understood. set
  * this to 1 to bring it back. */
-#define LAXITY_NET_ENABLE    0
+#define LAXITY_NET_ENABLE    1
 
 /* lower priority than the measurement thread, so a blocking transmit that takes several milliseconds at 921600 baud cannot delay an inference. that is what best effort export means here. */
 
@@ -1308,9 +1308,24 @@ static VOID laxity_infer_entry(ULONG argument)
 #if LAXITY_NET_ENABLE
 /* bring the link up once, then report it. the result is published for the status line rather
    than printed here, because one thread owns the UART and it is not this one. */
+/* the stack is started on request rather than at boot.
+ *
+ * starting it at boot makes the board stop scheduling this application entirely: the MXCHIP SPI
+ * transmit and receive thread the driver creates runs at ThreadX priority 8, against 12, 15 and 20
+ * here, and it holds the processor. the core keeps retiring instructions and no fault is raised,
+ * so this is starvation rather than a hang. compiling the stack in and leaving it stopped is what
+ * lets the rest of the campaign measure what the stack costs when the radio is idle. */
+static uint8_t laxity_net_want;
+
+/* and the telemetry export stays on the UART whatever the radio does. a measurement whose own
+ * transport is the aggressor mixes the two, which this project has already paid for twice. */
+static uint8_t laxity_net_export;
+
 static VOID laxity_net_entry(ULONG argument)
 {
   (void)argument;
+
+  while (!laxity_net_want) { tx_thread_sleep(TX_TIMER_TICKS_PER_SECOND / 10u); }
 
   laxity_mxchip_irq_enable();
   laxity_live.net_rc = (int32_t)qos_net_start();
@@ -1364,6 +1379,8 @@ static void laxity_say(char *line, int n)
  *   5  below the bandwidth sweep, 0.4 to 3.2 million transactions per second
  *   6  one block moved once and timed, four points of transaction count
  *   o  no aggressor at all, for the contention free table
+ *   W  start the network stack, which is not started at boot
+ *   e  also send telemetry over UDP, which is off and should stay off during a measurement
  *   a  aggressor in SRAM1                  b  SRAM2        c  SRAM3        d  SRAM4
  *   X  read loop victim in SRAM1           Y  SRAM2        Z  SRAM3
  *   A to H  victim footprint 1, 2, 4, 8, 16, 32, 64 and 128 KiB
@@ -1401,6 +1418,10 @@ static void laxity_poll_console(void)
     case 'r': laxity_victim = LAXITY_VICTIM_READ;    break;
     case 'i': laxity_victim = LAXITY_VICTIM_ISTRESS; break;
     case 't': laxity_victim = LAXITY_VICTIM_DMATIME; laxity_stress_point = 0xFFu; break;
+#if LAXITY_NET_ENABLE
+    case 'W': laxity_net_want = 1u; break;
+    case 'e': laxity_net_export = 1u; break;
+#endif
     case 'o':
       laxity_sweep = LAXITY_SWEEP_NONE;
       laxity_stress_point = 0xFFu;
@@ -1467,7 +1488,7 @@ static VOID laxity_export_entry(ULONG argument)
          same bytes, so the host parser reads either without knowing which it received. */
       HAL_UART_Transmit(&huart1, laxity_export_buf, (uint16_t)n, HAL_MAX_DELAY);
 #if LAXITY_NET_ENABLE
-      (void)qos_net_send(laxity_export_buf, (UINT)n);
+      if (laxity_net_export) { (void)qos_net_send(laxity_export_buf, (UINT)n); }
 #endif
     }
 
@@ -1564,7 +1585,8 @@ static VOID laxity_export_entry(ULONG argument)
       laxity_say(line, snprintf(line, sizeof line, "net disabled\r\n"));
 #else
       laxity_say(line, snprintf(line, sizeof line,
-                   "net rc=%ld ip=%lu.%lu.%lu.%lu sent=%lu failed=%lu\r\n",
+                   "net started=%u export=%u rc=%ld ip=%lu.%lu.%lu.%lu sent=%lu failed=%lu\r\n",
+                   (unsigned)laxity_net_want, (unsigned)laxity_net_export,
                    (long)laxity_live.net_rc,
                    (unsigned long)((laxity_live.net_addr >> 24) & 0xFFu),
                    (unsigned long)((laxity_live.net_addr >> 16) & 0xFFu),

@@ -28,7 +28,7 @@ CONFIRM="${LAXITY_CONFIRM:-20}"
 # are dropped, which is how the first attempt at this lost its victim byte.
 REBOOT="${LAXITY_REBOOT:-12}"
 LAST_STACK=""
-CAMPAIGN=arena-or-stack-2026-09-16
+CAMPAIGN=closing-2026-09-19
 
 TIMEOUT="$(laxity_timeout)" || { echo "no timeout(1) or gtimeout(1) on PATH, install coreutils" >&2; exit 1; }
 PORT="$(laxity_stlink_ports | cut -f2 | head -1)"
@@ -36,7 +36,7 @@ PORT="$(laxity_stlink_ports | cut -f2 | head -1)"
 
 # the console byte alphabet, from laxity_poll_console() in firmware/stm32u585/Src/app_threadx.c.
 sweep_name()  { case "$1" in 0) echo bw ;; 1) echo xact ;; 2) echo chan ;; 3) echo stride ;; 4) echo sat ;;
-                             5) echo low ;; 6) echo dmat ;; esac; }
+                             5) echo low ;; 6) echo dmat ;; o) echo none ;; esac; }
 region_name() { case "$1" in a|X) echo sram1 ;; b|Y) echo sram2 ;; c|Z) echo sram3 ;; d) echo sram4 ;; esac; }
 region_id()   { case "$1" in a|X) echo 1 ;; b|Y) echo 2 ;; c|Z) echo 3 ;; d) echo 4 ;; esac; }
 victim_name() { case "$1" in r) echo read_loop ;; i) echo inference ;; t) echo dma_only ;; esac; }
@@ -155,6 +155,20 @@ run_one() {
   ./tools/stm32/capture.sh "$name" "$SECS"
 
   dir="$(ls -dt results/raw/*-"$name" | head -1)"
+
+  # one image for the whole campaign. the hashes of every capture filed under it are compared
+  # against each other rather than against a value computed here, so a rebuild between two resumed
+  # halves is caught as well as one in the middle of a single run.
+  local images
+  images="$(grep -h '^image_sha256=' results/raw/*/build.txt 2>/dev/null | sort -u | wc -l)"
+  if [ "$(grep -l "^campaign=$CAMPAIGN\$" results/raw/*/stress.txt 2>/dev/null | wc -l)" -gt 0 ]; then
+    images="$(for d in $(grep -l "^campaign=$CAMPAIGN\$" results/raw/*/stress.txt | xargs -n1 dirname); do
+                grep -h '^image_sha256=' "$d/build.txt"; done | sort -u | wc -l)"
+    if [ "$images" -gt 1 ]; then
+      echo "captures in this campaign carry more than one image hash, stopping after $name" >&2
+      exit 1
+    fi
+  fi
   # the sweep, the victim and the footprint are not in the record. the wire format was not changed
   # for this campaign, so they go beside the capture, and the board's own status line goes with
   # them so the filing can be checked against what the board said rather than against this table.
@@ -173,6 +187,12 @@ run_one() {
     printf 'console_bytes=%s\n' "$stackb$vic$sweep$aggr$vreg$foot$loads$arenab$extra"
     printf 'arena_region=sram%s\n' "$(arena_id "$arenab")"
     printf 'stack_region=sram%s\n' "$(stack_id "$stackb")"
+    printf 'descriptor_region=sram%s\n' "$did"
+    # the address stream again rather than the knob: both of these are read back off the board's
+    # own status line, not from the table that asked for them.
+    printf 'stack_high_water=%s\n' "$(printf '%s' "$status" | tr ' ' '\n' | sed -n 's/^shw=//p')"
+    printf 'stack_guard_hit=%s\n' "$(printf '%s' "$status" | tr ' ' '\n' | sed -n 's/^sguard=//p')"
+    printf 'aggressor_config=%s\n' "$(printf '%s' "$status" | tr ' ' '\n' | grep -E '^(chan|width|block|stride|hz)=' | tr '\n' ' ')"
     printf 'status_line=%s\n' "$(printf '%s' "$status" | tr -d '\r')"
     # what the victim's address stream actually does, counted from the disassembly of the image that
     # ran rather than taken from the knob. only the read loop has one.
@@ -194,42 +214,29 @@ run_one() {
 
 # name                        experiment     victim sweep aggressor victim-region footprint loads extra stack arena
 TABLE="
-stress-as-a1-s1-g1           decomposition  i 0 a X C L - j 7
-stress-as-a1-s1-g2           decomposition  i 0 b X C L - j 7
-stress-as-a1-s1-g3           decomposition  i 0 c X C L - j 7
-stress-as-a1-s1-g4           decomposition  i 0 d X C L - j 7
-stress-as-a1-s2-g1           decomposition  i 0 a X C L - k 7
-stress-as-a1-s2-g2           decomposition  i 0 b X C L - k 7
-stress-as-a1-s2-g3           decomposition  i 0 c X C L - k 7
-stress-as-a1-s2-g4           decomposition  i 0 d X C L - k 7
-stress-as-a1-s3-g1           decomposition  i 0 a X C L - n 7
-stress-as-a1-s3-g2           decomposition  i 0 b X C L - n 7
-stress-as-a1-s3-g3           decomposition  i 0 c X C L - n 7
-stress-as-a1-s3-g4           decomposition  i 0 d X C L - n 7
-stress-as-a2-s1-g1           decomposition  i 0 a X C L - j 8
-stress-as-a2-s1-g2           decomposition  i 0 b X C L - j 8
-stress-as-a2-s1-g3           decomposition  i 0 c X C L - j 8
-stress-as-a2-s1-g4           decomposition  i 0 d X C L - j 8
-stress-as-a2-s2-g1           decomposition  i 0 a X C L - k 8
-stress-as-a2-s2-g2           decomposition  i 0 b X C L - k 8
-stress-as-a2-s2-g3           decomposition  i 0 c X C L - k 8
-stress-as-a2-s2-g4           decomposition  i 0 d X C L - k 8
-stress-as-a2-s3-g1           decomposition  i 0 a X C L - n 8
-stress-as-a2-s3-g2           decomposition  i 0 b X C L - n 8
-stress-as-a2-s3-g3           decomposition  i 0 c X C L - n 8
-stress-as-a2-s3-g4           decomposition  i 0 d X C L - n 8
-stress-as-a3-s1-g1           decomposition  i 0 a X C L - j 9
-stress-as-a3-s1-g2           decomposition  i 0 b X C L - j 9
-stress-as-a3-s1-g3           decomposition  i 0 c X C L - j 9
-stress-as-a3-s1-g4           decomposition  i 0 d X C L - j 9
-stress-as-a3-s2-g1           decomposition  i 0 a X C L - k 9
-stress-as-a3-s2-g2           decomposition  i 0 b X C L - k 9
-stress-as-a3-s2-g3           decomposition  i 0 c X C L - k 9
-stress-as-a3-s2-g4           decomposition  i 0 d X C L - k 9
-stress-as-a3-s3-g1           decomposition  i 0 a X C L - n 9
-stress-as-a3-s3-g2           decomposition  i 0 b X C L - n 9
-stress-as-a3-s3-g3           decomposition  i 0 c X C L - n 9
-stress-as-a3-s3-g4           decomposition  i 0 d X C L - n 9
+stress-cl-gate-open-1          gate-open      i 0 a X C L - j 7
+stress-cl-gate-open-2          gate-open      i 0 a X C L - k 7
+stress-cl-gate-open-3          gate-open      i 0 b X C L - k 7
+stress-cl-desc-s1-p1          descriptor-88  i 0 b X C L P j 7
+stress-cl-desc-s1-p2          descriptor-88  i 0 b X C L Q j 7
+stress-cl-desc-s1-p3          descriptor-88  i 0 b X C L R j 7
+stress-cl-desc-s1-p4          descriptor-88  i 0 b X C L S j 7
+stress-cl-desc-s3-p1          descriptor-88  i 0 b X C L P n 7
+stress-cl-desc-s3-p2          descriptor-88  i 0 b X C L Q n 7
+stress-cl-desc-s3-p3          descriptor-88  i 0 b X C L R n 7
+stress-cl-desc-s3-p4          descriptor-88  i 0 b X C L S n 7
+stress-cl-quiet-a1-s1         quiet-place    i o a X C L - j 7
+stress-cl-quiet-a2-s1         quiet-place    i o a X C L - j 8
+stress-cl-quiet-a3-s1         quiet-place    i o a X C L - j 9
+stress-cl-quiet-a1-s2         quiet-place    i o a X C L - k 7
+stress-cl-quiet-a2-s2         quiet-place    i o a X C L - k 8
+stress-cl-quiet-a3-s2         quiet-place    i o a X C L - k 9
+stress-cl-quiet-a1-s3         quiet-place    i o a X C L - n 7
+stress-cl-quiet-a2-s3         quiet-place    i o a X C L - n 8
+stress-cl-quiet-a3-s3         quiet-place    i o a X C L - n 9
+stress-cl-gate-close-1         gate-close     i 0 a X C L - j 7
+stress-cl-gate-close-2         gate-close     i 0 a X C L - k 7
+stress-cl-gate-close-3         gate-close     i 0 b X C L - k 7
 "
 
 # a plain string rather than an array, since an empty array under set -u is an error in the bash

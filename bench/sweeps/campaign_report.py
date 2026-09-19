@@ -23,7 +23,19 @@ import telemetry_parse
 
 # both rounds are read by one script, since the second one re-measures cells the first one
 # reported and the two tables only mean something side by side.
-CAMPAIGNS = ("interference-2026-09-15", "mechanism-2026-09-16", "arena-or-stack-2026-09-16")
+CAMPAIGNS = ("interference-2026-09-15", "mechanism-2026-09-16", "arena-or-stack-2026-09-16",
+             "closing-2026-09-19")
+
+# the cells every capture of the closing campaign is read against, measured at the start and again
+# at the end. the expected values are the decomposition's, and the gate is 0.010 cycles per
+# aggressor transaction, which is one and a third of that campaign's worst fit residual expressed
+# in the same unit.
+GATE = {
+    1: ("arena SRAM1, stack SRAM1, aggressor SRAM1", 0.238),
+    2: ("arena SRAM1, stack SRAM2, aggressor SRAM1", 0.139),
+    3: ("arena SRAM1, stack SRAM2, aggressor SRAM2", 0.108),
+}
+GATE_TOL = 0.010
 
 # the knob values each point index stands for, in the same order as laxity_sweeps in the firmware.
 # point 0 is the aggressor off in every sweep. this is a second copy of what the firmware holds,
@@ -38,6 +50,7 @@ SWEEPS = {
     # not a victim sweep. each point is one block moved once and timed on the DMA side, and the
     # label is the transaction count that block contains.
     "dmat":   ["-", "1024 xact", "2048 xact", "4096 xact", "512 xact"],
+    "none":   ["no aggressor"],
 }
 
 # transactions in one timed block, by point, for the dmat sweep.
@@ -56,6 +69,8 @@ RATES = {
     "sat":    [(0, 0), (204800000, 102400000), (204800000, 204800000), (0, 0), (0, 0), (0, 0)],
     "low":    [(0, 0), (1600000, 400000), (3200000, 800000), (6400000, 1600000), (12800000, 3200000)],
     "dmat":   [(0, 0)] * 5,
+    # no points, so the only cell is the aggressor off one and there is no rate to declare.
+    "none":   [(0, 0)],
 }
 
 # the fit stays below the rate where the earlier bandwidth sweep saturated in SRAM3.
@@ -107,6 +122,10 @@ def load(run_dir):
 
     rows = []
     base = statistics.median(groups[0]) if groups.get(0) else None
+    # the aggressor off records in stream order, which the contention free table needs whole rather
+    # than summarised, since 31 cycles in 329150 is 94 parts per million and a median alone cannot
+    # carry that.
+    seq0 = list(groups.get(0, []))
     sweep = meta_kv["sweep"]
     for point in sorted(groups):
         cyc = sorted(groups[point])
@@ -125,7 +144,8 @@ def load(run_dir):
         })
     return {"dir": run_dir.name, "kv": meta_kv, "rows": rows, "base": base,
             "stats": stats, "cyccnt_hz": meta.get("cyccnt_hz", 160000000),
-            "wrong_region": wrong_region, "records": len(records), "restarts": restarts}
+            "wrong_region": wrong_region, "records": len(records), "restarts": restarts,
+            "seq0": seq0}
 
 
 # blocks per second at each point of a sweep, which is the trigger rate times the channel count.
@@ -138,6 +158,7 @@ BLOCKS = {
     "sat":    [0, 800000, 800000, 0, 0, 0],
     "low":    [0, 6250, 12500, 25000, 50000],
     "dmat":   [0] * 5,
+    "none":   [0],
 }
 
 
@@ -230,6 +251,94 @@ def main():
                c["stats"]["dropped"], c["stats"]["gaps"], c["wrong_region"], c["restarts"],
                c["kv"].get("experiment", "?"),
                "   SPANS A RESET" if c["restarts"] else ""))
+
+    gates = [c for c in caps if c["kv"].get("experiment", "").startswith("gate-")]
+    if gates:
+        print("\n# repeat cells, start and end of the campaign\n")
+        print("  %-24s %-44s %9s %9s %9s %s" %
+              ("capture", "cell", "expected", "measured", "diff", "gate"))
+        worst = 0.0
+        for c in sorted(gates, key=lambda c: c["dir"]):
+            name = c["dir"].split("-", 1)[1]
+            idx = int(name[-1])
+            label, exp = GATE[idx]
+            k, _, _ = coefficient(c)
+            diff = k - exp
+            worst = max(worst, abs(diff))
+            print("  %-24s %-44s %9.3f %9.3f %+9.3f %s" %
+                  (name, label, exp, k, diff, "pass" if abs(diff) <= GATE_TOL else "FAIL"))
+        opens = {int(c["dir"][-1]): c for c in gates if c["kv"]["experiment"] == "gate-open"}
+        closes = {int(c["dir"][-1]): c for c in gates if c["kv"]["experiment"] == "gate-close"}
+        if opens and closes:
+            print("\n  %-24s %9s %9s %9s" % ("cell", "open", "close", "drift"))
+            for idx in sorted(set(opens) & set(closes)):
+                ko = coefficient(opens[idx])[0]
+                kc = coefficient(closes[idx])[0]
+                print("  %-24s %9.3f %9.3f %+9.3f" % (GATE[idx][0], ko, kc, kc - ko))
+        print("\n  worst absolute difference from expected: %.3f against a gate of %.3f\n"
+              % (worst, GATE_TOL))
+
+    d88 = {c["dir"].split("-", 1)[1]: c for c in caps
+           if c["kv"].get("experiment") == "descriptor-88"}
+    if d88:
+        print("\n# the descriptor page or the permanent 88 bytes\n")
+        print("  arena in SRAM1, aggressor data in SRAM2, which holds nothing of the victim\n")
+        print("    %-26s %10s %10s %10s %10s" %
+              ("victim stack", "desc SRAM1", "desc SRAM2", "desc SRAM3", "desc SRAM4"))
+        for st in (1, 3):
+            cells = []
+            for pi in (1, 2, 3, 4):
+                c = d88.get("stress-cl-desc-s%d-p%d" % (st, pi))
+                k, _, _ = coefficient(c) if c else (None, None, None)
+                cells.append("%10.3f" % k if k is not None else "        --")
+            print("    %-26s %s" % ("SRAM%d" % st, " ".join(cells)))
+        print("\n  %-24s %10s %10s %12s %s" %
+              ("cell", "baseline", "coeff", "residual", "descriptor page"))
+        for name in sorted(d88):
+            c = d88[name]
+            k, _, worst = coefficient(c)
+            page = "?"
+            for f in c["kv"].get("status_line", "").split():
+                if f.startswith("desc="):
+                    page = f[5:]
+            print("  %-24s %10d %10.3f %12.1f %s" % (name, c["base"], k, worst, page))
+        print()
+
+    quiet = {c["dir"].split("-", 1)[1]: c for c in caps
+             if c["kv"].get("experiment") == "quiet-place"}
+    if quiet:
+        n = min(len(c["seq0"]) for c in quiet.values())
+        print("\n# contention free placement, no channel started at any point\n")
+        print("  every cell truncated to the first %d records, since a percentile compared across\n"
+              "  unequal counts is not a comparison\n" % n)
+        print("  %-8s %-8s %10s %10s %10s %10s %10s" %
+              ("arena", "stack", "min", "p50", "p99", "max", "p50 delta"))
+        ref = None
+        for ar in (1, 2, 3):
+            for st in (1, 2, 3):
+                c = quiet.get("stress-cl-quiet-a%d-s%d" % (ar, st))
+                if c is None:
+                    continue
+                cyc = sorted(c["seq0"][:n])
+                med = cyc[len(cyc) // 2]
+                if ref is None:
+                    ref = med
+                print("  %-8s %-8s %10d %10d %10d %10d %+10d" %
+                      ("sram%d" % ar, "sram%d" % st, cyc[0], med,
+                       cyc[min(len(cyc) - 1, int(0.99 * len(cyc)))], cyc[-1], med - ref))
+        print("\n  medians as a table, arena down and stack across\n")
+        print("    %-8s %10s %10s %10s" % ("", "stack s1", "stack s2", "stack s3"))
+        for ar in (1, 2, 3):
+            cells = []
+            for st in (1, 2, 3):
+                c = quiet.get("stress-cl-quiet-a%d-s%d" % (ar, st))
+                if c is None:
+                    cells.append("        --")
+                    continue
+                cyc = sorted(c["seq0"][:n])
+                cells.append("%10d" % cyc[len(cyc) // 2])
+            print("    %-8s %s" % ("arena s%d" % ar, " ".join(cells)))
+        print()
 
     dec = {c["dir"].split("-", 1)[1]: c for c in caps
            if c["kv"].get("experiment") == "decomposition"}

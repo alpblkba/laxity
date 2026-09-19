@@ -1,0 +1,968 @@
+ ~/Documents/GitHub/laxity  on main !3 ?3  STM32_Programmer_CLI -c port=SWD mode=UR reset=HWrst                                                                                                                                                               ok  at 00:08:55 
+      -------------------------------------------------------------------
+                        STM32CubeProgrammer v2.22.0                  
+      -------------------------------------------------------------------
+
+ST-LINK SN  : 0022003F3432511430343838
+ST-LINK FW  : V3J8M3
+Board       : B-U585I-IOT02A
+Voltage     : 3.29V
+SWD freq    : 8000 KHz
+Connect mode: Under Reset
+Reset mode  : Hardware reset
+Device ID   : 0x482
+Revision ID : Rev W
+Device name : STM32U575/STM32U585
+NVM size  : 2 MBytes
+Device type : MCU
+Device CPU  : Cortex-M33
+BL Version  : 0x93
+Debug in Low Power mode enabled
+
+ ~/Documents/GitHub/laxity  on main !3 ?3  laxity boards                                                                                                                                                                                                      ok  at 00:08:59 
+1) 0022003F3432511430343838  /dev/cu.usbmodem21303
+   device  STM32U575/STM32U585
+   profile profiles/stm32u585.toml
+ ~/Documents/GitHub/laxity  on main !3 ?3  cd ~/Documents/GitHub/laxity                                                                                                                                                                                       ok  at 00:09:08 
+
+laxity boards
+laxity capture --seconds 20
+1) 0022003F3432511430343838  /dev/cu.usbmodem21303
+   device  STM32U575/STM32U585
+   profile profiles/stm32u585.toml
+captured to results/raw/20260919T221306Z-run
+ ~/Documents/GitHub/laxity  on main !3 ?3  vim results/raw/20260919T221306Z-run                                                                                                                                                                     ok  took 23s  at 00:13:29 
+./bench/sweeps/campaign_run.sh \
+  stress-fn-gate-close-1 stress-fn-gate-close-2 stress-fn-gate-close-3
+
+./bench/sweeps/campaign_report.py
+=== stress-fn-gate-close-1: gate-close, victim inference, arena sram1, stack sram1, aggressor in sram1, bw sweep
+captured to results/raw/20260919T221941Z-stress-fn-gate-close-1
+wrote results/raw/20260919T221941Z-stress-fn-gate-close-1/stress.txt
+=== stress-fn-gate-close-2: gate-close, victim inference, arena sram1, stack sram2, aggressor in sram1, bw sweep
+captured to results/raw/20260919T222123Z-stress-fn-gate-close-2
+wrote results/raw/20260919T222123Z-stress-fn-gate-close-2/stress.txt
+=== stress-fn-gate-close-3: gate-close, victim inference, arena sram1, stack sram2, aggressor in sram2, bw sweep
+captured to results/raw/20260919T222252Z-stress-fn-gate-close-3
+wrote results/raw/20260919T222252Z-stress-fn-gate-close-3/stress.txt
+campaign done
+# campaign inventory
+
+  capture                     records    min n   drop   gaps badregn  resets experiment
+  stress-k-v1-a1                 2517      418      0      0       0       0 k-matrix
+  stress-k-v1-a2                 2518      418      0      0       0       0 k-matrix
+  stress-k-v1-a4                 2517      418      0      0       0       0 k-matrix
+  stress-k-v2-a1                 2517      417      0      0       0       0 k-matrix
+  stress-k-v2-a2                 2518      418      0      0       0       0 k-matrix
+  stress-k-v2-a3                 2517      416      0      0       0       0 k-matrix
+  stress-k-v2-a4                 2518      416      0      0       0       0 k-matrix
+  stress-k-v3-a1                 2517      418      0      0       0       0 k-matrix
+  stress-k-v3-a2                 2518      418      0      0       0       0 k-matrix
+  stress-k-v3-a3                 2518      417      0      0       0       0 k-matrix
+  stress-k-v3-a4                 2518      417      0      0       0       0 k-matrix
+  stress-foot-1k                 2517      417      0      0       0       0 footprint
+  stress-foot-2k                 2518      418      0      0       0       0 footprint
+  stress-foot-4k                 2518      418      0      0       0       0 footprint
+  stress-foot-8k                 2518      418      0      0       0       0 footprint
+  stress-foot-16k                2517      418      0      0       0       0 footprint
+  stress-foot-32k                2517      418      0      0       0       0 footprint
+  stress-foot-64k                2517      418      0      0       0       0 footprint
+  stress-foot-128k               2517      418      0      0       0       0 footprint
+  stress-sat-a2                  2518      418      0      0       0       0 saturation
+  stress-sat-a2-4096loads        2518      417      0      0       0       0 saturation
+  stress-sat-a4                  2518      418      0      0       0       0 saturation
+  stress-sat-a1                  2518      419      0      0       0       0 saturation
+  stress-sat-a3                  2518      418      0      0       0       0 saturation
+  stress-infer-a1                2517      418      0      0       0       0 two-victims
+  stress-infer-a2                2518      417      0      0       0       0 two-victims
+  stress-infer-a3                2518      418      0      0       0       0 two-victims
+  stress-k-v1-a3                 2517      417      0      0       0       0 k-matrix
+  stress-xact-clean-a1           2517      627      0      0       0       0 re-measure
+  stress-xact-clean-a2           2517      627      0      0       0       0 re-measure
+  stress-xact-clean-a3           2518      627      0      0       0       0 re-measure
+  stress-chan-clean-a1           2517      627      0      0       0       0 re-measure
+  stress-chan-clean-a2           2518      628      0      0       0       0 re-measure
+  stress-chan-clean-a3           2518      626      0      0       0       0 re-measure
+  stress-m2mhold-a1              2517      418      0      0       0       0 contamination
+  stress-m2mhold-a3              2519      418      0      0       0       0 contamination
+  stress-dma-a1                  2515      628      0      0       0       0 dma-throughput
+  stress-dma-a2                  2515      628      0      0       0       0 dma-throughput
+  stress-dma-a3                  2516      626      0      0       0       0 dma-throughput
+  stress-dma-a4                  2515      626      0      0       0       0 dma-throughput
+  stress-k2-v1-a1                2516      417      0      0       0       0 k-matrix-2
+  stress-k2-v1-a2                2515      417      0      0       0       0 k-matrix-2
+  stress-k2-v1-a3                2516      418      0      0       0       0 k-matrix-2
+  stress-k2-v1-a4                2515      417      0      0       0       0 k-matrix-2
+  stress-k2-v2-a1                2516      416      0      0       0       0 k-matrix-2
+  stress-k2-v2-a2                2516      417      0      0       0       0 k-matrix-2
+  stress-k2-v2-a3                2516      418      0      0       0       0 k-matrix-2
+  stress-k2-v2-a4                2516      417      0      0       0       0 k-matrix-2
+  stress-k2-v3-a1                2516      418      0      0       0       0 k-matrix-2
+  stress-k2-v3-a2                2515      416      0      0       0       0 k-matrix-2
+  stress-k2-v3-a3                2516      418      0      0       0       0 k-matrix-2
+  stress-k2-v3-a4                2516      418      0      0       0       0 k-matrix-2
+  stress-low-v1-a1               2516      501      0      0       0       0 low-rate
+  stress-low-v1-a3               2516      501      0      0       0       0 low-rate
+  stress-low-v3-a1               2515      501      0      0       0       0 low-rate
+  stress-low-v3-a3               2516      502      0      0       0       0 low-rate
+  stress-desc-p1                 2515      627      0      0       0       0 descriptor
+  stress-desc-p2                 2516      629      0      0       0       0 descriptor
+  stress-desc-p3                 2516      627      0      0       0       0 descriptor
+  stress-desc-p4                 2516      628      0      0       0       0 descriptor
+  stress-as-a1-s1-g1             2516      416      0      0       0       0 decomposition
+  stress-as-a1-s1-g2             2516      417      0      0       0       0 decomposition
+  stress-as-a1-s1-g3             2516      418      0      0       0       0 decomposition
+  stress-as-a1-s1-g4             2516      417      0      0       0       0 decomposition
+  stress-as-a1-s2-g1             2516      414      0      0       0       0 decomposition
+  stress-as-a1-s2-g2             2516      416      0      0       0       0 decomposition
+  stress-as-a1-s2-g3             2516      416      0      0       0       0 decomposition
+  stress-as-a1-s2-g4             2516      414      0      0       0       0 decomposition
+  stress-as-a1-s3-g1             2516      417      0      0       0       0 decomposition
+  stress-as-a1-s3-g2             2516      418      0      0       0       0 decomposition
+  stress-as-a1-s3-g3             2516      418      0      0       0       0 decomposition
+  stress-as-a1-s3-g4             2516      416      0      0       0       0 decomposition
+  stress-as-a2-s1-g1             2516      415      0      0       0       0 decomposition
+  stress-as-a2-s1-g2             2516      417      0      0       0       0 decomposition
+  stress-as-a2-s1-g3             2516      416      0      0       0       0 decomposition
+  stress-as-a2-s1-g4             2516      416      0      0       0       0 decomposition
+  stress-as-a2-s2-g1             2517      417      0      0       0       0 decomposition
+  stress-as-a2-s2-g2             2516      417      0      0       0       0 decomposition
+  stress-as-a2-s2-g3             2516      417      0      0       0       0 decomposition
+  stress-as-a2-s2-g4             2517      418      0      0       0       0 decomposition
+  stress-as-a2-s3-g1             2516      417      0      0       0       0 decomposition
+  stress-as-a2-s3-g2             2517      417      0      0       0       0 decomposition
+  stress-as-a2-s3-g3             2516      416      0      0       0       0 decomposition
+  stress-as-a2-s3-g4             2516      416      0      0       0       0 decomposition
+  stress-as-a3-s1-g1             2516      418      0      0       0       0 decomposition
+  stress-as-a3-s1-g2             2517      418      0      0       0       0 decomposition
+  stress-as-a3-s1-g3             2516      417      0      0       0       0 decomposition
+  stress-as-a3-s1-g4             2517      418      0      0       0       0 decomposition
+  stress-as-a3-s2-g1             2516      417      0      0       0       0 decomposition
+  stress-as-a3-s2-g2             2516      418      0      0       0       0 decomposition
+  stress-as-a3-s2-g3             2516      416      0      0       0       0 decomposition
+  stress-as-a3-s2-g4             2516      418      0      0       0       0 decomposition
+  stress-as-a3-s3-g1             2516      417      0      0       0       0 decomposition
+  stress-as-a3-s3-g2             2517      417      0      0       0       0 decomposition
+  stress-as-a3-s3-g3             2516      418      0      0       0       0 decomposition
+  stress-as-a3-s3-g4             2516      418      0      0       0       0 decomposition
+  stress-cl-gate-open-1          2516      417      0      0       0       0 gate-open
+  stress-cl-gate-open-2          2516      418      0      0       0       0 gate-open
+  stress-cl-gate-open-3          2517      418      0      0       0       0 gate-open
+  stress-cl-desc-s1-p1           2516      417      0      0       0       0 descriptor-88
+  stress-cl-desc-s1-p2           2516      417      0      0       0       0 descriptor-88
+  stress-cl-desc-s1-p3           2516      417      0      0       0       0 descriptor-88
+  stress-cl-desc-s1-p4           2516      416      0      0       0       0 descriptor-88
+  stress-cl-desc-s3-p1           2516      418      0      0       0       0 descriptor-88
+  stress-cl-desc-s3-p2           2516      417      0      0       0       0 descriptor-88
+  stress-cl-desc-s3-p3           2516      417      0      0       0       0 descriptor-88
+  stress-cl-desc-s3-p4           2517      417      0      0       0       0 descriptor-88
+  stress-cl-quiet-a1-s1          2516     2516      0      0       0       0 quiet-place
+  stress-cl-quiet-a2-s1          2516     2516      0      0       0       0 quiet-place
+  stress-cl-quiet-a3-s1          2516     2516      0      0       0       0 quiet-place
+  stress-cl-quiet-a1-s2          2517     2517      0      0       0       0 quiet-place
+  stress-cl-quiet-a2-s2          2517     2517      0      0       0       0 quiet-place
+  stress-cl-quiet-a3-s2          2516     2516      0      0       0       0 quiet-place
+  stress-cl-quiet-a1-s3          2517     2517      0      0       0       0 quiet-place
+  stress-cl-quiet-a2-s3          2516     2516      0      0       0       0 quiet-place
+  stress-cl-quiet-a3-s3          2516     2516      0      0       0       0 quiet-place
+  stress-cl-gate-close-1         2516      417      0      0       0       0 gate-close
+  stress-cl-gate-close-2         2517      418      0      0       0       0 gate-close
+  stress-cl-gate-close-3         2516      418      0      0       0       0 gate-close
+  stress-wf-gate-open-1          2518      417      0      0       0       0 gate-open
+  stress-wf-gate-open-2          2518      418      0      0       0       0 gate-open
+  stress-wf-gate-open-3          2518      418      0      0       0       0 gate-open
+  stress-wf-gate-close-1         2518      418      0      0       0       0 gate-close
+  stress-wf-gate-close-2         2518      418      0      0       0       0 gate-close
+  stress-wf-gate-close-3         2517      417      0      0       0       0 gate-close
+  stress-pr-gate-open-1          3777      627      0      0       0       0 gate-open
+  stress-pr-gate-open-2          3778      627      0      0       0       0 gate-open
+  stress-pr-gate-open-3          3777      628      0      0       0       0 gate-open
+  stress-pr-b1-default-off       3775     3775      0      0       0       0 default-off
+  stress-pr-b1-default-on        3776      627      0      0       0       0 default-on
+  stress-pr-b1-placed-off        3776     3776      0      0       0       0 placed-off
+  stress-pr-b1-placed-on         3776      627      0      0       0       0 placed-on
+  stress-pr-b2-default-off       3775     3775      0      0       0       0 default-off
+  stress-pr-b2-default-on        3776      626      0      0       0       0 default-on
+  stress-pr-b2-placed-off        3775     3775      0      0       0       0 placed-off
+  stress-pr-b2-placed-on         3776      627      0      0       0       0 placed-on
+  stress-pr-b3-default-off       3776     3776      0      0       0       0 default-off
+  stress-pr-b3-default-on        3776      627      0      0       0       0 default-on
+  stress-pr-b3-placed-off        3776     3776      0      0       0       0 placed-off
+  stress-pr-b3-placed-on         3776      628      0      0       0       0 placed-on
+  stress-pr-b4-default-off       3776     3776      0      0       0       0 default-off
+  stress-pr-b4-default-on        3776      627      0      0       0       0 default-on
+  stress-pr-b4-placed-off        3776     3776      0      0       0       0 placed-off
+  stress-pr-b4-placed-on         3776      626      0      0       0       0 placed-on
+  stress-pr-gate-close-1         3776      628      0      0       0       0 gate-close
+  stress-pr-gate-close-3         3776      627      0      0       0       0 gate-close
+  stress-pr-gate-close-2         3777      627      0      0       0       0 gate-close
+  stress-fn-gate-open-1          3766      625      0      0       0       0 gate-open
+  stress-fn-gate-open-2          3767      626      0      0       0       0 gate-open
+  stress-fn-gate-open-3          3766      626      0      0       0       0 gate-open
+  stress-fn-a-b1-default-off     3765     3765      0      0       0       0 default-off
+  stress-fn-a-b1-default-on      3765      626      0      0       0       0 default-on
+  stress-fn-a-b1-placed-off      3765     3765      0      0       0       0 placed-off
+  stress-fn-a-b1-placed-on       3765      626      0      0       0       0 placed-on
+  stress-fn-a-b2-default-off     3765     3765      0      0       0       0 default-off
+  stress-fn-a-b2-default-on      3766      626      0      0       0       0 default-on
+  stress-fn-a-b2-placed-off      3766     3766      0      0       0       0 placed-off
+  stress-fn-a-b2-placed-on       3765      625      0      0       0       0 placed-on
+  stress-fn-a-b3-default-off     3765     3765      0      0       0       0 default-off
+  stress-fn-a-b3-default-on      3766      626      0      0       0       0 default-on
+  stress-fn-a-b3-placed-off      3764     3764      0      0       0       0 placed-off
+  stress-fn-a-b3-placed-on       3766      626      0      0       0       0 placed-on
+  stress-fn-a-b4-default-off     3766     3766      0      0       0       0 default-off
+  stress-fn-a-b4-default-on      3766      626      0      0       0       0 default-on
+  stress-fn-a-b4-placed-off      3765     3765      0      0       0       0 placed-off
+  stress-fn-a-b4-placed-on       2974      494      0      0       0       0 placed-on
+  stress-fn-gate-close-1         3768      626      0      0       0       0 gate-close
+  stress-fn-gate-close-2         3768      627      0      0       0       0 gate-close
+  stress-fn-gate-close-3         3768      626      0      0       0       0 gate-close
+
+# job A, paired comparison, one image, aggressor SRAM3
+
+  deadline window 5119994 cycles, which is 32 ms of audio half buffer at 159999825 Hz
+  bandwidth sweep points read: 3 at 200 kHz, 4 at 400 kHz, 5 at 800 kHz
+
+  point 3, 200 kHz, the standard point
+    config    state                min       p50       p99       max       n
+    default   aggressor off     320326    320349    320374    320374   15061
+    default   aggressor on      323028    323236    323320    323443    2511
+    placed    aggressor off     320299    320320    320344    320346   15060
+    placed    aggressor on      320306    320411    320446    320452    2379
+    default   penalty        p50    +2887 (+0.901%)   p99    +2946 (+0.920%)
+    placed    penalty        p50      +91 (+0.028%)   p99     +102 (+0.032%)
+    difference     penalty p50    -2796          penalty p99    -2844
+
+  point 4, 400 kHz
+    config    state                min       p50       p99       max       n
+    default   aggressor off     320326    320349    320374    320374   15061
+    default   aggressor on      325567    325766    325844    325877    2508
+    placed    aggressor off     320299    320320    320344    320346   15060
+    placed    aggressor on      320315    320432    320508    320511    2378
+    default   penalty        p50    +5417 (+1.691%)   p99    +5470 (+1.707%)
+    placed    penalty        p50     +112 (+0.035%)   p99     +164 (+0.051%)
+    difference     penalty p50    -5305          penalty p99    -5306
+
+  point 5, 800 kHz
+    config    state                min       p50       p99       max       n
+    default   aggressor off     320326    320349    320374    320374   15061
+    default   aggressor on      332334    332506    332563    332611    2506
+    placed    aggressor off     320299    320320    320344    320346   15060
+    placed    aggressor on      320419    320524    320538    320541    2376
+    default   penalty        p50   +12157 (+3.795%)   p99   +12189 (+3.805%)
+    placed    penalty        p50     +204 (+0.064%)   p99     +194 (+0.061%)
+    difference     penalty p50   -11953          penalty p99   -11995
+
+  default
+    aggressor off  min   320326  p50   320349  p99   320374  max   320374  n  15061
+    aggressor on   min   323028  p50   323236  p99   323320  max   323443  n   2511
+    penalty        p50    +2887 (+0.901%)   p99    +2946 (+0.920%)
+    margin         off p50 6.257%  p99 6.257%   on p50 6.313%  p99 6.315%
+    windows missed off 0 of 15061, on 0 of 2511
+
+  placed
+    aggressor off  min   320299  p50   320320  p99   320344  max   320346  n  15060
+    aggressor on   min   320306  p50   320411  p99   320446  max   320452  n   2379
+    penalty        p50      +91 (+0.028%)   p99     +102 (+0.032%)
+    margin         off p50 6.256%  p99 6.257%   on p50 6.258%  p99 6.259%
+    windows missed off 0 of 15060, on 0 of 2379
+
+                              default       placed   difference
+  aggressor off p50            320349       320320          -29
+  aggressor off p99            320374       320344          -30
+  aggressor on p50             323236       320411        -2825
+  aggressor on p99             323320       320446        -2874
+  penalty p50                    2887           91        -2796
+  penalty p99                    2946          102        -2844
+  margin on p50                6.313%       6.258%      -0.055%
+  margin on p99                6.315%       6.259%      -0.056%
+
+  per block, aggressor on p50, to show whether anything drifted
+
+    block         default     placed
+    block 1        323240     320410
+    block 2        323233     320410
+    block 3        323235     320410
+    block 4        323238     320414
+
+
+# repeat cells, start and end of the campaign
+
+  capture                  cell                                          expected  measured      diff gate
+  stress-fn-gate-open-1    arena SRAM1, stack SRAM1, aggressor SRAM1        0.249     0.250    +0.001 pass
+  stress-fn-gate-open-2    arena SRAM1, stack SRAM2, aggressor SRAM1        0.144     0.144    -0.000 pass
+  stress-fn-gate-open-3    arena SRAM1, stack SRAM2, aggressor SRAM2        0.106     0.106    -0.000 pass
+  stress-fn-gate-close-1   arena SRAM1, stack SRAM1, aggressor SRAM1        0.249     0.249    -0.000 pass
+  stress-fn-gate-close-2   arena SRAM1, stack SRAM2, aggressor SRAM1        0.144     0.144    -0.000 pass
+  stress-fn-gate-close-3   arena SRAM1, stack SRAM2, aggressor SRAM2        0.106     0.106    -0.000 pass
+
+  cell                          open     close     drift
+  arena SRAM1, stack SRAM1, aggressor SRAM1     0.250     0.249    -0.001
+  arena SRAM1, stack SRAM2, aggressor SRAM1     0.144     0.144    -0.000
+  arena SRAM1, stack SRAM2, aggressor SRAM2     0.106     0.106    -0.000
+
+  worst absolute difference from expected: 0.001 against a gate of 0.010
+
+
+# the descriptor page or the permanent 88 bytes
+
+  arena in SRAM1, aggressor data in SRAM2, which holds nothing of the victim
+
+    victim stack               desc SRAM1 desc SRAM2 desc SRAM3 desc SRAM4
+    SRAM1                           0.026      0.001      0.001      0.001
+    SRAM3                           0.021      0.000      0.020      0.001
+
+  cell                       baseline      coeff     residual descriptor page
+  stress-cl-desc-s1-p1         328348      0.026         15.7 1(0x2000e000)
+  stress-cl-desc-s1-p2         328348      0.001          6.7 2(0x2003e000)
+  stress-cl-desc-s1-p3         328348      0.001          5.6 3(0x2004b000)
+  stress-cl-desc-s1-p4         328348      0.001          6.5 4(0x28003000)
+  stress-cl-desc-s3-p1         328379      0.021          6.2 1(0x2000e000)
+  stress-cl-desc-s3-p2         328379      0.000          5.0 2(0x2003e000)
+  stress-cl-desc-s3-p3         328379      0.020          2.2 3(0x2004b000)
+  stress-cl-desc-s3-p4         328378      0.001          5.7 4(0x28003000)
+
+
+# contention free placement, no channel started at any point
+
+  every cell truncated to the first 2516 records, since a percentile compared across
+  unequal counts is not a comparison
+
+  arena    stack           min        p50        p99        max  p50 delta
+  sram1    sram1        328327     328329     328343     328353         +0
+  sram1    sram2        328329     328331     328345     328355         +2
+  sram1    sram3        328356     328360     328375     328383        +31
+  sram2    sram1        328329     328331     328345     328355         +2
+  sram2    sram2        328329     328331     328345     328356         +2
+  sram2    sram3        328357     328362     328376     328390        +33
+  sram3    sram1        328356     328361     328375     328386        +32
+  sram3    sram2        328357     328363     328377     328388        +34
+  sram3    sram3        328356     328361     328375     328386        +32
+
+  medians as a table, arena down and stack across
+
+               stack s1   stack s2   stack s3
+    arena s1     328329     328331     328360
+    arena s2     328331     328331     328362
+    arena s3     328361     328363     328361
+
+
+# inference victim, arena and stack as separate knobs
+
+  cycles of victim delay per aggressor transaction, three point slope
+
+  arena in SRAM1
+    stack         a:sram1    a:sram2    a:sram3    a:sram4
+    sram1           0.238      0.000      0.002      0.000
+    sram2           0.139      0.108      0.002      0.000
+    sram3           0.163      0.019      0.114      0.019
+
+  arena in SRAM2
+    stack         a:sram1    a:sram2    a:sram3    a:sram4
+    sram1           0.109      0.138      0.002      0.000
+    sram2           0.001      0.237      0.002      0.000
+    sram3           0.019      0.163      0.113      0.019
+
+  arena in SRAM3
+    stack         a:sram1    a:sram2    a:sram3    a:sram4
+    sram1           0.126      0.020      0.152      0.020
+    sram2           0.021      0.126      0.152      0.020
+    sram3           0.026      0.026      0.255      0.026
+
+  cell                     baseline      coeff     residual stack hw    guard
+  stress-as-a1-s1-g1         329148      0.238         89.3     1016        0
+  stress-as-a1-s1-g2         329148      0.000          2.2     1016        0
+  stress-as-a1-s1-g3         329148      0.002         21.3     1016        0
+  stress-as-a1-s1-g4         329148      0.000          2.4     1016        0
+  stress-as-a1-s2-g1         329150      0.139         29.0     1016        0
+  stress-as-a1-s2-g2         329151      0.108        191.8     1016        0
+  stress-as-a1-s2-g3         329150      0.002         17.8     1016        0
+  stress-as-a1-s2-g4         329150      0.000          3.0     1016        0
+  stress-as-a1-s3-g1         329179      0.163         26.0     1016        0
+  stress-as-a1-s3-g2         329179      0.019          9.0     1016        0
+  stress-as-a1-s3-g3         329179      0.114         89.8     1016        0
+  stress-as-a1-s3-g4         329179      0.019          7.8     1016        0
+  stress-as-a2-s1-g1         329150      0.109        195.2     1016        0
+  stress-as-a2-s1-g2         329150      0.138         33.7     1016        0
+  stress-as-a2-s1-g3         329150      0.002         22.3     1016        0
+  stress-as-a2-s1-g4         329150      0.000          1.7     1016        0
+  stress-as-a2-s2-g1         329150      0.001          6.4     1016        0
+  stress-as-a2-s2-g2         329151      0.237         99.0     1016        0
+  stress-as-a2-s2-g3         329151      0.002         17.8     1016        0
+  stress-as-a2-s2-g4         329150      0.000          2.9     1016        0
+  stress-as-a2-s3-g1         329181      0.019         25.7     1016        0
+  stress-as-a2-s3-g2         329181      0.163         27.8     1016        0
+  stress-as-a2-s3-g3         329181      0.113        101.8     1016        0
+  stress-as-a2-s3-g4         329181      0.019          7.1     1016        0
+  stress-as-a3-s1-g1         329180      0.126         18.3     1016        0
+  stress-as-a3-s1-g2         329180      0.020          5.7     1016        0
+  stress-as-a3-s1-g3         329180      0.152         20.4     1016        0
+  stress-as-a3-s1-g4         329180      0.020          6.8     1016        0
+  stress-as-a3-s2-g1         329182      0.021         11.5     1016        0
+  stress-as-a3-s2-g2         329182      0.126         16.6     1016        0
+  stress-as-a3-s2-g3         329182      0.152         21.1     1016        0
+  stress-as-a3-s2-g4         329182      0.020          9.0     1016        0
+  stress-as-a3-s3-g1         329180      0.026         18.9     1016        0
+  stress-as-a3-s3-g2         329180      0.026          5.8     1016        0
+  stress-as-a3-s3-g3         329180      0.255         91.0     1016        0
+  stress-as-a3-s3-g4         329180      0.026          5.9     1016        0
+
+
+# DMA side, one block timed with no victim running
+
+  region     512 xact       1024       2048       4096     cyc/xact    intercept
+  sram1          1616     2968.0     5671.0    11113.0        2.650        253.7
+  sram2          1309       2309       4389     8470.0        2.001        277.4
+  sram3          1358     2408.0     4592.0       8876        2.101        275.1
+  sram4        1309.0     2309.0       4389     8470.0        2.001        277.4
+
+  ratio against sram2: sram1 1.32, sram2 1.00, sram3 1.05, sram4 1.00
+
+# the twelve cells again, with the victim stack in SRAM1
+
+  victim      a:sram1    a:sram2    a:sram3    a:sram4
+  sram1         1.043      0.003      0.003      0.003
+  sram2         1.049      0.304      0.004      0.003
+  sram3         1.078      0.028      0.319      0.026
+
+  cell               baseline      coeff     residual victim access mix
+  v1-a1                107984      1.043        139.6 sram1=45106(100.0%)
+  v1-a2                107983      0.003         21.0 sram1=45106(100.0%)
+  v1-a3                107984      0.003         10.2 sram1=45106(100.0%)
+  v1-a4                107983      0.003         21.0 sram1=45106(100.0%)
+  v2-a1                107986      1.049        156.0 sram1=36914(81.8%) sram2=8192(18.2%)
+  v2-a2                107986      0.304         29.3 sram1=36914(81.8%) sram2=8192(18.2%)
+  v2-a3                107986      0.004         17.4 sram1=36914(81.8%) sram2=8192(18.2%)
+  v2-a4                107985      0.003         11.1 sram1=36914(81.8%) sram2=8192(18.2%)
+  v3-a1                107993      1.078        153.5 sram1=36914(81.8%) sram3=8192(18.2%)
+  v3-a2                107993      0.028         20.3 sram1=36914(81.8%) sram3=8192(18.2%)
+  v3-a3                107994      0.319          5.8 sram1=36914(81.8%) sram3=8192(18.2%)
+  v3-a4                107994      0.026         16.9 sram1=36914(81.8%) sram3=8192(18.2%)
+
+# below the bandwidth sweep, where a saturated port should have room again
+
+stress-low-v1-a1   (20260916T160211Z-stress-low-v1-a1)   coefficient 0.988
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   503     107983     107991         +0             0             0
+  6.25kHz               503     108249     108295       +266       1600000        400000
+  12.5kHz               505     108516     108560       +533       3200000        800000
+  25kHz                 504     109059     109082      +1076       6400000       1600000
+  50kHz                 501     110112     110200      +2129      12800000       3200000
+
+stress-low-v1-a3   (20260916T160314Z-stress-low-v1-a3)   coefficient 0.011
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   505     107983     107992         +0             0             0
+  6.25kHz               502     108000     108026        +17       1600000        400000
+  12.5kHz               501     108000     108022        +17       3200000        800000
+  25kHz                 504     108000     108026        +17       6400000       1600000
+  50kHz                 504     108000     108045        +17      12800000       3200000
+
+stress-low-v3-a1   (20260916T160417Z-stress-low-v3-a1)   coefficient 1.020
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   504     107994     107997         +0             0             0
+  6.25kHz               505     108266     108311       +272       1600000        400000
+  12.5kHz               501     108539     108582       +545       3200000        800000
+  25kHz                 502     109087     109127      +1093       6400000       1600000
+  50kHz                 503     110204     110277      +2210      12800000       3200000
+
+stress-low-v3-a3   (20260916T160521Z-stress-low-v3-a3)   coefficient 0.320
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   502     107994     108018         +0             0             0
+  6.25kHz               503     108090     108116        +96       1600000        400000
+  12.5kHz               504     108186     108195       +192       3200000        800000
+  25kHz                 504     108343     108374       +349       6400000       1600000
+  50kHz                 503     108676     108709       +682      12800000       3200000
+
+
+# where the linked list descriptors live, against the per block cost
+
+  capture          descriptor page          baseline    cyc/block   coeff/xact
+  stress-desc-p1   1(0x2000e000)              107984        3.590          n/a
+  stress-desc-p2   2(0x2003e000)              107984        0.032          n/a
+  stress-desc-p3   3(0x2004b000)              107983        0.043          n/a
+  stress-desc-p4   4(0x28003000)              107984        0.025          n/a
+
+stress-desc-p1   (20260916T160623Z-stress-desc-p1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   629     107984     108009         +0             0             0
+  1ch                   628     108525     108553       +541     102400000      25600000
+  2ch                   631     108954     108989       +970     102400000      25600000
+  4ch                   627     109908     109931      +1924     102400000      25600000
+
+stress-desc-p2   (20260916T160726Z-stress-desc-p2)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   629     107984     108008         +0             0             0
+  1ch                   629     107986     108026         +2     102400000      25600000
+  2ch                   629     107999     108026        +15     102400000      25600000
+  4ch                   629     107999     108026        +15     102400000      25600000
+
+stress-desc-p3   (20260916T160828Z-stress-desc-p3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   630     107983     108009         +0             0             0
+  1ch                   629     108000     108026        +17     102400000      25600000
+  2ch                   630     108004     108028        +21     102400000      25600000
+  4ch                   627     107999     108030        +16     102400000      25600000
+
+stress-desc-p4   (20260916T160931Z-stress-desc-p4)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   628     107984     108009         +0             0             0
+  1ch                   631     107988     108026         +4     102400000      25600000
+  2ch                   628     107988     108026         +4     102400000      25600000
+  4ch                   629     107999     108026        +15     102400000      25600000
+
+
+# experiment 1, cycles per aggressor transaction
+
+  victim      a:sram1    a:sram2    a:sram3    a:sram4
+  sram1         0.362      0.059      1.107      0.059
+  sram2         0.057      0.361      1.107      0.058
+  sram3         0.065      0.064      1.112      0.067
+
+  uncontended victim median and fit residual per cell
+
+  cell               baseline      coeff max residual
+  v1-a1                107986      0.362         10.2
+  v1-a2                107986      0.059         67.8
+  v1-a3                107987      1.107        139.6
+  v1-a4                107986      0.059         41.8
+  v2-a1                107989      0.057         14.4
+  v2-a2                107988      0.361         10.3
+  v2-a3                107988      1.107        136.6
+  v2-a4                107988      0.058         16.4
+  v3-a1                107987      0.065         73.7
+  v3-a2                107986      0.064         17.3
+  v3-a3                107986      1.112        157.7
+  v3-a4                107986      0.067         54.5
+
+# experiment 1, full per point tables
+
+victim sram1, aggressor sram1   (20260915T210112Z-stress-k-v1-a1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   418     107986     107991         +0             0             0
+  50kHz                 420     108774     108850       +788      12800000       3200000
+  100kHz                421     109540     109633      +1554      25600000       6400000
+  200kHz                422     111118     111198      +3132      51200000      12800000
+  400kHz                418     114424     114478      +6438     102400000      25600000
+  800kHz                418     121575     121602     +13589     204800000      51200000
+
+victim sram1, aggressor sram2   (20260915T210214Z-stress-k-v1-a2)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   418     107986     107988         +0             0             0
+  50kHz                 420     108181     108198       +195      12800000       3200000
+  100kHz                418     108240     108319       +254      25600000       6400000
+  200kHz                422     108478     108554       +492      51200000      12800000
+  400kHz                419     108969     109052       +983     102400000      25600000
+  800kHz                421     109851     109931      +1865     204800000      51200000
+
+victim sram1, aggressor sram3   (20260915T213553Z-stress-k-v1-a3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   422     107987     107990         +0             0             0
+  50kHz                 417     110313     110394      +2326      12800000       3200000
+  100kHz                421     112628     112767      +4641      25600000       6400000
+  200kHz                420     117634     117682      +9647      51200000      12800000
+  400kHz                418     129387     129434     +21400     102400000      25600000
+  800kHz                419     147904     147933     +39917     204800000      51200000
+
+victim sram1, aggressor sram4   (20260915T210420Z-stress-k-v1-a4)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   421     107986     107988         +0             0             0
+  50kHz                 418     108154     108198       +168      12800000       3200000
+  100kHz                419     108240     108318       +254      25600000       6400000
+  200kHz                418     108482     108553       +496      51200000      12800000
+  400kHz                421     108958     109053       +972     102400000      25600000
+  800kHz                420     109855     109929      +1869     204800000      51200000
+
+victim sram2, aggressor sram1   (20260915T210522Z-stress-k-v2-a1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   417     107989     107993         +0             0             0
+  50kHz                 422     108127     108203       +138      12800000       3200000
+  100kHz                419     108244     108323       +255      25600000       6400000
+  200kHz                421     108476     108558       +487      51200000      12800000
+  400kHz                420     108966     109057       +977     102400000      25600000
+  800kHz                418     109857     109935      +1868     204800000      51200000
+
+victim sram2, aggressor sram2   (20260915T210625Z-stress-k-v2-a2)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   419     107988     107992         +0             0             0
+  50kHz                 418     108775     108846       +787      12800000       3200000
+  100kHz                421     109538     109624      +1550      25600000       6400000
+  200kHz                419     111112     111190      +3124      51200000      12800000
+  400kHz                419     114404     114480      +6416     102400000      25600000
+  800kHz                422     121574     121599     +13586     204800000      51200000
+
+victim sram2, aggressor sram3   (20260915T210727Z-stress-k-v2-a3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420     107988     107993         +0             0             0
+  50kHz                 421     110317     110397      +2329      12800000       3200000
+  100kHz                419     112633     112768      +4645      25600000       6400000
+  200kHz                419     117635     117688      +9647      51200000      12800000
+  400kHz                416     129386     129437     +21398     102400000      25600000
+  800kHz                422     147901     147934     +39913     204800000      51200000
+
+victim sram2, aggressor sram4   (20260915T210830Z-stress-k-v2-a4)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   422     107988     107991         +0             0             0
+  50kHz                 416     108129     108199       +141      12800000       3200000
+  100kHz                420     108244     108320       +256      25600000       6400000
+  200kHz                421     108481     108555       +493      51200000      12800000
+  400kHz                420     108960     109059       +972     102400000      25600000
+  800kHz                419     109848     109931      +1860     204800000      51200000
+
+victim sram3, aggressor sram1   (20260915T210933Z-stress-k-v3-a1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   418     107987     107991         +0             0             0
+  50kHz                 418     108202     108218       +215      12800000       3200000
+  100kHz                420     108273     108350       +286      25600000       6400000
+  200kHz                420     108532     108610       +545      51200000      12800000
+  400kHz                423     109075     109151      +1088     102400000      25600000
+  800kHz                418     110173     110248      +2186     204800000      51200000
+
+victim sram3, aggressor sram2   (20260915T211035Z-stress-k-v3-a2)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420     107986     107988         +0             0             0
+  50kHz                 419     108142     108216       +156      12800000       3200000
+  100kHz                418     108270     108346       +284      25600000       6400000
+  200kHz                420     108533     108610       +547      51200000      12800000
+  400kHz                419     109069     109149      +1083     102400000      25600000
+  800kHz                422     110170     110248      +2184     204800000      51200000
+
+victim sram3, aggressor sram3   (20260915T211138Z-stress-k-v3-a3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420     107986     107991         +0             0             0
+  50kHz                 418     110319     110395      +2332      12800000       3200000
+  100kHz                422     112631     112763      +4644      25600000       6400000
+  200kHz                420     117687     117730      +9700      51200000      12800000
+  400kHz                417     129379     129421     +21392     102400000      25600000
+  800kHz                421     141263     141276     +33276     204800000      51200000
+
+victim sram3, aggressor sram4   (20260915T211240Z-stress-k-v3-a4)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420     107986     107988         +0             0             0
+  50kHz                 417     108139     108217       +153      12800000       3200000
+  100kHz                421     108332     108346       +346      25600000       6400000
+  200kHz                421     108540     108607       +554      51200000      12800000
+  400kHz                418     109063     109148      +1077     102400000      25600000
+  800kHz                421     110177     110248      +2191     204800000      51200000
+
+# experiment 2, victim footprint
+
+  footprint     words    loads   baseline  delta@12.8M  cycles/access        coeff
+  1k              256     8192     108394        +9743        1.18933        1.112
+  2k              512     8192     108121        +9700        1.18408        1.112
+  4k             1024     8192     107986        +9656        1.17871        1.108
+  8k             2048     8192     107918        +9621        1.17444        1.105
+  16k            4096     8192     107884        +9616        1.17383        1.104
+  32k            8192     8192     107868        +9597        1.17151        1.104
+  64k           16384    16384     215400       +19166        1.16980        1.106
+  128k          32768    32768     430897       +38175        1.16501        1.100
+
+  per point tables
+
+footprint 1k, 8192 loads   (20260915T211343Z-stress-foot-1k)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   419     108394     108399         +0             0             0
+  50kHz                 421     110732     110806      +2338      12800000       3200000
+  100kHz                417     113045     113169      +4651      25600000       6400000
+  200kHz                419     118137     118205      +9743      51200000      12800000
+  400kHz                420     129870     129925     +21476     102400000      25600000
+  800kHz                421     148422     148450     +40028     204800000      51200000
+
+footprint 2k, 8192 loads   (20260915T211445Z-stress-foot-2k)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   421     108121     108127         +0             0             0
+  50kHz                 418     110510     110528      +2389      12800000       3200000
+  100kHz                420     112768     112895      +4647      25600000       6400000
+  200kHz                421     117821     117858      +9700      51200000      12800000
+  400kHz                418     129553     129608     +21432     102400000      25600000
+  800kHz                420     148069     148098     +39948     204800000      51200000
+
+footprint 4k, 8192 loads   (20260915T211548Z-stress-foot-4k)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   421     107986     107990         +0             0             0
+  50kHz                 420     110315     110395      +2329      12800000       3200000
+  100kHz                418     112632     112771      +4646      25600000       6400000
+  200kHz                422     117642     117686      +9656      51200000      12800000
+  400kHz                418     129388     129429     +21402     102400000      25600000
+  800kHz                419     147905     147931     +39919     204800000      51200000
+
+footprint 8k, 8192 loads   (20260915T211651Z-stress-foot-8k)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420     107918     107923         +0             0             0
+  50kHz                 418     110251     110325      +2333      12800000       3200000
+  100kHz                420     112563     112701      +4645      25600000       6400000
+  200kHz                421     117539     117600      +9621      51200000      12800000
+  400kHz                420     129303     129339     +21385     102400000      25600000
+  800kHz                419     147812     147843     +39894     204800000      51200000
+
+footprint 16k, 8192 loads   (20260915T211753Z-stress-foot-16k)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   422     107884     107887         +0             0             0
+  50kHz                 420     110150     110288      +2266      12800000       3200000
+  100kHz                419     112526     112666      +4642      25600000       6400000
+  200kHz                418     117500     117554      +9616      51200000      12800000
+  400kHz                420     129268     129301     +21384     102400000      25600000
+  800kHz                418     147763     147796     +39879     204800000      51200000
+
+footprint 32k, 8192 loads   (20260915T211856Z-stress-foot-32k)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420     107868     107870         +0             0             0
+  50kHz                 418     110192     110272      +2324      12800000       3200000
+  100kHz                420     112519     112645      +4651      25600000       6400000
+  200kHz                420     117465     117543      +9597      51200000      12800000
+  400kHz                421     129243     129281     +21375     102400000      25600000
+  800kHz                418     147741     147774     +39873     204800000      51200000
+
+footprint 64k, 16384 loads   (20260915T211958Z-stress-foot-64k)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   421     215400     215402         +0             0             0
+  50kHz                 418     220034     220043      +4634      12800000       3200000
+  100kHz                421     224767     224890      +9367      25600000       6400000
+  200kHz                419     234566     234775     +19166      51200000      12800000
+  400kHz                419     258232     258351     +42832     102400000      25600000
+  800kHz                419     295278     295322     +79878     204800000      51200000
+
+footprint 128k, 32768 loads   (20260915T212101Z-stress-foot-128k)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   423     430897     430903         +0             0             0
+  50kHz                 420     440077     440093      +9180      12800000       3200000
+  100kHz                418     449498     449564     +18601      25600000       6400000
+  200kHz                420     469072     469136     +38175      51200000      12800000
+  400kHz                418     516130     516185     +85233     102400000      25600000
+  800kHz                418     590318     590405    +159421     204800000      51200000
+
+# experiment 3, past saturation
+
+stress-sat-a1, aggressor in sram1, 8192 loads   (20260915T212511Z-stress-sat-a1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   419     107986     107991         +0             0             0
+  w2 800kHz             421     123607     123630     +15621     204800000     102400000
+  w1 800kHz             419     123576     123593     +15590     204800000     204800000
+  ungated w4            420     123910     123958     +15924             0             0
+  ungated w1            420     123559     123574     +15573             0             0
+  armed, no trigger     419     108006     108062        +20             0             0
+  saving per victim load at the largest saving: 0.0000 cycles
+
+stress-sat-a2, aggressor in sram2, 8192 loads   (20260915T212203Z-stress-sat-a2)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   421     107986     107989         +0             0             0
+  w2 800kHz             418     109266     109358      +1280     204800000     102400000
+  w1 800kHz             420     108738     108823       +752     204800000     204800000
+  ungated w4            421     110438     110514      +2452             0             0
+  ungated w1            420     108729     108808       +743             0             0
+  armed, no trigger     418     108007     108062        +21             0             0
+  saving per victim load at the largest saving: 0.0000 cycles
+
+stress-sat-a2-4096loads, aggressor in sram2, 4096 loads   (20260915T212306Z-stress-sat-a2-4096loads)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420      53912      53934         +0             0             0
+  w2 800kHz             422      54579      54593       +667     204800000     102400000
+  w1 800kHz             421      54302      54329       +390     204800000     204800000
+  ungated w4            419      55147      55179      +1235             0             0
+  ungated w1            419      54292      54333       +380             0             0
+  armed, no trigger     417      53931      53949        +19             0             0
+  saving per victim load at the largest saving: 0.0000 cycles
+
+stress-sat-a3, aggressor in sram3, 8192 loads   (20260915T212614Z-stress-sat-a3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   418     107986     107991         +0             0             0
+  w2 800kHz             420     149327     149359     +41341     204800000     102400000
+  w1 800kHz             420     150210     150240     +42224     204800000     204800000
+  ungated w4            420     147885     147915     +39899             0             0
+  ungated w1            420     150200     150232     +42214             0             0
+  armed, no trigger     420     108006     108063        +20             0             0
+  saving per victim load at the largest saving: 0.0000 cycles
+
+stress-sat-a4, aggressor in sram4, 8192 loads   (20260915T212409Z-stress-sat-a4)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420     107986     107989         +0             0             0
+  w2 800kHz             419     109283     109361      +1297     204800000     102400000
+  w1 800kHz             420     108717     108819       +731     204800000     204800000
+  ungated w4            419     110441     110513      +2455             0             0
+  ungated w1            422     108735     108804       +749             0             0
+  armed, no trigger     418     108007     108063        +21             0             0
+  saving per victim load at the largest saving: 0.0000 cycles
+
+# the mem2mem aggressor left running through a stress pass, as the earlier captures had it
+
+mem2mem in sram1 at 16 KiB, plus the stress sweep   (20260915T214851Z-stress-m2mhold-a1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   418     123341     123362         +0             0             0
+  50kHz                 419     123580     123598       +239      12800000       3200000
+  100kHz                419     123745     123765       +404      25600000       6400000
+  200kHz                419     124143     124175       +802      51200000      12800000
+  400kHz                420     124774     124804      +1433     102400000      25600000
+  800kHz                422     125017     125056      +1676     204800000      51200000
+
+mem2mem in sram3 at 16 KiB, plus the stress sweep   (20260915T214953Z-stress-m2mhold-a3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   420     136930     136981         +0             0             0
+  50kHz                 421     139071     139162      +2141      12800000       3200000
+  100kHz                421     141170     141286      +4240      25600000       6400000
+  200kHz                420     145594     145733      +8664      51200000      12800000
+  400kHz                419     150224     150249     +13294     102400000      25600000
+  800kHz                418     150223     150251     +13293     204800000      51200000
+
+# the transaction and channel sweeps, re-measured with no second aggressor
+
+xact sweep, aggressor in sram1   (20260915T213820Z-stress-xact-clean-a1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   630     107985     107991         +0             0             0
+  w4                    630     111115     111198      +3130      51200000      12800000
+  w2                    627     113786     113911      +5801      51200000      25600000
+  w1                    630     119681     119706     +11696      51200000      51200000
+
+xact sweep, aggressor in sram2   (20260915T213922Z-stress-xact-clean-a2)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   632     107985     107991         +0             0             0
+  w4                    630     108474     108555       +489      51200000      12800000
+  w2                    628     108478     108556       +493      51200000      25600000
+  w1                    627     108470     108554       +485      51200000      51200000
+
+xact sweep, aggressor in sram3   (20260915T214025Z-stress-xact-clean-a3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   631     107986     107990         +0             0             0
+  w4                    631     117636     117688      +9650      51200000      12800000
+  w2                    629     128665     128722     +20679      51200000      25600000
+  w1                    627     150206     150244     +42220      51200000      51200000
+
+chan sweep, aggressor in sram1   (20260915T214128Z-stress-chan-clean-a1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   629     107984     107991         +0             0             0
+  1ch                   627     113818     113916      +5834     102400000      25600000
+  2ch                   632     114284     114316      +6300     102400000      25600000
+  4ch                   629     115211     115258      +7227     102400000      25600000
+
+chan sweep, aggressor in sram2   (20260915T214230Z-stress-chan-clean-a2)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   629     107985     107991         +0             0             0
+  1ch                   631     108469     108558       +484     102400000      25600000
+  2ch                   630     108879     108966       +894     102400000      25600000
+  4ch                   628     109778     109798      +1793     102400000      25600000
+
+chan sweep, aggressor in sram3   (20260915T214333Z-stress-chan-clean-a3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   629     107986     107990         +0             0             0
+  1ch                   626     128695     128738     +20709     102400000      25600000
+  2ch                   631     129267     129355     +21281     102400000      25600000
+  4ch                   632     130273     130327     +22287     102400000      25600000
+
+# experiment 4, the two victims under the same aggressor
+
+  capture            victim       baseline      coeff    window us
+  stress-k-v1-a1     read_loop      107986      0.362        674.9
+  stress-infer-a1    inference      327247      0.166       2045.3
+  stress-k-v1-a2     read_loop      107986      0.059        674.9
+  stress-infer-a2    inference      327246      0.021       2045.3
+  stress-k-v1-a3     read_loop      107987      1.107        674.9
+  stress-infer-a3    inference      327248      0.121       2045.3
+
+inference victim, aggressor sram1   (20260915T212716Z-stress-infer-a1)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   421     327247     327265         +0             0             0
+  50kHz                 420     328317     328361      +1070      12800000       3200000
+  100kHz                419     329417     329433      +2170      25600000       6400000
+  200kHz                418     331607     331656      +4360      51200000      12800000
+  400kHz                420     336085     336245      +8838     102400000      25600000
+  800kHz                419     344645     344670     +17398     204800000      51200000
+
+inference victim, aggressor sram2   (20260915T212819Z-stress-infer-a2)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   423     327246     327280         +0             0             0
+  50kHz                 417     327394     327417       +148      12800000       3200000
+  100kHz                418     327528     327550       +282      25600000       6400000
+  200kHz                422     327778     327824       +532      51200000      12800000
+  400kHz                421     328262     328315      +1016     102400000      25600000
+  800kHz                417     328705     328740      +1459     204800000      51200000
+
+inference victim, aggressor sram3   (20260915T212921Z-stress-infer-a3)
+  point                   n     median        p99      delta       bytes/s        xact/s
+  off                   419     327248     327259         +0             0             0
+  50kHz                 419     328140     328249       +892      12800000       3200000
+  100kHz                418     328855     328984      +1607      25600000       6400000
+  200kHz                421     330371     330492      +3123      51200000      12800000
+  400kHz                421     332543     332689      +5295     102400000      25600000
+  800kHz                420     339106     339173     +11858     204800000      51200000
+
+./bench/sweeps/campaign_run.sh \
+  stress-fn-b-desc2 stress-fn-b-desc3 stress-fn-b-desc4
+
+./bench/sweeps/campaign_run.sh \
+  stress-fn-c1-v1-s1 stress-fn-c1-v2-s1 stress-fn-c1-v3-s1 \
+  stress-fn-c1-v1-s2 stress-fn-c1-v2-s2 stress-fn-c1-v3-s2 \
+  stress-fn-c1-v1-s3 stress-fn-c1-v2-s3 stress-fn-c1-v3-s3
+
+./bench/sweeps/campaign_run.sh \
+  stress-fn-c2-p04-s3 stress-fn-c2-p04-s1 \
+  stress-fn-c2-p08-s3 stress-fn-c2-p08-s1 \
+  stress-fn-c2-p16-s3 stress-fn-c2-p16-s1 \
+  stress-fn-c2-p32-s3 stress-fn-c2-p32-s1
+
+./bench/sweeps/campaign_run.sh stress-fn-b-desc1
+=== stress-fn-b-desc2: b-descriptor, victim inference, arena sram1, stack sram1, aggressor in sram3, bw sweep
+captured to results/raw/20260919T223511Z-stress-fn-b-desc2
+wrote results/raw/20260919T223511Z-stress-fn-b-desc2/stress.txt
+=== stress-fn-b-desc3: b-descriptor, victim inference, arena sram1, stack sram1, aggressor in sram3, bw sweep
+captured to results/raw/20260919T223640Z-stress-fn-b-desc3
+wrote results/raw/20260919T223640Z-stress-fn-b-desc3/stress.txt
+=== stress-fn-b-desc4: b-descriptor, victim inference, arena sram1, stack sram1, aggressor in sram3, bw sweep
+captured to results/raw/20260919T223809Z-stress-fn-b-desc4
+wrote results/raw/20260919T223809Z-stress-fn-b-desc4/stress.txt
+campaign done
+=== stress-fn-c1-v1-s1: c1-shape, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T223949Z-stress-fn-c1-v1-s1
+wrote results/raw/20260919T223949Z-stress-fn-c1-v1-s1/stress.txt
+=== stress-fn-c1-v2-s1: c1-shape, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T224118Z-stress-fn-c1-v2-s1
+wrote results/raw/20260919T224118Z-stress-fn-c1-v2-s1/stress.txt
+=== stress-fn-c1-v3-s1: c1-shape, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T224247Z-stress-fn-c1-v3-s1
+wrote results/raw/20260919T224247Z-stress-fn-c1-v3-s1/stress.txt
+=== stress-fn-c1-v1-s2: c1-shape, victim read_loop, arena sram1, stack sram2, aggressor in sram3, none sweep
+captured to results/raw/20260919T224428Z-stress-fn-c1-v1-s2
+wrote results/raw/20260919T224428Z-stress-fn-c1-v1-s2/stress.txt
+=== stress-fn-c1-v2-s2: c1-shape, victim read_loop, arena sram1, stack sram2, aggressor in sram3, none sweep
+captured to results/raw/20260919T224556Z-stress-fn-c1-v2-s2
+wrote results/raw/20260919T224556Z-stress-fn-c1-v2-s2/stress.txt
+=== stress-fn-c1-v3-s2: c1-shape, victim read_loop, arena sram1, stack sram2, aggressor in sram3, none sweep
+captured to results/raw/20260919T224725Z-stress-fn-c1-v3-s2
+wrote results/raw/20260919T224725Z-stress-fn-c1-v3-s2/stress.txt
+=== stress-fn-c1-v1-s3: c1-shape, victim read_loop, arena sram1, stack sram3, aggressor in sram3, none sweep
+captured to results/raw/20260919T224906Z-stress-fn-c1-v1-s3
+wrote results/raw/20260919T224906Z-stress-fn-c1-v1-s3/stress.txt
+=== stress-fn-c1-v2-s3: c1-shape, victim read_loop, arena sram1, stack sram3, aggressor in sram3, none sweep
+captured to results/raw/20260919T225035Z-stress-fn-c1-v2-s3
+wrote results/raw/20260919T225035Z-stress-fn-c1-v2-s3/stress.txt
+=== stress-fn-c1-v3-s3: c1-shape, victim read_loop, arena sram1, stack sram3, aggressor in sram3, none sweep
+captured to results/raw/20260919T225203Z-stress-fn-c1-v3-s3
+wrote results/raw/20260919T225203Z-stress-fn-c1-v3-s3/stress.txt
+campaign done
+=== stress-fn-c2-p04-s3: c2-window, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T225345Z-stress-fn-c2-p04-s3
+wrote results/raw/20260919T225345Z-stress-fn-c2-p04-s3/stress.txt
+=== stress-fn-c2-p04-s1: c2-window, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T225514Z-stress-fn-c2-p04-s1
+wrote results/raw/20260919T225514Z-stress-fn-c2-p04-s1/stress.txt
+=== stress-fn-c2-p08-s3: c2-window, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T225642Z-stress-fn-c2-p08-s3
+wrote results/raw/20260919T225642Z-stress-fn-c2-p08-s3/stress.txt
+=== stress-fn-c2-p08-s1: c2-window, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T225811Z-stress-fn-c2-p08-s1
+wrote results/raw/20260919T225811Z-stress-fn-c2-p08-s1/stress.txt
+=== stress-fn-c2-p16-s3: c2-window, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T225939Z-stress-fn-c2-p16-s3
+wrote results/raw/20260919T225939Z-stress-fn-c2-p16-s3/stress.txt
+=== stress-fn-c2-p16-s1: c2-window, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T230108Z-stress-fn-c2-p16-s1
+wrote results/raw/20260919T230108Z-stress-fn-c2-p16-s1/stress.txt
+=== stress-fn-c2-p32-s3: c2-window, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T230237Z-stress-fn-c2-p32-s3
+wrote results/raw/20260919T230237Z-stress-fn-c2-p32-s3/stress.txt
+=== stress-fn-c2-p32-s1: c2-window, victim read_loop, arena sram1, stack sram1, aggressor in sram3, none sweep
+captured to results/raw/20260919T230405Z-stress-fn-c2-p32-s1
+wrote results/raw/20260919T230405Z-stress-fn-c2-p32-s1/stress.txt
+campaign done
+=== stress-fn-b-desc1: b-descriptor, victim inference, arena sram1, stack sram1, aggressor in sram3, bw sweep
+captured to results/raw/20260919T230547Z-stress-fn-b-desc1
+wrote results/raw/20260919T230547Z-stress-fn-b-desc1/stress.txt
+campaign done

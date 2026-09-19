@@ -260,7 +260,8 @@ static const uint32_t  laxity_footprints[LAXITY_FOOTPRINTS] = { 1024u, 4096u, 81
 #define LAXITY_SWEEP_SAT     4u
 #define LAXITY_SWEEP_LOW     5u
 #define LAXITY_SWEEP_DMAT    6u
-#define LAXITY_SWEEPS        7u
+#define LAXITY_SWEEP_NONE    7u
+#define LAXITY_SWEEPS        8u
 #define LAXITY_SWEEP_MAX_PTS 6u
 
 /* the aggressor can sit in SRAM4 as well as in the three the arenas use, and SRAM4 holds no arena
@@ -352,6 +353,11 @@ static const struct {
       { 1u, 1u, 4096u, 0u, 0u },
       { 1u, 4u, 2048u, 0u, 0u },
   } },
+  /* no points at all, so the schedule is the aggressor off cell and nothing else and no channel is
+   * ever started. taking the off records out of a sweep that also runs an aggressor would work and
+   * would mean measuring a quiet window in a capture that was not quiet, which is the distinction
+   * the contention free table has to be able to make. */
+  { "none", 0, { { 0u, 0u, 0u, 0u, 0u } } },
 };
 
 /* the victim footprints of the scaling sweep, in bytes. the read loop buffer size is already a
@@ -1357,6 +1363,7 @@ static void laxity_say(char *line, int n)
  *   4  past the top of the bandwidth sweep, ending in a channel that never transfers
  *   5  below the bandwidth sweep, 0.4 to 3.2 million transactions per second
  *   6  one block moved once and timed, four points of transaction count
+ *   o  no aggressor at all, for the contention free table
  *   a  aggressor in SRAM1                  b  SRAM2        c  SRAM3        d  SRAM4
  *   X  read loop victim in SRAM1           Y  SRAM2        Z  SRAM3
  *   A to H  victim footprint 1, 2, 4, 8, 16, 32, 64 and 128 KiB
@@ -1394,6 +1401,10 @@ static void laxity_poll_console(void)
     case 'r': laxity_victim = LAXITY_VICTIM_READ;    break;
     case 'i': laxity_victim = LAXITY_VICTIM_ISTRESS; break;
     case 't': laxity_victim = LAXITY_VICTIM_DMATIME; laxity_stress_point = 0xFFu; break;
+    case 'o':
+      laxity_sweep = LAXITY_SWEEP_NONE;
+      laxity_stress_point = 0xFFu;
+      break;
     case '0': case '1': case '2': case '3': case '4': case '5': case '6':
       laxity_sweep = (uint8_t)(c - '0');
       /* the point index is invalidated rather than kept, so the next cell reprograms the channels

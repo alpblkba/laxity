@@ -24,7 +24,8 @@ import telemetry_parse
 # both rounds are read by one script, since the second one re-measures cells the first one
 # reported and the two tables only mean something side by side.
 CAMPAIGNS = ("interference-2026-09-15", "mechanism-2026-09-16", "arena-or-stack-2026-09-16",
-             "closing-2026-09-19")
+             "closing-2026-09-19", "wifi-2026-09-19", "paired-2026-09-19",
+             "final-2026-09-19")
 
 # the cells every capture of the closing campaign is read against, measured at the start and again
 # at the end. the expected values are the decomposition's, and the gate is 0.010 cycles per
@@ -35,7 +36,24 @@ GATE = {
     2: ("arena SRAM1, stack SRAM2, aggressor SRAM1", 0.139),
     3: ("arena SRAM1, stack SRAM2, aggressor SRAM2", 0.108),
 }
+# the expected values belong to an image, so a campaign that runs on a different one carries its
+# own. comparing a gate cell against a value measured on another binary is not a drift check.
+GATE_BY_CAMPAIGN = {
+    "final-2026-09-19": {
+        1: ("arena SRAM1, stack SRAM1, aggressor SRAM1", 0.249),
+        2: ("arena SRAM1, stack SRAM2, aggressor SRAM1", 0.144),
+        3: ("arena SRAM1, stack SRAM2, aggressor SRAM2", 0.106),
+    },
+    "paired-2026-09-19": {
+        1: ("arena SRAM1, stack SRAM1, aggressor SRAM1", 0.249),
+        2: ("arena SRAM1, stack SRAM2, aggressor SRAM1", 0.144),
+        3: ("arena SRAM1, stack SRAM2, aggressor SRAM2", 0.106),
+    },
+}
 GATE_TOL = 0.010
+
+# when set, the gate section reports only this campaign.
+CAMPAIGN_FOCUS = "final-2026-09-19"
 
 # the knob values each point index stands for, in the same order as laxity_sweeps in the firmware.
 # point 0 is the aggressor off in every sweep. this is a second copy of what the firmware holds,
@@ -126,6 +144,9 @@ def load(run_dir):
     # than summarised, since 31 cycles in 329150 is 94 parts per million and a median alone cannot
     # carry that.
     seq0 = list(groups.get(0, []))
+    # every point's records in stream order, which the paired comparison needs because it reads one
+    # point of a sweep rather than a summary of all of them.
+    seq_by_point = {p: list(v) for p, v in groups.items()}
     sweep = meta_kv["sweep"]
     for point in sorted(groups):
         cyc = sorted(groups[point])
@@ -145,7 +166,7 @@ def load(run_dir):
     return {"dir": run_dir.name, "kv": meta_kv, "rows": rows, "base": base,
             "stats": stats, "cyccnt_hz": meta.get("cyccnt_hz", 160000000),
             "wrong_region": wrong_region, "records": len(records), "restarts": restarts,
-            "seq0": seq0}
+            "seq0": seq0, "seq_by_point": seq_by_point}
 
 
 # blocks per second at each point of a sweep, which is the trigger rate times the channel count.
@@ -252,7 +273,211 @@ def main():
                c["kv"].get("experiment", "?"),
                "   SPANS A RESET" if c["restarts"] else ""))
 
-    gates = [c for c in caps if c["kv"].get("experiment", "").startswith("gate-")]
+    paired = [c for c in caps if c["kv"].get("campaign") == CAMPAIGN_FOCUS
+              and c["kv"].get("experiment", "") in
+              ("default-off", "default-on", "placed-off", "placed-on")]
+    if paired:
+        # the standard point of the bandwidth sweep and the two above it. the on captures run the
+        # whole sweep, so all three come out of the same captures.
+        ON_POINTS = (3, 4, 5)
+        ON_POINT = 3
+        hz = paired[0]["cyccnt_hz"]
+        window = 0.032 * hz          # the audio half buffer, 512 samples at 16 kHz
+
+        def pool(exp, point=None):
+            out = []
+            for c in sorted(paired, key=lambda c: c["dir"]):
+                if c["kv"]["experiment"] != exp:
+                    continue
+                out += c["seq_by_point"].get(0 if exp.endswith("-off") else point, [])
+            return out
+
+        def stats(v):
+            q = sorted(v)
+            return (q[0], q[len(q) // 2], q[min(len(q) - 1, int(0.99 * len(q)))], q[-1], len(q))
+
+        print("\n# job A, paired comparison, one image, aggressor SRAM3\n")
+        print("  deadline window %.0f cycles, which is 32 ms of audio half buffer at %d Hz" % (window, hz))
+        print("  bandwidth sweep points read: 3 at 200 kHz, 4 at 400 kHz, 5 at 800 kHz\n")
+        for pt, label in ((3, "200 kHz, the standard point"), (4, "400 kHz"), (5, "800 kHz")):
+            print("  point %d, %s" % (pt, label))
+            print("    %-9s %-14s %9s %9s %9s %9s %7s" %
+                  ("config", "state", "min", "p50", "p99", "max", "n"))
+            keep = {}
+            for cfg in ("default", "placed"):
+                off, on = pool(cfg + "-off"), pool(cfg + "-on", pt)
+                if not off or not on:
+                    continue
+                so, sn = stats(off), stats(on)
+                keep[cfg] = (so, sn)
+                print("    %-9s %-14s %9d %9d %9d %9d %7d" % ((cfg, "aggressor off") + so))
+                print("    %-9s %-14s %9d %9d %9d %9d %7d" % ((cfg, "aggressor on") + sn))
+            for cfg in ("default", "placed"):
+                if cfg not in keep:
+                    continue
+                so, sn = keep[cfg]
+                print("    %-9s penalty        p50 %+8d (%+.3f%%)   p99 %+8d (%+.3f%%)" %
+                      (cfg, sn[1] - so[1], 100.0 * (sn[1] - so[1]) / so[1],
+                       sn[2] - so[2], 100.0 * (sn[2] - so[2]) / so[2]))
+            if len(keep) == 2:
+                d, pl = keep["default"], keep["placed"]
+                print("    difference     penalty p50 %+8d          penalty p99 %+8d" %
+                      ((pl[1][1] - pl[0][1]) - (d[1][1] - d[0][1]),
+                       (pl[1][2] - pl[0][2]) - (d[1][2] - d[0][2])))
+            print()
+
+        rows = {}
+        for cfg in ("default", "placed"):
+            off, on = pool(cfg + "-off"), pool(cfg + "-on", ON_POINT)
+            rows[cfg] = (stats(off), stats(on))
+            print("  %s" % cfg)
+            for label, st in (("aggressor off", rows[cfg][0]), ("aggressor on ", rows[cfg][1])):
+                print("    %-14s min %8d  p50 %8d  p99 %8d  max %8d  n %6d" % ((label,) + st))
+            o50, o99 = rows[cfg][0][1], rows[cfg][0][2]
+            n50, n99 = rows[cfg][1][1], rows[cfg][1][2]
+            print("    penalty        p50 %+8d (%+.3f%%)   p99 %+8d (%+.3f%%)"
+                  % (n50 - o50, 100.0 * (n50 - o50) / o50, n99 - o99, 100.0 * (n99 - o99) / o99))
+            miss_off = sum(1 for v in off if v > window)
+            miss_on = sum(1 for v in on if v > window)
+            print("    margin         off p50 %.3f%%  p99 %.3f%%   on p50 %.3f%%  p99 %.3f%%"
+                  % (100.0 * o50 / window, 100.0 * o99 / window,
+                     100.0 * n50 / window, 100.0 * n99 / window))
+            print("    windows missed off %d of %d, on %d of %d\n"
+                  % (miss_off, len(off), miss_on, len(on)))
+
+        if "default" in rows and "placed" in rows:
+            d, pl = rows["default"], rows["placed"]
+            print("  %-22s %12s %12s %12s" % ("", "default", "placed", "difference"))
+            for label, i in (("aggressor off p50", 1), ("aggressor off p99", 2),
+                             ("aggressor on p50", 1), ("aggressor on p99", 2)):
+                a = d[0 if "off" in label else 1][i]
+                b = pl[0 if "off" in label else 1][i]
+                print("  %-22s %12d %12d %+12d" % (label, a, b, b - a))
+            dp50 = d[1][1] - d[0][1]
+            pp50 = pl[1][1] - pl[0][1]
+            dp99 = d[1][2] - d[0][2]
+            pp99 = pl[1][2] - pl[0][2]
+            print("  %-22s %12d %12d %+12d" % ("penalty p50", dp50, pp50, pp50 - dp50))
+            print("  %-22s %12d %12d %+12d" % ("penalty p99", dp99, pp99, pp99 - dp99))
+            print("  %-22s %11.3f%% %11.3f%% %+11.3f%%" %
+                  ("margin on p50", 100.0 * d[1][1] / window, 100.0 * pl[1][1] / window,
+                   100.0 * (pl[1][1] - d[1][1]) / window))
+            print("  %-22s %11.3f%% %11.3f%% %+11.3f%%" %
+                  ("margin on p99", 100.0 * d[1][2] / window, 100.0 * pl[1][2] / window,
+                   100.0 * (pl[1][2] - d[1][2]) / window))
+        print()
+
+        print("  per block, aggressor on p50, to show whether anything drifted\n")
+        print("    %-10s %10s %10s" % ("block", "default", "placed"))
+        for b in (1, 2, 3, 4):
+            cells = []
+            for cfg in ("default", "placed"):
+                # the block name carries the campaign prefix, which differs between campaigns, so
+                # the match is on the block and configuration rather than on a fixed name.
+                m = [c for c in paired
+                     if c["dir"].endswith("b%d-%s-on" % (b, cfg))]
+                if not m:
+                    cells.append("        --")
+                    continue
+                q = sorted(m[0]["seq_by_point"].get(ON_POINT, []))
+                cells.append("%10d" % q[len(q) // 2] if q else "        --")
+            print("    %-10s %s" % ("block %d" % b, " ".join(cells)))
+        print()
+
+    # gate cells are grouped by campaign, since the expected values belong to an image and pairing
+    # an opening cell with a closing cell from another campaign would compare two runs.
+    jb = [c for c in caps if c["kv"].get("experiment") == "b-descriptor"]
+    if jb:
+        print("\n# job B, the residual of the placed configuration against the descriptor page\n")
+        print("  arena SRAM1, stack SRAM1, aggressor data SRAM3 at the standard point\n")
+        print("  %-22s %-22s %10s %10s %12s" %
+              ("capture", "descriptor page", "baseline", "coeff", "residual"))
+        for c in sorted(jb, key=lambda c: c["kv"].get("descriptor_region", "")):
+            k, _, worst = coefficient(c)
+            print("  %-22s %-22s %10d %10.3f %12.1f" %
+                  (c["dir"].split("-", 1)[1], c["kv"].get("descriptor_region", "?"),
+                   c["base"], k if k is not None else float("nan"), worst))
+        print()
+
+    c1 = [c for c in caps if c["kv"].get("experiment") == "c1-shape"]
+    if c1:
+        cells = {}
+        for c in c1:
+            vr = int(c["kv"]["victim_region"][-1])
+            sr = int(c["kv"]["stack_region"][-1])
+            cells[(vr, sr)] = c
+        n = min(len(c["seq0"]) for c in c1)
+        med = {k: sorted(v["seq0"][:n])[n // 2] for k, v in cells.items()}
+        print("\n# job C1, read loop victim, no channel started at any point\n")
+        print("  vwords %s, vpasses %s, every cell truncated to the first %d records\n"
+              % (c1[0]["kv"].get("victim_words"), c1[0]["kv"].get("victim_passes"), n))
+        print("    %-10s %10s %10s %10s" % ("buffer", "stack s1", "stack s2", "stack s3"))
+        for vr in (1, 2, 3):
+            row = ["%10d" % med[(vr, sr)] if (vr, sr) in med else "        --" for sr in (1, 2, 3)]
+            print("    %-10s %s" % ("sram%d" % vr, " ".join(row)))
+        if len(med) == 9:
+            ref = med[(1, 1)]
+            f = {r: med[(r, 1)] - ref for r in (1, 2, 3)}
+            g = {r: med[(1, r)] - ref for r in (1, 2, 3)}
+            cc = {r: (f[r] + g[r]) / 2.0 for r in (1, 2, 3)}
+            print("\n    deltas against buffer sram1 with stack sram1, which is %d" % ref)
+            print("    buffer alone: " + ", ".join("sram%d %+d" % (r, f[r]) for r in (1, 2, 3)))
+            print("    stack alone:  " + ", ".join("sram%d %+d" % (r, g[r]) for r in (1, 2, 3)))
+            shapes = {
+                "additive": lambda vr, sr: f[vr] + g[sr],
+                "maximum": lambda vr, sr: max(f[vr], g[sr]),
+                "region sum": lambda vr, sr: sum(cc[r] for r in set((vr, sr))),
+            }
+            print("\n    %-14s %s" % ("shape", "worst error over the nine cells, cycles"))
+            for name, fn in shapes.items():
+                worst = max(abs((med[(vr, sr)] - ref) - fn(vr, sr))
+                            for vr in (1, 2, 3) for sr in (1, 2, 3))
+                print("    %-14s %.1f" % (name, worst))
+        print()
+
+    c2 = [c for c in caps if c["kv"].get("experiment") == "c2-window"]
+    if c2:
+        pts = {}
+        for c in c2:
+            vp = int(c["kv"]["victim_passes"])
+            pts.setdefault(vp, {})[c["kv"]["victim_region"]] = c
+        n = min(len(c["seq0"]) for c in c2)
+        print("\n# job C2, buffer in SRAM3 against buffer in SRAM1, stack SRAM1, no channel started\n")
+        print("  every cell truncated to the first %d records\n" % n)
+        print("  %-9s %8s %8s %10s %10s %10s" %
+              ("vpasses", "vwords", "loads", "buf sram3", "buf sram1", "difference"))
+        diffs = []
+        for vp in sorted(pts):
+            d = pts[vp]
+            if "sram3" not in d or "sram1" not in d:
+                continue
+            m3 = sorted(d["sram3"]["seq0"][:n])[n // 2]
+            m1 = sorted(d["sram1"]["seq0"][:n])[n // 2]
+            loads = int(d["sram3"]["kv"]["loads_per_window"])
+            print("  %-9d %8s %8d %10d %10d %+10d" %
+                  (vp, d["sram3"]["kv"]["victim_words"], loads, m3, m1, m3 - m1))
+            diffs.append((vp, loads, m3 - m1))
+        if len(diffs) >= 3:
+            ys = [d for _, _, d in diffs]
+            xs = [l for _, l, _ in diffs]
+            const = sum(ys) / len(ys)
+            k = sum(x * y for x, y in zip(xs, ys)) / sum(x * x for x in xs)
+            mx = sum(xs) / len(xs)
+            my = sum(ys) / len(ys)
+            sxx = sum((x - mx) ** 2 for x in xs)
+            slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx if sxx else 0.0
+            icept = my - slope * mx
+            print("\n  %-34s %s" % ("shape", "worst error over the points, cycles"))
+            print("  %-34s %.1f" % ("constant, one off per window", max(abs(y - const) for y in ys)))
+            print("  %-34s %.1f" % ("proportional to accesses",
+                                    max(abs(y - k * x) for x, y in zip(xs, ys))))
+            print("  %-34s %.1f" % ("constant plus proportional",
+                                    max(abs(y - (icept + slope * x)) for x, y in zip(xs, ys))))
+        print()
+
+    gates = [c for c in caps if c["kv"].get("experiment", "").startswith("gate-")
+             and c["kv"].get("campaign") == CAMPAIGN_FOCUS] if CAMPAIGN_FOCUS else \
+            [c for c in caps if c["kv"].get("experiment", "").startswith("gate-")]
     if gates:
         print("\n# repeat cells, start and end of the campaign\n")
         print("  %-24s %-44s %9s %9s %9s %s" %
@@ -261,7 +486,7 @@ def main():
         for c in sorted(gates, key=lambda c: c["dir"]):
             name = c["dir"].split("-", 1)[1]
             idx = int(name[-1])
-            label, exp = GATE[idx]
+            label, exp = GATE_BY_CAMPAIGN.get(c["kv"].get("campaign"), GATE)[idx]
             k, _, _ = coefficient(c)
             diff = k - exp
             worst = max(worst, abs(diff))
@@ -274,7 +499,8 @@ def main():
             for idx in sorted(set(opens) & set(closes)):
                 ko = coefficient(opens[idx])[0]
                 kc = coefficient(closes[idx])[0]
-                print("  %-24s %9.3f %9.3f %+9.3f" % (GATE[idx][0], ko, kc, kc - ko))
+                table = GATE_BY_CAMPAIGN.get(opens[idx]["kv"].get("campaign"), GATE)
+                print("  %-24s %9.3f %9.3f %+9.3f" % (table[idx][0], ko, kc, kc - ko))
         print("\n  worst absolute difference from expected: %.3f against a gate of %.3f\n"
               % (worst, GATE_TOL))
 

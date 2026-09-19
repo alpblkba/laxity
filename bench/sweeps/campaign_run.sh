@@ -18,7 +18,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 . tools/stm32/lib.sh
 
-SECS="${LAXITY_SECS:-50}"
+SECS="${LAXITY_SECS:-75}"
 # long enough for the board to finish the pass it was in the middle of. the arena cross pass is
 # 328 inferences at 50 Hz, which is 6.6 seconds, and it is the longest one the board can be in.
 SETTLE="${LAXITY_SETTLE:-8}"
@@ -28,7 +28,7 @@ CONFIRM="${LAXITY_CONFIRM:-20}"
 # are dropped, which is how the first attempt at this lost its victim byte.
 REBOOT="${LAXITY_REBOOT:-12}"
 LAST_STACK=""
-CAMPAIGN=closing-2026-09-19
+CAMPAIGN=final-2026-09-19
 
 TIMEOUT="$(laxity_timeout)" || { echo "no timeout(1) or gtimeout(1) on PATH, install coreutils" >&2; exit 1; }
 PORT="$(laxity_stlink_ports | cut -f2 | head -1)"
@@ -46,6 +46,21 @@ desc_addr()   { case "$1" in 1) echo 0x2000e000 ;; 2) echo 0x2003e000 ;; 3) echo
                              4) echo 0x28003000 ;; esac; }
 desc_id()     { case "$1" in *P*) echo 1 ;; *Q*) echo 2 ;; *S*) echo 4 ;; *) echo 3 ;; esac; }
 stack_id()    { case "$1" in j) echo 1 ;; k) echo 2 ;; n) echo 3 ;; esac; }
+# the point table of each sweep, mirroring laxity_sweeps in the firmware, as
+# index:channels/width/block/stride/triggerHz. a capture that carries this describes every
+# configuration it contains, which the confirmation time snapshot below does not.
+sweep_points() {
+  case "$1" in
+    0) echo "1:1/4/256/0/50000 2:1/4/256/0/100000 3:1/4/256/0/200000 4:1/4/256/0/400000 5:1/4/256/0/800000" ;;
+    1) echo "1:1/4/256/0/200000 2:1/2/256/0/200000 3:1/1/256/0/200000" ;;
+    2) echo "1:1/4/512/0/200000 2:2/4/256/0/200000 3:4/4/128/0/200000" ;;
+    3) echo "1:1/4/256/0/200000 2:1/4/256/4/200000 3:1/4/256/12/200000 4:1/4/256/28/200000 5:1/4/256/60/200000 6:1/4/256/124/200000" ;;
+    4) echo "1:1/2/256/0/800000 2:1/1/256/0/800000 3:1/4/256/0/0 4:1/1/256/0/0 5:1/4/256/0/armed" ;;
+    5) echo "1:1/4/256/0/6250 2:1/4/256/0/12500 3:1/4/256/0/25000 4:1/4/256/0/50000" ;;
+    6) echo "1:1/4/4096/0/0 2:1/2/4096/0/0 3:1/1/4096/0/0 4:1/4/2048/0/0" ;;
+    o) echo "none, no channel is started at any point" ;;
+  esac
+}
 arena_id()    { case "$1" in 7) echo 1 ;; 8) echo 2 ;; 9) echo 3 ;; esac; }
 foot_bytes()  { case "$1" in A) echo 1024 ;; B) echo 2048 ;; C) echo 4096 ;; D) echo 8192 ;;
                              E) echo 16384 ;; F) echo 32768 ;; G) echo 65536 ;; H) echo 131072 ;; esac; }
@@ -188,11 +203,19 @@ run_one() {
     printf 'arena_region=sram%s\n' "$(arena_id "$arenab")"
     printf 'stack_region=sram%s\n' "$(stack_id "$stackb")"
     printf 'descriptor_region=sram%s\n' "$did"
+    # the image every capture of this campaign has to share, copied from the capture's own
+    # build.txt rather than recomputed, and the configuration label the comparison is filed under.
+    printf 'image_sha256=%s\n' "$(sed -n 's/^image_sha256=//p' "$dir/build.txt")"
+    printf 'config=%s\n' "$(printf '%s' "$experiment" | sed 's/-o[nf]*$//')"
     # the address stream again rather than the knob: both of these are read back off the board's
     # own status line, not from the table that asked for them.
     printf 'stack_high_water=%s\n' "$(printf '%s' "$status" | tr ' ' '\n' | sed -n 's/^shw=//p')"
     printf 'stack_guard_hit=%s\n' "$(printf '%s' "$status" | tr ' ' '\n' | sed -n 's/^sguard=//p')"
-    printf 'aggressor_config=%s\n' "$(printf '%s' "$status" | tr ' ' '\n' | grep -E '^(chan|width|block|stride|hz)=' | tr '\n' ' ')"
+    # the status line is sampled when the configuration is confirmed and the schedule is shuffled,
+    # so this is whichever point happened to be active then and not the point any table reads. it
+    # is kept under a name that says so, beside the whole point table of the sweep.
+    printf 'aggressor_config_at_confirm=%s\n' "$(printf '%s' "$status" | tr ' ' '\n' | grep -E '^(chan|width|block|stride|hz)=' | tr '\n' ' ')"
+    printf 'aggressor_sweep_points=%s\n' "$(sweep_points "$sweep")"
     printf 'status_line=%s\n' "$(printf '%s' "$status" | tr -d '\r')"
     # what the victim's address stream actually does, counted from the disassembly of the image that
     # ran rather than taken from the knob. only the read loop has one.
@@ -214,29 +237,49 @@ run_one() {
 
 # name                        experiment     victim sweep aggressor victim-region footprint loads extra stack arena
 TABLE="
-stress-cl-gate-open-1          gate-open      i 0 a X C L - j 7
-stress-cl-gate-open-2          gate-open      i 0 a X C L - k 7
-stress-cl-gate-open-3          gate-open      i 0 b X C L - k 7
-stress-cl-desc-s1-p1          descriptor-88  i 0 b X C L P j 7
-stress-cl-desc-s1-p2          descriptor-88  i 0 b X C L Q j 7
-stress-cl-desc-s1-p3          descriptor-88  i 0 b X C L R j 7
-stress-cl-desc-s1-p4          descriptor-88  i 0 b X C L S j 7
-stress-cl-desc-s3-p1          descriptor-88  i 0 b X C L P n 7
-stress-cl-desc-s3-p2          descriptor-88  i 0 b X C L Q n 7
-stress-cl-desc-s3-p3          descriptor-88  i 0 b X C L R n 7
-stress-cl-desc-s3-p4          descriptor-88  i 0 b X C L S n 7
-stress-cl-quiet-a1-s1         quiet-place    i o a X C L - j 7
-stress-cl-quiet-a2-s1         quiet-place    i o a X C L - j 8
-stress-cl-quiet-a3-s1         quiet-place    i o a X C L - j 9
-stress-cl-quiet-a1-s2         quiet-place    i o a X C L - k 7
-stress-cl-quiet-a2-s2         quiet-place    i o a X C L - k 8
-stress-cl-quiet-a3-s2         quiet-place    i o a X C L - k 9
-stress-cl-quiet-a1-s3         quiet-place    i o a X C L - n 7
-stress-cl-quiet-a2-s3         quiet-place    i o a X C L - n 8
-stress-cl-quiet-a3-s3         quiet-place    i o a X C L - n 9
-stress-cl-gate-close-1         gate-close     i 0 a X C L - j 7
-stress-cl-gate-close-2         gate-close     i 0 a X C L - k 7
-stress-cl-gate-close-3         gate-close     i 0 b X C L - k 7
+stress-fn-gate-open-1         gate-open      i 0 a X C L - j 7
+stress-fn-gate-open-2         gate-open      i 0 a X C L - k 7
+stress-fn-gate-open-3         gate-open      i 0 b X C L - k 7
+stress-fn-a-b1-default-off    default-off    i o c X C L - n 7
+stress-fn-a-b1-default-on     default-on     i 0 c X C L - n 7
+stress-fn-a-b1-placed-off     placed-off     i o c X C L - j 7
+stress-fn-a-b1-placed-on      placed-on      i 0 c X C L - j 7
+stress-fn-a-b2-default-off    default-off    i o c X C L - n 7
+stress-fn-a-b2-default-on     default-on     i 0 c X C L - n 7
+stress-fn-a-b2-placed-off     placed-off     i o c X C L - j 7
+stress-fn-a-b2-placed-on      placed-on      i 0 c X C L - j 7
+stress-fn-a-b3-default-off    default-off    i o c X C L - n 7
+stress-fn-a-b3-default-on     default-on     i 0 c X C L - n 7
+stress-fn-a-b3-placed-off     placed-off     i o c X C L - j 7
+stress-fn-a-b3-placed-on      placed-on      i 0 c X C L - j 7
+stress-fn-a-b4-default-off    default-off    i o c X C L - n 7
+stress-fn-a-b4-default-on     default-on     i 0 c X C L - n 7
+stress-fn-a-b4-placed-off     placed-off     i o c X C L - j 7
+stress-fn-a-b4-placed-on      placed-on      i 0 c X C L - j 7
+stress-fn-b-desc1             b-descriptor   i 0 c X C L P j 7
+stress-fn-b-desc2             b-descriptor   i 0 c X C L Q j 7
+stress-fn-b-desc3             b-descriptor   i 0 c X C L R j 7
+stress-fn-b-desc4             b-descriptor   i 0 c X C L S j 7
+stress-fn-c1-v1-s1           c1-shape       r o c X C L - j 7
+stress-fn-c1-v2-s1           c1-shape       r o c Y C L - j 7
+stress-fn-c1-v3-s1           c1-shape       r o c Z C L - j 7
+stress-fn-c1-v1-s2           c1-shape       r o c X C L - k 7
+stress-fn-c1-v2-s2           c1-shape       r o c Y C L - k 7
+stress-fn-c1-v3-s2           c1-shape       r o c Z C L - k 7
+stress-fn-c1-v1-s3           c1-shape       r o c X C L - n 7
+stress-fn-c1-v2-s3           c1-shape       r o c Y C L - n 7
+stress-fn-c1-v3-s3           c1-shape       r o c Z C L - n 7
+stress-fn-c2-p04-s3          c2-window      r o c Z C l - j 7
+stress-fn-c2-p04-s1          c2-window      r o c X C l - j 7
+stress-fn-c2-p08-s3          c2-window      r o c Z B l - j 7
+stress-fn-c2-p08-s1          c2-window      r o c X B l - j 7
+stress-fn-c2-p16-s3          c2-window      r o c Z A l - j 7
+stress-fn-c2-p16-s1          c2-window      r o c X A l - j 7
+stress-fn-c2-p32-s3          c2-window      r o c Z A L - j 7
+stress-fn-c2-p32-s1          c2-window      r o c X A L - j 7
+stress-fn-gate-close-1        gate-close     i 0 a X C L - j 7
+stress-fn-gate-close-2        gate-close     i 0 a X C L - k 7
+stress-fn-gate-close-3        gate-close     i 0 b X C L - k 7
 "
 
 # a plain string rather than an array, since an empty array under set -u is an error in the bash

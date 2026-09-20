@@ -1,0 +1,73 @@
+schema_version = 1
+platform = "stm32u585"
+map = "build/target/laxity-u585.map"
+elf = "build/target/laxity-u585.elf"
+
+[workload.inference]
+window_cycles = 320320
+deadline_cycles = 5119994
+
+[[object]]
+workload = "inference"
+name = "arena"
+symbol = "laxity_arena_s1"
+map_symbol = "laxity_arena_span"
+size = 2944
+movable = true
+regions = ["sram1", "sram2", "sram3", "sram4"]
+
+[[object]]
+workload = "inference"
+name = "stack"
+symbol = "tx_byte_pool_buffer"
+size = 3072
+region = "sram3"
+movable = true
+regions = ["sram1", "sram2", "sram3"]
+note = "allocated from an RTOS pool at run time, so the region comes from the declaration in laxity.toml and not from the symbol"
+
+[[object]]
+workload = "wifi"
+name = "packet_pool"
+symbol = "s_pool_mem"
+movable = false
+
+[[object]]
+workload = "wifi"
+name = "ip_stack"
+symbol = "s_ip_stack"
+movable = false
+
+[[object]]
+workload = "laxity"
+name = "desc"
+symbol = "qos_stress_nodes"
+address = 0x2004b000
+size = 1024
+region = "sram3"
+movable = true
+regions = ["sram1", "sram2", "sram3", "sram4"]
+
+[[object]]
+workload = "runtime"
+name = "state"
+symbols = ["laxity_net_ctx", "laxity_out", "laxity_arena", "laxity_net"]
+movable = false
+note = "fixed by the linker and declared immovable"
+
+[[requester]]
+name = "gpdma1"
+endpoint = "data"
+region = "sram3"
+transactions_per_second = 12800000
+
+[[requester]]
+name = "gpdma1"
+endpoint = "descriptors"
+object = "laxity.desc"
+transactions_per_second = 200000
+
+[[requester]]
+name = "emw3080"
+endpoint = "spi dma"
+object = "wifi.packet_pool"

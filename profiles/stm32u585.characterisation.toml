@@ -1,0 +1,65 @@
+schema_version = 1
+platform = "stm32u585"
+date = "2026-09-19"
+image_sha256 = "85945acbe7e42da8e84c43b789001108477d2c6126ab5a89ec304e42282395d4"
+elf_sha256 = "9bde5cc5b5a4cb0cc45bf5bb4c05b63de95cc4b06880a285aa8fb545bba5452a"
+resolution = "region"
+resolution_note = "placement below region granularity is not resolved on this platform"
+captures = [
+  "20260919T212633Z-stress-fn-a-b1-default-on",
+  "20260919T212944Z-stress-fn-a-b1-placed-on",
+  "20260919T223511Z-stress-fn-b-desc2",
+  "20260919T230547Z-stress-fn-b-desc1",
+]
+
+[[coefficient]]
+object = "stack"
+requester = "gpdma1"
+endpoint = "data"
+basis = "measured"
+value = 0.116
+
+[[coefficient]]
+object = "runtime.state"
+requester = "gpdma1"
+endpoint = "data"
+basis = "measured"
+value = 0.003
+
+[[coefficient]]
+object = "stack"
+requester = "gpdma1"
+endpoint = "descriptors"
+basis = "measured"
+value = 0.029
+
+[[coefficient]]
+object = "stack"
+requester = "emw3080"
+endpoint = "spi dma"
+basis = "unmeasured"
+
+[[coefficient]]
+object = "arena"
+requester = "gpdma1"
+endpoint = "data"
+basis = "measured"
+value = 0.151
+
+[[unknown]]
+label = "emw3080 traffic rate"
+text = [
+  "no capture with the radio associated",
+  "laxity characterise --requester emw3080",
+]
+
+[[unknown]]
+label = "intra region placement"
+text = [
+  "the stride sweep on this platform is flat, so the",
+  "model does not resolve below a region",
+]
+
+[[unknown]]
+label = "runtime.state"
+text = "88 B, immovable, and the residual above is its"

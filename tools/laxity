@@ -11,6 +11,7 @@ stdlib only, no virtual environment, no third party package.
 
 import argparse
 import glob
+import hashlib
 import os
 import platform
 import re
@@ -18,12 +19,14 @@ import shutil
 import socket
 import subprocess
 import sys
+import textwrap
 import time
 from pathlib import Path
 
 # the symlink in ~/.local/bin is resolved, so the repository is found from the real file rather
 # than from the working directory or from an environment variable someone has to remember.
 ROOT = Path(__file__).resolve().parent.parent
+START_CWD = Path.cwd()
 
 ANSI = re.compile(r"\033\[[0-9;]*m")
 IS_MAC = platform.system() == "Darwin"
@@ -205,7 +208,8 @@ def part_numbers(device_name):
 
 
 def profiles():
-    return sorted(p for p in (ROOT / "profiles").glob("*.toml"))
+    return sorted(p for p in (ROOT / "profiles").glob("*.toml")
+                  if not p.name.endswith(".characterisation.toml"))
 
 
 def profile_id(path):
@@ -435,6 +439,555 @@ def cmd_sim(args):
         return viewer.wait()
     finally:
         sender.terminate()
+
+
+# audit ----------------------------------------------------------------------------------------
+
+def read_toml(path):
+    try:
+        import tomllib
+    except ImportError:
+        die("laxity audit requires Python 3.11 or newer for the standard library TOML parser.")
+    try:
+        with path.open("rb") as source:
+            return tomllib.load(source)
+    except (OSError, tomllib.TOMLDecodeError) as err:
+        die("could not read %s: %s" % (path, err))
+
+
+def audit_path(value, config=None, required=True):
+    """resolve an audit input without making the command depend on its launch directory."""
+    if not value:
+        return None
+    path = Path(value).expanduser()
+    candidates = [path] if path.is_absolute() else [ROOT / path]
+    if config is not None and not path.is_absolute():
+        candidates.append(config.parent / path)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    if required:
+        die("audit input not found: %s" % value)
+    return candidates[0].resolve()
+
+
+def audit_config_path(value):
+    if value:
+        path = Path(value).expanduser()
+        candidates = [path] if path.is_absolute() else [START_CWD / path, ROOT / path]
+    else:
+        candidates = [START_CWD / "laxity.toml", ROOT / "laxity.toml"]
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+    die("no laxity.toml found. pass its path to laxity audit.")
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def map_data(path):
+    """read allocation ranges and .data/.bss symbols from a GNU linker map."""
+    symbols, ranges, pending = {}, [], None
+    in_map = False
+    address_size = re.compile(
+        r"^\s*(?:\S+\s+)?(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)(?:\s|$)"
+    )
+    inline = re.compile(
+        r"^\s+\.(?:bss|data)\.([^\s]+)\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)(?:\s|$)"
+    )
+    section = re.compile(r"^\s+\.(?:bss|data)\.([^\s]+)\s*$")
+    for line in path.read_text(errors="replace").splitlines():
+        if line.strip() == "Linker script and memory map":
+            in_map = True
+            continue
+        if not in_map:
+            continue
+        match = inline.match(line)
+        if match:
+            name, address, size = match.groups()
+            symbols[name] = (int(address, 16), int(size, 16))
+            ranges.append(symbols[name])
+            pending = None
+            continue
+        match = section.match(line)
+        if match:
+            pending = match.group(1)
+            continue
+        match = address_size.match(line)
+        if match:
+            address, size = int(match.group(1), 16), int(match.group(2), 16)
+            if size:
+                ranges.append((address, size))
+            if pending:
+                symbols[pending] = (address, size)
+                pending = None
+        elif line.strip():
+            pending = None
+    return symbols, ranges
+
+
+def occupied_bytes(region, ranges):
+    start, end = region["start"], region["start"] + region["size"]
+    spans = []
+    for address, size in ranges:
+        lo, hi = max(start, address), min(end, address + size)
+        if lo < hi:
+            spans.append((lo, hi))
+    used, stop = 0, None
+    for lo, hi in sorted(spans):
+        if stop is None or lo > stop:
+            used += hi - lo
+            stop = hi
+        elif hi > stop:
+            used += hi - stop
+            stop = hi
+    return used
+
+
+def region_at(regions, address, size=1):
+    for region in regions:
+        if region["start"] <= address and address + size <= region["start"] + region["size"]:
+            return region
+    return None
+
+
+def format_size(value):
+    if value >= 1024 and value % 1024 == 0:
+        return "%d KiB" % (value // 1024)
+    if value >= 1024:
+        return "%d KiB" % (value // 1024)
+    return "%d B" % value
+
+
+def format_free(value):
+    return format_size(value) if value >= 10 * 1024 else "%d B" % value
+
+
+def audit_objects(config, symbols, regions):
+    objects, seen = [], set()
+    by_region = {r["id"]: r for r in regions}
+    for raw in config.get("object", []):
+        if "workload" not in raw or "name" not in raw:
+            die("every [[object]] needs workload and name")
+        ident = "%s.%s" % (raw["workload"], raw["name"])
+        if ident in seen:
+            die("object declared twice: %s" % ident)
+        seen.add(ident)
+
+        names = raw.get("symbols")
+        if names is None:
+            names = [raw.get("map_symbol", raw.get("symbol"))]
+        names = [name for name in names if name]
+        missing = [name for name in names if name not in symbols]
+        if missing and "address" not in raw:
+            die("%s is not in the linker map: %s" % (ident, ", ".join(missing)))
+        found = [symbols[name] for name in names if name in symbols]
+        address = raw.get("address", min((item[0] for item in found), default=None))
+        size = raw.get("size", sum(item[1] for item in found))
+        if address is None or not size:
+            die("%s has no address or size in laxity.toml or the linker map" % ident)
+
+        region = by_region.get(raw.get("region")) if raw.get("region") else region_at(regions, address, size)
+        if region is None:
+            die("%s at 0x%08x of %d bytes is outside the platform regions" % (ident, address, size))
+        movable = bool(raw.get("movable", False))
+        candidates = list(raw.get("regions", by_region if movable else [region["id"]]))
+        if any(candidate not in by_region for candidate in candidates):
+            die("%s names an unknown placement region" % ident)
+        if region["id"] not in candidates:
+            die("%s does not allow its current region %s" % (ident, region["id"]))
+
+        display_symbol = raw.get("symbol")
+        if not display_symbol and names:
+            display_symbol = names[0] + (" +%d" % (len(names) - 1) if len(names) > 1 else "")
+        objects.append({
+            "id": ident,
+            "workload": raw["workload"],
+            "name": raw["name"],
+            "symbol": display_symbol or "-",
+            "address": address,
+            "size": size,
+            "region": region["id"],
+            "movable": movable,
+            "regions": candidates,
+            "note": raw.get("note"),
+        })
+    return objects
+
+
+def audit_object_index(objects):
+    index, ambiguous = {}, set()
+    for obj in objects:
+        index[obj["id"]] = obj
+        if obj["name"] in index:
+            ambiguous.add(obj["name"])
+        else:
+            index[obj["name"]] = obj
+    for name in ambiguous:
+        index.pop(name, None)
+    return index
+
+
+def audit_coefficients(characterisation, objects, requesters, platform_id):
+    object_index = audit_object_index(objects)
+    requester_index = {(r["name"], r["endpoint"]): r for r in requesters}
+    out = []
+    for raw in characterisation.get("coefficient", []):
+        obj = object_index.get(raw.get("object"))
+        requester = requester_index.get((raw.get("requester"), raw.get("endpoint")))
+        if obj is None or requester is None:
+            die("characterisation coefficient names an undeclared object or requester endpoint")
+        basis = raw.get("basis")
+        if basis == "measured":
+            if "value" not in raw or "minimum" in raw or "maximum" in raw:
+                die("a measured coefficient needs one value and no range")
+        elif basis == "borrowed":
+            source = raw.get("borrowed_from")
+            if not source or source == platform_id or "minimum" not in raw or "maximum" not in raw:
+                die("a borrowed coefficient needs another platform and a minimum..maximum range")
+            if "value" in raw:
+                die("a borrowed coefficient cannot carry a point value")
+        elif basis == "unmeasured":
+            if any(key in raw for key in ("value", "minimum", "maximum")):
+                die("an unmeasured coefficient cannot carry a value")
+        else:
+            die("coefficient basis must be measured, borrowed or unmeasured")
+        item = dict(raw)
+        item["object_record"] = obj
+        item["requester_record"] = requester
+        out.append(item)
+    return out
+
+
+def requester_region(requester, assignment, object_index):
+    if requester.get("object"):
+        obj = object_index.get(requester["object"])
+        if obj is None:
+            die("requester endpoint names an undeclared object: %s" % requester["object"])
+        return assignment[obj["id"]]
+    return requester.get("region")
+
+
+def audit_costs(coefficients, assignment, object_index, window, clock_hz):
+    rows, low_total, high_total = [], 0.0, 0.0
+    for coeff in coefficients:
+        obj, requester = coeff["object_record"], coeff["requester_record"]
+        obj_region = assignment[obj["id"]]
+        req_region = requester_region(requester, assignment, object_index)
+        overlap = obj_region == req_region
+        rate = requester.get("transactions_per_second")
+        transactions = None if rate is None else rate * window / clock_hz
+        low = high = None
+        if overlap and transactions is not None:
+            if coeff["basis"] == "measured":
+                low = high = coeff["value"] * transactions
+            elif coeff["basis"] == "borrowed":
+                low = coeff["minimum"] * transactions
+                high = coeff["maximum"] * transactions
+        if low is not None:
+            low_total += low
+            high_total += high
+        rows.append({
+            "coefficient": coeff,
+            "object": obj,
+            "requester": requester,
+            "region": obj_region if overlap else None,
+            "transactions": transactions,
+            "low": low,
+            "high": high,
+        })
+    return rows, low_total, high_total
+
+
+def audit_search(objects, regions, used, coefficients, object_index, window, clock_hz):
+    movable = [obj for obj in objects if obj["movable"]]
+    space = 1
+    for obj in movable:
+        space *= len(obj["regions"])
+    limit = min(space, 10000)
+    base = {obj["id"]: obj["region"] for obj in objects}
+    sizes = {region["id"]: region["size"] for region in regions}
+    remaining = [1] * (len(movable) + 1)
+    for index in range(len(movable) - 1, -1, -1):
+        remaining[index] = remaining[index + 1] * len(movable[index]["regions"])
+    results, seen = [], 0
+
+    def visit(index, assignment, occupancy):
+        nonlocal seen
+        if seen >= limit:
+            return
+        if index == len(movable):
+            seen += 1
+            _, low, high = audit_costs(coefficients, assignment, object_index, window, clock_hz)
+            changes = sum(assignment[obj["id"]] != obj["region"] for obj in movable)
+            order = tuple(assignment[obj["id"]] for obj in movable)
+            results.append((high, low, changes, order, dict(assignment)))
+            return
+        obj = movable[index]
+        old = obj["region"]
+        for target in obj["regions"]:
+            next_occupancy = dict(occupancy)
+            if target != old:
+                next_occupancy[old] -= obj["size"]
+                next_occupancy[target] += obj["size"]
+            if next_occupancy[target] > sizes[target] or next_occupancy[old] > sizes[old]:
+                seen += min(remaining[index + 1], limit - seen)
+                continue
+            assignment[obj["id"]] = target
+            visit(index + 1, assignment, next_occupancy)
+            if seen >= limit:
+                break
+        assignment[obj["id"]] = old
+
+    visit(0, dict(base), dict(used))
+    results.sort(key=lambda row: (row[0], row[2], row[3]))
+    return space, seen, space > 10000, results[:2], base
+
+
+def audit_object_label(obj):
+    return obj["name"] if obj["workload"] == "inference" else obj["id"]
+
+
+def format_xacts(value):
+    return "unknown" if value is None else format(int(round(value)), ",")
+
+
+def format_estimate(value, compact=False):
+    rounded = int(round(value))
+    if compact and abs(rounded) >= 1000:
+        return "%+.0fk cyc" % (rounded / 1000.0)
+    return "%+d cyc" % rounded
+
+
+def cmd_audit(args):
+    config_path = audit_config_path(args.config)
+    config = read_toml(config_path)
+    platform_id = config.get("platform")
+    if not platform_id:
+        die("laxity.toml needs platform = \"...\"")
+    profile_path = audit_path(config.get("profile", "profiles/%s.toml" % platform_id), config_path)
+    char_path = audit_path(config.get("characterisation",
+                                      "profiles/%s.characterisation.toml" % platform_id), config_path)
+    if config.get("map"):
+        map_path = audit_path(config["map"], config_path)
+    else:
+        maps = sorted((ROOT / "build/target").glob("*.map"))
+        if len(maps) != 1:
+            die("audit needs map = \"...\" when build/target does not contain exactly one .map")
+        map_path = maps[0].resolve()
+    if config.get("elf"):
+        elf_path = audit_path(config["elf"], config_path)
+    else:
+        sibling = map_path.with_suffix(".elf")
+        elf_path = sibling if sibling.exists() else None
+    profile, characterisation = read_toml(profile_path), read_toml(char_path)
+    if characterisation.get("platform") != platform_id:
+        die("%s characterises %s, not %s" %
+            (char_path.name, characterisation.get("platform", "nothing"), platform_id))
+    if not characterisation.get("date"):
+        die("%s needs a characterisation date" % char_path.name)
+    image_identity = characterisation.get("image_sha256")
+    if not isinstance(image_identity, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", image_identity):
+        die("%s needs a 64 digit image_sha256" % char_path.name)
+    if not isinstance(characterisation.get("captures"), list):
+        die("%s needs a capture list" % char_path.name)
+
+    symbols, ranges = map_data(map_path)
+    regions = [dict(region) for region in profile.get("memory_regions", [])]
+    if not regions:
+        die("%s has no [[memory_regions]]" % profile_path)
+    used = {region["id"]: occupied_bytes(region, ranges) for region in regions}
+    objects = audit_objects(config, symbols, regions)
+    object_index = audit_object_index(objects)
+    requesters = [dict(requester) for requester in config.get("requester", [])]
+    for requester in requesters:
+        if "name" not in requester or "endpoint" not in requester:
+            die("every [[requester]] needs name and endpoint")
+        region = requester_region(requester, {obj["id"]: obj["region"] for obj in objects}, object_index)
+        if region not in {item["id"] for item in regions}:
+            die("requester %s.%s names an unknown region" % (requester["name"], requester["endpoint"]))
+    coefficients = audit_coefficients(characterisation, objects, requesters, platform_id)
+
+    workloads = config.get("workload", {})
+    if len(workloads) != 1:
+        die("laxity audit currently requires exactly one [workload.NAME]")
+    workload_name, workload = next(iter(workloads.items()))
+    window = workload.get("window_cycles")
+    deadline = workload.get("deadline_cycles")
+    if not isinstance(window, int) or not isinstance(deadline, int) or window <= 0 or deadline <= 0:
+        die("the workload needs positive integer window_cycles and deadline_cycles")
+    clock_hz = profile.get("device", {}).get("clock_hz")
+    if not isinstance(clock_hz, int) or clock_hz <= 0:
+        die("the platform profile needs device.clock_hz")
+
+    elf_hash = sha256(elf_path) if elf_path and elf_path.exists() else None
+    expected_elf = characterisation.get("elf_sha256")
+    if expected_elf and elf_hash and expected_elf != elf_hash:
+        die("ELF sha256 does not match the characterisation")
+    image_hash = characterisation.get("image_sha256") or elf_hash or "unknown"
+    elf_label = str(elf_path.relative_to(ROOT)) if elf_path and elf_path.is_relative_to(ROOT) else \
+        (str(elf_path) if elf_path else "no ELF")
+    assignment = {obj["id"]: obj["region"] for obj in objects}
+    rows, total_low, total_high = audit_costs(
+        coefficients, assignment, object_index, window, clock_hz)
+    space, tried, truncated, placements, current = audit_search(
+        objects, regions, used, coefficients, object_index, window, clock_hz)
+    region_index = {region["id"]: region for region in regions}
+
+    say("laxity audit  ·  %s" % elf_label)
+    say()
+    say("  image          %-16s sha256, first 8" % image_hash[:8])
+    say("  platform       %-16s characterised %s" %
+        (platform_id, characterisation.get("date", "unknown")))
+    say("  config         %-16s %d objects, %d requester endpoints" %
+        (config_path.name, len(objects), len(requesters)))
+    resolution = characterisation.get("resolution", "region")
+    resolution_note = characterisation.get(
+        "resolution_note", "placement below region granularity is not resolved on this platform")
+    resolution_lines = textwrap.wrap(resolution_note, width=45)
+    say("  resolution     %-16s %s" % (resolution, resolution_lines[0]))
+    for continuation in resolution_lines[1:]:
+        say(" " * 35 + continuation)
+
+    say("\nmemory topology\n")
+    say("  %-8s %-12s %-9s %-8s %s" %
+        ("region", "base", "size", "free", "declared objects"))
+    for region in regions:
+        declared = [obj["id"] for obj in objects if obj["region"] == region["id"]]
+        wrapped = textwrap.wrap(", ".join(declared) if declared else "-", width=42,
+                                break_long_words=False, break_on_hyphens=False) or ["-"]
+        free = max(0, region["size"] - used[region["id"]])
+        say("  %-8s 0x%08x   %7s   %6s   %s" %
+            (region["label"], region["start"], format_size(region["size"]), format_free(free), wrapped[0]))
+        for continuation in wrapped[1:]:
+            say(" " * 45 + continuation)
+
+    say("\ndeclared objects\n")
+    say("  %-20s %-22s %-12s %8s  %s" %
+        ("object", "symbol", "address", "size", "region"))
+    footnotes = []
+    for obj in objects:
+        marker = ""
+        if obj["note"]:
+            footnotes.append(obj["note"])
+            marker = "  [%d]" % len(footnotes)
+        say("  %-20s %-22s 0x%08x %8s  %s%s" %
+            (obj["id"], obj["symbol"], obj["address"], "%d B" % obj["size"],
+             region_index[obj["region"]]["label"], marker))
+    if footnotes:
+        say()
+        for number, note in enumerate(footnotes, 1):
+            wrapped = textwrap.wrap(note, width=72)
+            say("  [%d] %s" % (number, wrapped[0]))
+            for continuation in wrapped[1:]:
+                say("      " + continuation)
+
+    say("\nrequesters\n")
+    say("  %-11s %-13s %-8s %16s   %s" %
+        ("requester", "endpoint", "region", "transactions/s", "basis"))
+    for requester in requesters:
+        region = requester_region(requester, assignment, object_index)
+        rate = requester.get("transactions_per_second")
+        say("  %-11s %-13s %-8s %16s   %s" %
+            (requester["name"], requester["endpoint"], region_index[region]["label"],
+             format_xacts(rate), "declared" if rate is not None else "not characterised"))
+
+    say("\noverlap\n")
+    say("  %-17s %-21s %-8s %s" % ("object", "requester endpoint", "region", "basis"))
+    for row in rows:
+        coeff, obj, requester = row["coefficient"], row["object"], row["requester"]
+        endpoint = "%s.%s" % (requester["name"], requester["endpoint"])
+        if row["region"] is None:
+            region, basis = "-", "no overlap"
+        elif coeff["basis"] == "measured":
+            region, basis = region_index[row["region"]]["label"], "measured, this platform"
+        elif coeff["basis"] == "borrowed":
+            region, basis = region_index[row["region"]]["label"], "borrowed from %s" % coeff["borrowed_from"]
+        else:
+            region, basis = region_index[row["region"]]["label"], "unknown"
+        say("  %-17s %-21s %-8s %s" % (audit_object_label(obj), endpoint, region, basis))
+
+    say("\ncost\n")
+    say("  workload %s, window %s cycles, deadline %s cycles\n" %
+        (workload_name, format(window, ","), format(deadline, ",")))
+    say("  %-29s %-19s %12s %13s   %s" %
+        ("overlap", "coefficient", "transactions", "estimate", "basis"))
+    for row in rows:
+        if row["region"] is None:
+            continue
+        coeff, obj, requester = row["coefficient"], row["object"], row["requester"]
+        label = "%s x %s.%s" % (audit_object_label(obj), requester["name"], requester["endpoint"])
+        if coeff["basis"] == "measured" and row["transactions"] is not None:
+            coefficient_text = "%g/xact" % coeff["value"]
+            estimate = format_estimate(row["low"])
+            basis = "measured, this platform"
+            say("  %-29s %-19s %12s %13s   %s" %
+                (label, coefficient_text, format_xacts(row["transactions"]), estimate, basis))
+        elif coeff["basis"] == "borrowed" and row["transactions"] is not None:
+            coefficient_text = "%g .. %g /xact" % (coeff["minimum"], coeff["maximum"])
+            estimate = "%s .. %s" % (format_estimate(row["low"], compact=True),
+                                      format_estimate(row["high"], compact=True))
+            say("  %-29s %-19s %12s %13s" %
+                (label, coefficient_text, format_xacts(row["transactions"]), estimate))
+            say(" " * 31 + "borrowed from %s, order of magnitude only" % coeff["borrowed_from"])
+        else:
+            say("  %-29s %-19s %12s %13s   unmeasured" %
+                (label, "unknown", format_xacts(row["transactions"]), "unknown"))
+
+    if total_low == total_high:
+        total_text = format_estimate(total_high)
+        percent_text = "%.2f%%" % (100.0 * total_high / window)
+    else:
+        total_text = "%s .. %s" % (format_estimate(total_low), format_estimate(total_high))
+        percent_text = "%.2f%% .. %.2f%%" % (100.0 * total_low / window, 100.0 * total_high / window)
+    say("\n  total over known overlaps%39s   %s" % (total_text, percent_text))
+    say("  deadline margin%43s -> %.3f%%" %
+        ("%.3f%%" % (100.0 * window / deadline), 100.0 * (window + total_high) / deadline))
+    say("  windows missed at this estimate%38d" % int(window + total_high > deadline))
+
+    say("\nplacement\n")
+    if truncated:
+        say("  %s assignments tried under the declared size and immovability" % format(tried, ","))
+        say("  constraints.  search truncated; best seen, and the runner up:\n")
+    else:
+        say("  %s assignments enumerated under the declared size and immovability" % format(space, ","))
+        say("  constraints.  best, and the runner up:\n")
+    current_cost = total_high
+    movable = [obj for obj in objects if obj["movable"]]
+    for rank, result in enumerate(placements, 1):
+        score, _, _, _, placed = result
+        changes = []
+        for obj in movable:
+            if placed[obj["id"]] != current[obj["id"]]:
+                changes.append("%s %s -> %s" %
+                               (obj["id"], region_index[current[obj["id"]]]["label"],
+                                region_index[placed[obj["id"]]]["label"]))
+        change = ", ".join(changes) if changes else "no placement change"
+        say("    %d  %-45s %9s    %.2f%% -> %.2f%%" %
+            (rank, change, format_estimate(score - current_cost),
+             100.0 * current_cost / window, 100.0 * score / window))
+    say("\n  laxity plan --apply writes build/laxity-placement.ld and")
+    say("  include/laxity_placement.h")
+
+    say("\nnot known\n")
+    unknown = characterisation.get("unknown", [])
+    for item in unknown:
+        lines = item.get("text", [])
+        if isinstance(lines, str):
+            lines = [lines]
+        if not lines:
+            continue
+        say("  %-23s %s" % (item["label"], lines[0]))
+        for line in lines[1:]:
+            say(" " * 27 + line)
+        say()
+    return 0
 
 
 # wifi ------------------------------------------------------------------------------------------
@@ -752,6 +1305,17 @@ def main():
     sub.add_argument("scenario", help="name under scenarios/, without the extension")
     sub.add_argument("--seed", type=int, default=1)
     sub.add_argument("--port", type=int, default=50505)
+
+    sub = add("audit", cmd_audit, "audit declared memory placement without a board")
+    sub.add_argument("config", nargs="?", help="laxity.toml, defaults to the current directory")
+    sub.description = "audit declared objects and requester endpoints against a linker map"
+    sub.epilog = (
+        "does not discover objects; it reads laxity.toml\n"
+        "does not apply a plan; laxity plan does that\n"
+        "does not measure the target; laxity characterise does that\n"
+        "does not resolve placement below a region"
+    )
+    sub.formatter_class = argparse.RawDescriptionHelpFormatter
 
     sub = add("wifi", cmd_wifi, "put the board on a network and report what actually worked")
     sub.add_argument("--board", help="ST-LINK serial number")

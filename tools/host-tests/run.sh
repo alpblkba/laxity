@@ -78,3 +78,5 @@ lines=$(wc -l < "$OUT/stream.csv")
 [ "$lines" -eq 37 ] || { echo "FAIL csv had $lines lines, expected 37"; fail=1; }
 
 [ "$fail" -eq 0 ] && echo "parser ok" || { echo "parser checks failed"; exit 1; }
+
+python3 tools/host-tests/test_audit.py

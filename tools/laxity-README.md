@@ -30,10 +30,19 @@ laxity analyse [capture]   turn a capture into RESULTS.md, newest if you name no
 laxity run                 build, flash, capture, analyse, in one go
 laxity tui                 the live viewer, or --file to read a capture back
 laxity sim <scenario>      play a scenario from the simulator into the viewer
+laxity audit [laxity.toml] audit declared memory placement without a board
 laxity wifi                put the board on a network and report what actually worked
 ```
 
 Only `run`, `capture`, `flash`, `tui` and `wifi` need a board. Everything else, including `sim`, `analyse` and `tui --file`, runs on the host alone.
+
+## Audit
+
+`laxity audit` reads the declared workloads, objects and requester endpoints from `laxity.toml`, resolves their addresses and sizes from the linker map, and evaluates them against the platform topology and its measured characterisation. Pass a config path when `laxity.toml` is not in the current directory.
+
+The command does not discover objects; it reads `laxity.toml`. It does not apply a plan; `laxity plan` does that. It does not measure the target; `laxity characterise` does that. It does not resolve placement below a region.
+
+The characterisation is separate from the topology in `profiles/<platform>.characterisation.toml`. A measured coefficient is a point estimate for that platform. A borrowed coefficient must carry a range and is reported as order of magnitude only. A missing coefficient or transaction rate stays `unknown`.
 
 ## Choosing between boards
 

@@ -143,10 +143,24 @@ _Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
 #define LAXITY_STACK_GUARD  1024u
 #define LAXITY_STACK_FILL   0xA5A5A5A5u
 
-/* which region the stack comes from survives a reset in a word of SRAM4, which carries no section
- * and which the startup code does not clear. a thread's stack is fixed when the thread is created,
- * so a run time choice has to arrive before that, and a reset is the only way to get there without
- * a binary per configuration. */
+/* a fourth source for the same stack, which is not a page: the ThreadX byte pool, which is where
+ * a plain ThreadX application's thread stacks come from and where this one's came from before the
+ * three pages existed. the pages are deterministic by construction, so how certain a placement is
+ * cannot be asked of them, and it is the only question the vendor path can answer. the value sits
+ * outside the region ids rather than beside them, since it names an allocator and not a region. */
+#define LAXITY_STACK_SRC_POOL 0x0Fu
+
+/* the ballast sizes, in bytes, taken from the same byte pool before the measurement thread is
+ * created. zero allocates nothing rather than allocating an empty block, because an allocator
+ * called once more is not the same baseline as one that was not called. */
+#define LAXITY_BALLASTS      5u
+
+/* which source the stack comes from, and how much ballast is taken before it, survive a reset in
+ * a word of SRAM4, which carries no section and which the startup code does not clear. a thread's
+ * stack is fixed when the thread is created and the ballast has to be taken before that, so both
+ * choices have to arrive before the kernel starts, and a reset is the only way to get there
+ * without a binary per configuration. the low byte is the source and the next one is the ballast
+ * index, so the magic is checked over the top half only. */
 #define LAXITY_BOOT_SEL_ADDR  (QOS_SRAM4_BASE + 0x3FF0u)
 #define LAXITY_BOOT_SEL_MAGIC 0x4C580000u
 
@@ -385,6 +399,21 @@ static uint8_t  laxity_stack_region = QOS_REGION_NONE;
  * reading uses this rather than the region, so a fallback cannot be read as a stack that was never
  * there. */
 static uint8_t *laxity_stack_used_page;
+/* the source this boot ran with, kept as a selector rather than as a region because the byte pool
+ * is in SRAM3 and a request for the pool would otherwise read as a request for the SRAM3 page
+ * already in use and reset nothing. */
+static uint8_t  laxity_stack_src = QOS_REGION_SRAM1;
+/* where the thread's stack actually starts: the page plus its guard for a page, and whatever the
+ * allocator answered for the pool. the status line and the high water reading both use this
+ * rather than the request, since the address is the only thing that decides the bank. */
+static uint8_t *laxity_stack_addr;
+/* the ballast, which models a feature added elsewhere in the firmware taking memory ahead of the
+ * measurement thread. it is allocated and never touched, so it moves what comes after it without
+ * adding any traffic of its own. */
+static const uint32_t laxity_ballast_sizes[LAXITY_BALLASTS] = { 0u, 64u, 256u, 1024u, 4096u };
+static uint8_t  laxity_ballast_idx;
+static uint32_t laxity_ballast_bytes;
+static uint32_t laxity_ballast_addr;
 
 /* which placement the stress schedule's inference runs against. the arena cross picks its own slot
  * per cell; this is the one the decomposition varies. */
@@ -536,15 +565,27 @@ static uint8_t laxity_boot_sel_read(void)
   uint32_t w;
   __HAL_RCC_SRAM4_CLK_ENABLE();
   w = *(volatile uint32_t *)LAXITY_BOOT_SEL_ADDR;
-  if ((w & 0xFFFFFF00u) != LAXITY_BOOT_SEL_MAGIC) { return QOS_REGION_SRAM1; }
+  if ((w & 0xFFFF0000u) != LAXITY_BOOT_SEL_MAGIC) { return QOS_REGION_SRAM1; }
   w &= 0xFFu;
+  if (w == LAXITY_STACK_SRC_POOL) { return (uint8_t)w; }
   return (w >= QOS_REGION_SRAM1 && w <= QOS_REGION_SRAM3) ? (uint8_t)w : QOS_REGION_SRAM1;
 }
 
-static void laxity_boot_sel_write(uint8_t region)
+static uint8_t laxity_boot_ballast_read(void)
+{
+  uint32_t w;
+  __HAL_RCC_SRAM4_CLK_ENABLE();
+  w = *(volatile uint32_t *)LAXITY_BOOT_SEL_ADDR;
+  if ((w & 0xFFFF0000u) != LAXITY_BOOT_SEL_MAGIC) { return 0u; }
+  w = (w >> 8) & 0xFFu;
+  return (w < LAXITY_BALLASTS) ? (uint8_t)w : 0u;
+}
+
+static void laxity_boot_sel_write(uint8_t src, uint8_t ballast_idx)
 {
   __HAL_RCC_SRAM4_CLK_ENABLE();
-  *(volatile uint32_t *)LAXITY_BOOT_SEL_ADDR = LAXITY_BOOT_SEL_MAGIC | (uint32_t)region;
+  *(volatile uint32_t *)LAXITY_BOOT_SEL_ADDR =
+      LAXITY_BOOT_SEL_MAGIC | ((uint32_t)ballast_idx << 8) | (uint32_t)src;
 }
 
 /* how deep the measurement thread's stack has been, and whether it went past what it was given.
@@ -555,20 +596,27 @@ static void laxity_boot_sel_write(uint8_t region)
  * through a vendor runtime can be expensive in stack and an overflow corrupts silently. */
 static uint32_t laxity_stack_high_water(uint8_t *guard_hit)
 {
-  const uint32_t *p = (const uint32_t *)laxity_stack_used_page;
+  /* the guard exists only under a page. a stack out of the byte pool has whatever the allocator
+     put below it, so there is nothing to check and the reading says so instead of reading the
+     neighbouring block as a guard that changed. */
+  const uint32_t *g = (const uint32_t *)laxity_stack_used_page;
+  const uint32_t *p = (const uint32_t *)laxity_stack_addr;
   uint32_t i;
 
   *guard_hit = 0u;
   if (p == NULL) { return 0u; }
-  for (i = 0u; i < (LAXITY_STACK_GUARD / 4u); ++i)
+  if (g != NULL)
   {
-    if (p[i] != LAXITY_STACK_FILL) { *guard_hit = 1u; break; }
+    for (i = 0u; i < (LAXITY_STACK_GUARD / 4u); ++i)
+    {
+      if (g[i] != LAXITY_STACK_FILL) { *guard_hit = 1u; break; }
+    }
   }
-  for (i = (LAXITY_STACK_GUARD / 4u); i < (LAXITY_STACK_BYTES / 4u); ++i)
+  for (i = 0u; i < (LAXITY_INFER_STACK / 4u); ++i)
   {
     if (p[i] != 0xEFEFEFEFu) { break; }
   }
-  return ((LAXITY_STACK_BYTES / 4u) - i) * 4u;
+  return ((LAXITY_INFER_STACK / 4u) - i) * 4u;
 }
 
 /* USER CODE END PFP */
@@ -596,9 +644,10 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
     return TX_SEMAPHORE_ERROR;
   }
 
-  /* the measurement thread's stack does not come from the pool, since the pool is in SRAM3 and the
-     victim's stack traffic would then land in the region half the experiment is about.
-     every page is filled, including the two this run will not use, so a page that is not a stack
+  /* the measurement thread's stack comes from one of three pages, since the pool is in SRAM3 and
+     the victim's stack traffic would otherwise land in the region half the experiment is about,
+     or from the pool itself when the vendor path is what is being measured.
+     every page is filled, including the ones this run will not use, so a page that is not a stack
      reads as untouched and a high water figure cannot be taken from the wrong one. */
   {
     uint8_t want;
@@ -609,10 +658,35 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
       for (uint32_t i = 0u; i < (LAXITY_STACK_BYTES / 4u); ++i) { page[i] = LAXITY_STACK_FILL; }
     }
     want = laxity_boot_sel_read();
-    laxity_stack_used_page = laxity_stack_page(want);
-    if (laxity_stack_used_page == NULL) { laxity_stack_used_page = laxity_stack_page(QOS_REGION_SRAM1); }
-    infer_stack = (CHAR *)laxity_stack_used_page;
-    if (infer_stack != NULL) { infer_stack += LAXITY_STACK_GUARD; }
+    laxity_stack_src = want;
+    laxity_ballast_idx = laxity_boot_ballast_read();
+    laxity_ballast_bytes = laxity_ballast_sizes[laxity_ballast_idx];
+
+    /* the ballast is taken before the measurement thread's stack rather than after it, because
+       what it models is a feature that was already there when the thread was created. taken
+       afterwards it would move nothing and measure nothing. */
+    if (laxity_ballast_bytes > 0u)
+    {
+      VOID *block;
+      if (tx_byte_allocate(byte_pool, &block, laxity_ballast_bytes, TX_NO_WAIT) != TX_SUCCESS)
+      {
+        return TX_POOL_ERROR;
+      }
+      laxity_ballast_addr = (uint32_t)(uintptr_t)block;
+    }
+
+    if (want == LAXITY_STACK_SRC_POOL)
+    {
+      laxity_stack_used_page = NULL;
+      infer_stack = NULL;
+    }
+    else
+    {
+      laxity_stack_used_page = laxity_stack_page(want);
+      if (laxity_stack_used_page == NULL) { laxity_stack_used_page = laxity_stack_page(QOS_REGION_SRAM1); }
+      infer_stack = (CHAR *)laxity_stack_used_page;
+      if (infer_stack != NULL) { infer_stack += LAXITY_STACK_GUARD; }
+    }
   }
   if (infer_stack == NULL &&
       tx_byte_allocate(byte_pool, (VOID **)&infer_stack, LAXITY_INFER_STACK,
@@ -620,6 +694,7 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
   {
     return TX_POOL_ERROR;
   }
+  laxity_stack_addr = (uint8_t *)infer_stack;
   laxity_stack_region = laxity_region_of((uintptr_t)infer_stack);
 
   if (tx_byte_allocate(byte_pool, (VOID **)&export_stack, LAXITY_EXPORT_STACK,
@@ -1386,23 +1461,38 @@ static void laxity_say(char *line, int n)
  *   A to H  victim footprint 1, 2, 4, 8, 16, 32, 64 and 128 KiB
  *   P  descriptors in SRAM1                  Q  SRAM2        R  SRAM3        S  SRAM4
  *   j  stack in SRAM1                        k  SRAM2        n  SRAM3
+ *   p  stack from the ThreadX byte pool, which is the vendor default and not a page at all
  *      the stack is fixed when the thread is created, so these reset the board through a word of
  *      SRAM4 and the board comes back on the page that was asked for
+ *   f  ballast 0 bytes   g  64   h  256   m  1024   q  4096
+ *      a block taken from the byte pool before the measurement thread is created, which moves
+ *      whatever the pool hands out after it. it resets the board for the same reason
  *   7  inference arena in SRAM1              8  SRAM2        9  SRAM3
  *   l  4096 loads per window               L  8192 loads per window
  *   M  run the mem2mem aggressor through a stress pass, in the aggressor region, largest
  *      footprint, which reproduces the contamination the earlier stress captures were taken with
  *   N  stop it again, which is the normal state
  */
-/* ask for a stack region, which means asking for a reset.
+/* ask for a stack source, which means asking for a reset.
  *
  * nothing here can move a running thread onto another stack, so the choice is written where a warm
- * reset preserves it and the board comes back having made it. a request for the region already in
- * use resets nothing, so a capture that repeats the current setting costs no reboot. */
-static void laxity_set_stack_region(uint8_t region)
+ * reset preserves it and the board comes back having made it. a request for the source already in
+ * use resets nothing, so a capture that repeats the current setting costs no reboot. what is
+ * compared is the source and not the region the stack landed in, since the byte pool is in SRAM3
+ * and a request for it would otherwise be read as a request for the SRAM3 page. */
+static void laxity_set_stack_src(uint8_t src)
 {
-  if (region == laxity_stack_region) { return; }
-  laxity_boot_sel_write(region);
+  if (src == laxity_stack_src) { return; }
+  laxity_boot_sel_write(src, laxity_ballast_idx);
+  NVIC_SystemReset();
+}
+
+/* ask for a ballast size, which means asking for a reset for the same reason: the block is taken
+ * before the measurement thread exists and nothing after that can take it again. */
+static void laxity_set_ballast(uint8_t idx)
+{
+  if (idx >= LAXITY_BALLASTS || idx == laxity_ballast_idx) { return; }
+  laxity_boot_sel_write(laxity_stack_src, idx);
   NVIC_SystemReset();
 }
 
@@ -1442,9 +1532,15 @@ static void laxity_poll_console(void)
     case 'Q': laxity_desc_region = QOS_REGION_SRAM2; laxity_stress_point = 0xFFu; break;
     case 'R': laxity_desc_region = QOS_REGION_SRAM3; laxity_stress_point = 0xFFu; break;
     case 'S': laxity_desc_region = QOS_REGION_SRAM4; laxity_stress_point = 0xFFu; break;
-    case 'j': laxity_set_stack_region(QOS_REGION_SRAM1); break;
-    case 'k': laxity_set_stack_region(QOS_REGION_SRAM2); break;
-    case 'n': laxity_set_stack_region(QOS_REGION_SRAM3); break;
+    case 'j': laxity_set_stack_src(QOS_REGION_SRAM1); break;
+    case 'k': laxity_set_stack_src(QOS_REGION_SRAM2); break;
+    case 'n': laxity_set_stack_src(QOS_REGION_SRAM3); break;
+    case 'p': laxity_set_stack_src(LAXITY_STACK_SRC_POOL); break;
+    case 'f': laxity_set_ballast(0u); break;
+    case 'g': laxity_set_ballast(1u); break;
+    case 'h': laxity_set_ballast(2u); break;
+    case 'm': laxity_set_ballast(3u); break;
+    case 'q': laxity_set_ballast(4u); break;
     case '7': laxity_arena_slot = 0u; break;
     case '8': laxity_arena_slot = 1u; break;
     case '9': laxity_arena_slot = 2u; break;
@@ -1510,9 +1606,11 @@ static VOID laxity_export_entry(ULONG argument)
                    (unsigned long)laxity_live.mismatches, (unsigned long)laxity_live.passes,
                    (unsigned)laxity_aggr_ok, (unsigned long)laxity_live.aggr_completions));
 
-      /* the addresses are on the wire in the header frame as well. printing them makes a wrong placement visible with head -c, before anyone runs the parser. */
+      /* the addresses are on the wire in the header frame as well. printing them makes a wrong placement visible with head -c, before anyone runs the parser.
+         the arena addresses here are the candidates every run carries, which is what the line said before the vendor stack existed. the stack fields are the address the thread was actually given and the region that address is in, because with the byte pool as the source neither is a link time constant and neither can be read off any candidate. */
       laxity_say(line, snprintf(line, sizeof line,
-                   "placement ok=%u span=0x%08lx..0x%08lx s1=0x%08lx s2=0x%08lx s3=0x%08lx s2b=0x%08lx ctl=0x%08lx bytes=%u\r\n",
+                   "placement ok=%u span=0x%08lx..0x%08lx s1=0x%08lx s2=0x%08lx s3=0x%08lx s2b=0x%08lx ctl=0x%08lx bytes=%u"
+                   " stack_src=%u stack_addr=0x%08lx stack_region=%u ballast=%lu ballast_addr=0x%08lx\r\n",
                    (unsigned)laxity_placed_ok,
                    (unsigned long)(uintptr_t)laxity_arena_span,
                    (unsigned long)((uintptr_t)laxity_arena_span + sizeof laxity_arena_span),
@@ -1521,7 +1619,12 @@ static VOID laxity_export_entry(ULONG argument)
                    (unsigned long)laxity_placements[2].arena_addr,
                    (unsigned long)laxity_placements[3].arena_addr,
                    (unsigned long)laxity_placements[4].arena_addr,
-                   (unsigned)LAXITY_ARENA_BYTES));
+                   (unsigned)LAXITY_ARENA_BYTES,
+                   (unsigned)laxity_stack_src,
+                   (unsigned long)(uintptr_t)laxity_stack_addr,
+                   (unsigned)laxity_stack_region,
+                   (unsigned long)laxity_ballast_bytes,
+                   (unsigned long)laxity_ballast_addr));
 
       {
         /* the active configuration, so a capture taken while this was on the wire can be checked

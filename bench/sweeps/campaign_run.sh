@@ -18,6 +18,14 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 . tools/stm32/lib.sh
 
+# the UART carries framed binary telemetry records interleaved with the human readable status
+# lines, so a line matched out of that stream can hold bytes that are not text. macOS tr answers
+# "Illegal byte sequence" and dies on a byte that is not valid in the current locale, and the tr
+# calls that take a confirmed status line apart run on exactly such a line. the grep that produced
+# it already carries -a and LC_ALL=C for the same reason, so the locale belongs to the script
+# rather than to individual pipelines.
+export LC_ALL=C
+
 SECS="${LAXITY_SECS:-75}"
 # long enough for the board to finish the pass it was in the middle of. the arena cross pass is
 # 328 inferences at 50 Hz, which is 6.6 seconds, and it is the longest one the board can be in.

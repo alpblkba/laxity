@@ -25,9 +25,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "laxity-audit"
+version = "0.1.0"
+dependencies = [
+ "laxity-core",
+ "laxity-elf",
+ "laxity-types",
+]
+
+[[package]]
 name = "laxity-core"
 version = "0.1.0"
 dependencies = [
+ "laxity-types",
  "serde",
  "toml",
 ]
@@ -36,9 +46,14 @@ dependencies = [
 name = "laxity-elf"
 version = "0.1.0"
 dependencies = [
+ "laxity-types",
  "object",
  "toml",
 ]
+
+[[package]]
+name = "laxity-types"
+version = "0.1.0"
 
 [[package]]
 name = "memchr"

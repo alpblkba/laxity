@@ -58,8 +58,7 @@ extern UART_HandleTypeDef huart1;
 #define LAXITY_EXPORT_STACK  2048
 #define LAXITY_EXPORT_PRIO   20
 
-/* below the driver's own threads and above the exporter, so joining a network never delays a
- * measurement and never starves the thing draining the ring. */
+/* below the driver's own threads and above the exporter, so joining a network never delays a measurement and never starves the thing draining the ring. */
 #define LAXITY_NET_STACK     2048
 #define LAXITY_NET_PRIO      12
 
@@ -85,41 +84,27 @@ extern UART_HandleTypeDef huart1;
 /* every arena starts on the same 4 KB boundary, so offset within a region is held constant and the region is the only thing that differs between the four labels. 4096 is a bound rather than a measured bank size: the SRAM bank structure is in RM0456, which is the one thing this block could not source, so the alignment is chosen large enough to cover any plausible granularity instead of matching a known one. */
 #define LAXITY_ARENA_ALIGN   4096u
 
-/* the arena may not reach the aggressor source buffer. laxity_place() puts that buffer at the
- * arena base plus LAXITY_ARENA_ALIGN and checks only that it stays inside its region, so an arena
- * larger than the alignment would overlap it in all three regions and the run would still look
- * healthy. this is next to the size constant rather than next to the placement, because the size
- * comes from the model and this is where a new model changes it. */
+/* the arena may not reach the aggressor source buffer. laxity_place() puts that buffer at the arena base plus LAXITY_ARENA_ALIGN and checks only that it stays inside its region, so an arena larger than the alignment would overlap it in all three regions and the run would still look healthy. this is next to the size constant rather than next to the placement, because the size comes from the model and this is where a new model changes it. */
 _Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
                "activation arena is larger than LAXITY_ARENA_ALIGN, so it overlaps the aggressor source buffer that laxity_place() puts at arena base + LAXITY_ARENA_ALIGN in SRAM1, SRAM2 and SRAM3");
 
 /* one reservation that reaches from wherever bss puts it up to SRAM3, so all three arenas come out of memory the linker actually allocated. sized for the worst case of starting at the base of SRAM1; starting later only makes it reach further.
  *
  * the alternative was a linker script edit, and it was rejected on a real failure mode rather than on taste. the generated script maps SRAM1, SRAM2 and SRAM3 as one 768K RAM region with _estack at its top, so placing sections in the upper two means either overlapping MEMORY regions, which GNU ld does not check for collisions between, or splitting RAM, which moves the stack out of SRAM3 and changes the vendor default layout every comparison is made against. one C object cannot overlap anything, because the linker allocated it. */
-/* the largest buffer the aggressor cycles through, per buffer. two of them plus the arena have
- * to fit in the smallest region, and SRAM2 is 64 KB, so 16 KB each leaves room to spare. */
+/* the largest buffer the aggressor cycles through, per buffer. two of them plus the arena have to fit in the smallest region, and SRAM2 is 64 KB, so 16 KB each leaves room to spare. */
 #define LAXITY_AGGR_MAX      (16u * 1024u)
 
-/* one region's worth of the reservation: the arena on its own alignment, then the two aggressor
- * buffers after it. */
+/* one region's worth of the reservation: the arena on its own alignment, then the two aggressor buffers after it. */
 #define LAXITY_REGION_SLICE  (LAXITY_ARENA_ALIGN + 2u * LAXITY_AGGR_MAX)
 
-/* the stress experiment gets its own window in every region, clear of the arenas and of the
- * mem2mem buffers. the offsets differ per region because SRAM2 is 64 KB and cannot hold a window
- * at the offset the other two use. each one is checked against its region at run time rather than
- * trusted, the same way the arenas are. */
-/* the aggressor window in each region, then a descriptor page above it. the sizes differ because
- * SRAM1 has to give up pages for the measurement thread's stack and for its descriptors, and
- * SRAM4 is 16 KiB in total. no base moves, so the addresses the aggressor touches are the ones the
- * earlier campaign measured and the two matrices stay comparable. */
+/* the stress experiment gets its own window in every region, clear of the arenas and of the mem2mem buffers. the offsets differ per region because SRAM2 is 64 KB and cannot hold a window at the offset the other two use. each one is checked against its region at run time rather than trusted, the same way the arenas are. */
+/* the aggressor window in each region, then a descriptor page above it. the sizes differ because SRAM1 has to give up pages for the measurement thread's stack and for its descriptors, and SRAM4 is 16 KiB in total. no base moves, so the addresses the aggressor touches are the ones the earlier campaign measured and the two matrices stay comparable. */
 #define LAXITY_STRESS_BYTES_S1 (12u * 1024u)
 #define LAXITY_STRESS_BYTES_S2 (12u * 1024u)
 #define LAXITY_STRESS_BYTES_S3 (20u * 1024u)
 #define LAXITY_STRESS_BYTES_S4 (12u * 1024u)
 
-/* one page per region for the linked list nodes the hardware fetches at every block boundary.
- * they are static objects in bss otherwise, which lands them in SRAM3 whatever region the traffic
- * is in, and that is the shape the per block term of the cost model has. */
+/* one page per region for the linked list nodes the hardware fetches at every block boundary. they are static objects in bss otherwise, which lands them in SRAM3 whatever region the traffic is in, and that is the shape the per block term of the cost model has. */
 #define LAXITY_DESC_OFF_S1 0x0E000u
 #define LAXITY_DESC_OFF_S2 0x0E000u
 #define LAXITY_DESC_OFF_S3 0x0B000u
@@ -143,31 +128,17 @@ _Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
 #define LAXITY_STACK_GUARD  1024u
 #define LAXITY_STACK_FILL   0xA5A5A5A5u
 
-/* a fourth source for the same stack, which is not a page: the ThreadX byte pool, which is where
- * a plain ThreadX application's thread stacks come from and where this one's came from before the
- * three pages existed. the pages are deterministic by construction, so how certain a placement is
- * cannot be asked of them, and it is the only question the vendor path can answer. the value sits
- * outside the region ids rather than beside them, since it names an allocator and not a region. */
+/* a fourth source for the same stack, which is not a page: the ThreadX byte pool, which is where a plain ThreadX application's thread stacks come from and where this one's came from before the three pages existed. the pages are deterministic by construction, so how certain a placement is cannot be asked of them, and it is the only question the vendor path can answer. the value sits outside the region ids rather than beside them, since it names an allocator and not a region. */
 #define LAXITY_STACK_SRC_POOL 0x0Fu
 
-/* the ballast sizes, in bytes, taken from the same byte pool before the measurement thread is
- * created. zero allocates nothing rather than allocating an empty block, because an allocator
- * called once more is not the same baseline as one that was not called. */
+/* the ballast sizes, in bytes, taken from the same byte pool before the measurement thread is created. zero allocates nothing rather than allocating an empty block, because an allocator called once more is not the same baseline as one that was not called. */
 #define LAXITY_BALLASTS      5u
 
-/* which source the stack comes from, and how much ballast is taken before it, survive a reset in
- * a word of SRAM4, which carries no section and which the startup code does not clear. a thread's
- * stack is fixed when the thread is created and the ballast has to be taken before that, so both
- * choices have to arrive before the kernel starts, and a reset is the only way to get there
- * without a binary per configuration. the low byte is the source and the next one is the ballast
- * index, so the magic is checked over the top half only. */
+/* which source the stack comes from, and how much ballast is taken before it, survive a reset in a word of SRAM4, which carries no section and which the startup code does not clear. a thread's stack is fixed when the thread is created and the ballast has to be taken before that, so both choices have to arrive before the kernel starts, and a reset is the only way to get there without a binary per configuration. the low byte is the source and the next one is the ballast index, so the magic is checked over the top half only. */
 #define LAXITY_BOOT_SEL_ADDR  (QOS_SRAM4_BASE + 0x3FF0u)
 #define LAXITY_BOOT_SEL_MAGIC 0x4C580000u
 
-/* the SRAM1 window moved down from 0x10000 to sit immediately above the mem2mem buffers, which
- * frees the top 128 KiB of SRAM1 in one piece for the victim footprint sweep. it is still SRAM1
- * traffic, and the stride sweep found the cost flat across a thirtyfold change in address reach,
- * so the move is a layout change rather than a change to what the aggressor does. */
+/* the SRAM1 window moved down from 0x10000 to sit immediately above the mem2mem buffers, which frees the top 128 KiB of SRAM1 in one piece for the victim footprint sweep. it is still SRAM1 traffic, and the stride sweep found the cost flat across a thirtyfold change in address reach, so the move is a layout change rather than a change to what the aggressor does. */
 #define LAXITY_STRESS_OFF_S1 0x0B000u
 #define LAXITY_STRESS_OFF_S2 0x0A000u
 #define LAXITY_STRESS_OFF_S3 0x10000u
@@ -185,17 +156,12 @@ _Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
 #define LAXITY_VICTIM_OFF_S3   0x09000u
 #define LAXITY_VICTIM_BYTES_S3 (4u * 1024u)
 
-/* the reservation now has to reach the SRAM3 stress window as well as the SRAM3 arena, and the
- * window is the one further in. */
+/* the reservation now has to reach the SRAM3 stress window as well as the SRAM3 arena, and the window is the one further in. */
 #define LAXITY_SPAN_BYTES    ((QOS_SRAM3_BASE - QOS_SRAM1_BASE) + LAXITY_STRESS_OFF_S3 + LAXITY_STRESS_BYTES_S3)
 
-/* repetitions of the whole cross per pass. the schedule reshuffles and repeats, so the sample
- * count per cell comes from how long the capture runs rather than from this number, and a small
- * value keeps one pass short enough that drift is spread across cells rather than within one. */
+/* repetitions of the whole cross per pass. the schedule reshuffles and repeats, so the sample count per cell comes from how long the capture runs rather than from this number, and a small value keeps one pass short enough that drift is spread across cells rather than within one. */
 #define LAXITY_REPS          8u
-/* the cross this binary measures: three arena regions against three aggressor regions at four
- * footprints, plus an aggressor off column for each arena region, plus the same buffer control.
- * 3*3*4 + 3 + 1 comes to 40. */
+/* the cross this binary measures: three arena regions against three aggressor regions at four footprints, plus an aggressor off column for each arena region, plus the same buffer control. 3*3*4 + 3 + 1 comes to 40. */
 #define LAXITY_ARENAS        5u   /* the three regions, then SRAM2 at a second address, then SRAM1 again */
 #define LAXITY_AGGR_REGIONS  3u
 #define LAXITY_FOOTPRINTS    4u
@@ -239,13 +205,11 @@ static float   laxity_out[LAXITY_GOLDEN_OUT_LEN];
 static qos_placement_t laxity_placements[LAXITY_LABELS];
 static uint8_t        *laxity_arena[LAXITY_LABELS];
 
-/* one source and one destination per aggressor region, both inside that region, so the traffic
- * is region local and the only thing crossing regions is the arbitration. */
+/* one source and one destination per aggressor region, both inside that region, so the traffic is region local and the only thing crossing regions is the arbitration. */
 static uint8_t        *laxity_aggr_src[LAXITY_AGGR_REGIONS];
 static uint8_t        *laxity_aggr_dst[LAXITY_AGGR_REGIONS];
 
-/* bytes per aggressor buffer. the smallest is well under any buffering on the path and the
- * largest is bounded by SRAM2, which is 64 KB and has to hold an arena and both buffers. */
+/* bytes per aggressor buffer. the smallest is well under any buffering on the path and the largest is bounded by SRAM2, which is 64 KB and has to hold an arena and both buffers. */
 static const uint32_t  laxity_footprints[LAXITY_FOOTPRINTS] = { 1024u, 4096u, 8192u, 16384u };
 
 /* the stress experiment.
@@ -259,12 +223,9 @@ static const uint32_t  laxity_footprints[LAXITY_FOOTPRINTS] = { 1024u, 4096u, 81
  * is always the aggressor off, which is what the rest of the sweep is read against. */
 #define LAXITY_VICTIM_INFER  0u
 #define LAXITY_VICTIM_READ   1u
-/* inference driven from the stress schedule rather than from the arena cross. the arena stays in
- * SRAM1 and the aggressor sweeps, which is the only arrangement that puts both victims under the
- * same aggressor configuration and makes a per transaction cost comparable between them. */
+/* inference driven from the stress schedule rather than from the arena cross. the arena stays in SRAM1 and the aggressor sweeps, which is the only arrangement that puts both victims under the same aggressor configuration and makes a per transaction cost comparable between them. */
 #define LAXITY_VICTIM_ISTRESS 2u
-/* no victim at all. the DMA transfer is what is timed, which is the only way to ask whether a
- * region is slower on the DMA side without a victim's access pattern in the answer. */
+/* no victim at all. the DMA transfer is what is timed, which is the only way to ask whether a region is slower on the DMA side without a victim's access pattern in the answer. */
 #define LAXITY_VICTIM_DMATIME 3u
 
 #define LAXITY_SWEEP_BW      0u
@@ -278,13 +239,10 @@ static const uint32_t  laxity_footprints[LAXITY_FOOTPRINTS] = { 1024u, 4096u, 81
 #define LAXITY_SWEEPS        8u
 #define LAXITY_SWEEP_MAX_PTS 6u
 
-/* the aggressor can sit in SRAM4 as well as in the three the arenas use, and SRAM4 holds no arena
- * and no victim, so the stress region count is one more than the aggressor region count. */
+/* the aggressor can sit in SRAM4 as well as in the three the arenas use, and SRAM4 holds no arena and no victim, so the stress region count is one more than the aggressor region count. */
 #define LAXITY_STRESS_REGIONS 4u
 
-/* an upper bound on the one shot poll, in iterations. the longest transfer any point asks for is
- * 4096 transactions, so this is two orders of magnitude of headroom and it exists only so that a
- * channel that never raises its flag ends the measurement instead of the run. */
+/* an upper bound on the one shot poll, in iterations. the longest transfer any point asks for is 4096 transactions, so this is two orders of magnitude of headroom and it exists only so that a channel that never raises its flag ends the measurement instead of the run. */
 #define LAXITY_DMA_POLL_MAX   200000u
 
 /* cells per pass: the off cell plus the points of the active sweep. */
@@ -297,9 +255,7 @@ static const struct {
   uint8_t          points;
   qos_stress_cfg_t pt[LAXITY_SWEEP_MAX_PTS];
 } laxity_sweeps[LAXITY_SWEEPS] = {
-  /* bandwidth at a fixed transaction size. width and block stay put and only the trigger rate
-   * moves, so bytes per second and transactions per second rise together and this sweep on its own
-   * cannot separate them. it is the axis the other three are read against. */
+  /* bandwidth at a fixed transaction size. width and block stay put and only the trigger rate moves, so bytes per second and transactions per second rise together and this sweep on its own cannot separate them. it is the axis the other three are read against. */
   { "bw", 5, {
       { 1u, 4u, 256u, 0u,  50000u },
       { 1u, 4u, 256u, 0u, 100000u },
@@ -307,25 +263,19 @@ static const struct {
       { 1u, 4u, 256u, 0u, 400000u },
       { 1u, 4u, 256u, 0u, 800000u },
   } },
-  /* transactions at a fixed bandwidth. the block is a byte count, so holding it and the trigger
-   * rate fixed while the width falls from 4 to 1 leaves the byte rate exactly where it was and
-   * multiplies the transaction rate by four. this is the sweep that separates the first two
-   * hypotheses, and it is the reason the width knob exists. */
+  /* transactions at a fixed bandwidth. the block is a byte count, so holding it and the trigger rate fixed while the width falls from 4 to 1 leaves the byte rate exactly where it was and multiplies the transaction rate by four. this is the sweep that separates the first two hypotheses, and it is the reason the width knob exists. */
   { "xact", 3, {
       { 1u, 4u, 256u, 0u, 200000u },
       { 1u, 2u, 256u, 0u, 200000u },
       { 1u, 1u, 256u, 0u, 200000u },
   } },
-  /* channel count at a fixed total bandwidth. the block is divided by the channel count, so the
-   * bytes and the transactions per second are the same at every point and the only thing that
-   * changes is how many masters are asking. */
+  /* channel count at a fixed total bandwidth. the block is divided by the channel count, so the bytes and the transactions per second are the same at every point and the only thing that changes is how many masters are asking. */
   { "chan", 3, {
       { 1u, 4u, 512u, 0u, 200000u },
       { 2u, 4u, 256u, 0u, 200000u },
       { 4u, 4u, 128u, 0u, 200000u },
   } },
-  /* address stride. bytes and transactions are constant across the whole sweep and only where
-   * they land moves, so anything this finds belongs to the address rather than to the load. */
+  /* address stride. bytes and transactions are constant across the whole sweep and only where they land moves, so anything this finds belongs to the address rather than to the load. */
   { "stride", 6, {
       { 1u, 4u, 256u,   0u, 200000u },
       { 1u, 4u, 256u,   4u, 200000u },
@@ -334,12 +284,7 @@ static const struct {
       { 1u, 4u, 256u,  60u, 200000u },
       { 1u, 4u, 256u, 124u, 200000u },
   } },
-  /* past the top of the bandwidth sweep, which reached 51.2 million transactions per second and
-   * was already saturating there. the first two points ask for two and four times that rate at the
-   * same trigger, the next two remove the trigger so the channel runs flat out, and the last one
-   * arms the channel on a timer that is never started so it is enabled and moves nothing. the
-   * requested rates of the first two are what the configuration asks for and not what the hardware
-   * delivers, which is the question this sweep exists to answer. */
+  /* past the top of the bandwidth sweep, which reached 51.2 million transactions per second and was already saturating there. the first two points ask for two and four times that rate at the same trigger, the next two remove the trigger so the channel runs flat out, and the last one arms the channel on a timer that is never started so it is enabled and moves nothing. the requested rates of the first two are what the configuration asks for and not what the hardware delivers, which is the question this sweep exists to answer. */
   { "sat", 5, {
       { 1u, 2u, 256u, 0u, 800000u },
       { 1u, 1u, 256u, 0u, 800000u },
@@ -347,36 +292,25 @@ static const struct {
       { 1u, 1u, 256u, 0u, 0u },
       { 1u, 4u, 256u, 0u, QOS_STRESS_TRIGGER_ARMED },
   } },
-  /* below the bandwidth sweep, which starts where this one ends. 0.4 to 3.2 million transactions
-   * per second, which is where a port that is busy most of the time at the old rates should have
-   * room again, and where a diagonal that saturation is hiding would reappear. */
+  /* below the bandwidth sweep, which starts where this one ends. 0.4 to 3.2 million transactions per second, which is where a port that is busy most of the time at the old rates should have room again, and where a diagonal that saturation is hiding would reappear. */
   { "low", 4, {
       { 1u, 4u, 256u, 0u,  6250u },
       { 1u, 4u, 256u, 0u, 12500u },
       { 1u, 4u, 256u, 0u, 25000u },
       { 1u, 4u, 256u, 0u, 50000u },
   } },
-  /* not a sweep of an aggressor against a victim. each point is one block moved once and timed on
-   * the DMA side, and the four points change the transaction count at a fixed byte count and then
-   * the byte count at a fixed width, so time against transactions has both a slope and an
-   * intercept. the slope is what a transaction costs the DMA, the intercept is what a block costs
-   * before any data moves. */
+  /* not a sweep of an aggressor against a victim. each point is one block moved once and timed on the DMA side, and the four points change the transaction count at a fixed byte count and then the byte count at a fixed width, so time against transactions has both a slope and an intercept. the slope is what a transaction costs the DMA, the intercept is what a block costs before any data moves. */
   { "dmat", 4, {
       { 1u, 4u, 4096u, 0u, 0u },
       { 1u, 2u, 4096u, 0u, 0u },
       { 1u, 1u, 4096u, 0u, 0u },
       { 1u, 4u, 2048u, 0u, 0u },
   } },
-  /* no points at all, so the schedule is the aggressor off cell and nothing else and no channel is
-   * ever started. taking the off records out of a sweep that also runs an aggressor would work and
-   * would mean measuring a quiet window in a capture that was not quiet, which is the distinction
-   * the contention free table has to be able to make. */
+  /* no points at all, so the schedule is the aggressor off cell and nothing else and no channel is ever started. taking the off records out of a sweep that also runs an aggressor would work and would mean measuring a quiet window in a capture that was not quiet, which is the distinction the contention free table has to be able to make. */
   { "none", 0, { { 0u, 0u, 0u, 0u, 0u } } },
 };
 
-/* the victim footprints of the scaling sweep, in bytes. the read loop buffer size is already a
- * free parameter, so how the cost scales with the victim's working set can be measured without
- * converting a second network, which is what the placement report could not say anything about. */
+/* the victim footprints of the scaling sweep, in bytes. the read loop buffer size is already a free parameter, so how the cost scales with the victim's working set can be measured without converting a second network, which is what the placement report could not say anything about. */
 #define LAXITY_VICTIM_FOOTPRINTS 8u
 static const uint32_t laxity_victim_footprints[LAXITY_VICTIM_FOOTPRINTS] = {
   1024u, 2048u, 4096u, 8192u, 16384u, 32768u, 65536u, 131072u
@@ -392,37 +326,25 @@ static uint32_t laxity_stress_span[LAXITY_STRESS_REGIONS];
 static uint32_t laxity_desc_base[LAXITY_STRESS_REGIONS];
 static uint8_t  laxity_desc_region = QOS_REGION_SRAM3;  /* where the nodes were before the knob existed */
 static uint8_t  laxity_desc_ok;
-/* where the measurement thread's stack actually is, resolved from its address rather than from the
- * request, because a fallback that nobody noticed would invalidate every capture after it. */
+/* where the measurement thread's stack actually is, resolved from its address rather than from the request, because a fallback that nobody noticed would invalidate every capture after it. */
 static uint8_t  laxity_stack_region = QOS_REGION_NONE;
-/* the page the thread actually got, or NULL when it fell back to the byte pool. the high water
- * reading uses this rather than the region, so a fallback cannot be read as a stack that was never
- * there. */
+/* the page the thread actually got, or NULL when it fell back to the byte pool. the high water reading uses this rather than the region, so a fallback cannot be read as a stack that was never there. */
 static uint8_t *laxity_stack_used_page;
-/* the source this boot ran with, kept as a selector rather than as a region because the byte pool
- * is in SRAM3 and a request for the pool would otherwise read as a request for the SRAM3 page
- * already in use and reset nothing. */
+/* the source this boot ran with, kept as a selector rather than as a region because the byte pool is in SRAM3 and a request for the pool would otherwise read as a request for the SRAM3 page already in use and reset nothing. */
 static uint8_t  laxity_stack_src = QOS_REGION_SRAM1;
-/* where the thread's stack actually starts: the page plus its guard for a page, and whatever the
- * allocator answered for the pool. the status line and the high water reading both use this
- * rather than the request, since the address is the only thing that decides the bank. */
+/* where the thread's stack actually starts: the page plus its guard for a page, and whatever the allocator answered for the pool. the status line and the high water reading both use this rather than the request, since the address is the only thing that decides the bank. */
 static uint8_t *laxity_stack_addr;
-/* the ballast, which models a feature added elsewhere in the firmware taking memory ahead of the
- * measurement thread. it is allocated and never touched, so it moves what comes after it without
- * adding any traffic of its own. */
+/* the ballast, which models a feature added elsewhere in the firmware taking memory ahead of the measurement thread. it is allocated and never touched, so it moves what comes after it without adding any traffic of its own. */
 static const uint32_t laxity_ballast_sizes[LAXITY_BALLASTS] = { 0u, 64u, 256u, 1024u, 4096u };
 static uint8_t  laxity_ballast_idx;
 static uint32_t laxity_ballast_bytes;
 static uint32_t laxity_ballast_addr;
 
-/* which placement the stress schedule's inference runs against. the arena cross picks its own slot
- * per cell; this is the one the decomposition varies. */
+/* which placement the stress schedule's inference runs against. the arena cross picks its own slot per cell; this is the one the decomposition varies. */
 static uint8_t  laxity_arena_slot;
 static uint32_t laxity_read_acc;               /* consumes the loads so none of them is dead */
 
-/* where the read loop victim runs, how much of its window it walks and how many loads it issues.
- * all three are run time choices for the same reason the aggressor knobs are: a build per point
- * would put a relink inside the curve. */
+/* where the read loop victim runs, how much of its window it walks and how many loads it issues. all three are run time choices for the same reason the aggressor knobs are: a build per point would put a relink inside the curve. */
 /* leave the mem2mem aggressor running through a stress pass instead of stopping it.
  *
  * this exists to reproduce a fault rather than to measure anything new. before the stop was added,
@@ -437,8 +359,7 @@ static uint8_t  laxity_victim_foot = 2u;                   /* 4096 bytes, what e
 static uint32_t laxity_victim_loads = QOS_READ_LOOP_LOADS; /* loads asked for per window */
 static uint8_t *laxity_victim_base[LAXITY_AGGR_REGIONS];
 static uint32_t laxity_victim_window[LAXITY_AGGR_REGIONS];
-/* what the measurement thread settled on for the current pass, published for the status line so a
- * capture can be checked against the configuration it was filed under. */
+/* what the measurement thread settled on for the current pass, published for the status line so a capture can be checked against the configuration it was filed under. */
 static uint32_t laxity_victim_words;
 static uint32_t laxity_victim_passes;
 static uint16_t laxity_stress_schedule[LAXITY_STRESS_SCHEDULE];
@@ -455,9 +376,7 @@ static uint32_t laxity_cur_aggr = 0xFFFFFFFFu;
 static uint16_t        laxity_schedule[LAXITY_SCHEDULE];
 static uint8_t         laxity_placed_ok;
 
-/* which window the classifier is fed. the golden window is a fixed synthetic trace with a known
- * answer and is the only end to end check this firmware has, so the live sensor is a second mode
- * beside it rather than a replacement. the user button toggles between them. */
+/* which window the classifier is fed. the golden window is a fixed synthetic trace with a known answer and is the only end to end check this firmware has, so the live sensor is a second mode beside it rather than a replacement. the user button toggles between them. */
 #define LAXITY_INPUT_GOLDEN  0u
 #define LAXITY_INPUT_LIVE    1u
 static uint8_t  laxity_input_mode = LAXITY_INPUT_GOLDEN;
@@ -519,9 +438,7 @@ static void laxity_poll_button(void)
   }
 }
 
-/* which region an address is in, resolved from the region table rather than from whichever knob
- * was supposed to put it there. two contaminations have been found in this rig and both were the
- * same sentence: something touched memory inside the window that the knobs did not know about. */
+/* which region an address is in, resolved from the region table rather than from whichever knob was supposed to put it there. two contaminations have been found in this rig and both were the same sentence: something touched memory inside the window that the knobs did not know about. */
 static uint8_t laxity_region_of(uintptr_t a)
 {
   for (uint32_t i = 0u; i < qos_mem_region_count; ++i)
@@ -794,9 +711,7 @@ static void laxity_name(char *dst, const char *src)
   for (; i < 8; ++i) { dst[i] = '\0'; }
 }
 
-/* the labels this run measures. two of them are controls of different kinds: SRAM1c is the same
- * bytes as SRAM1 under a second id, which gives the noise floor, and SRAM2b is SRAM2 at a second
- * address, which says whether a difference belongs to the region or to the address. */
+/* the labels this run measures. two of them are controls of different kinds: SRAM1c is the same bytes as SRAM1 under a second id, which gives the noise floor, and SRAM2b is SRAM2 at a second address, which says whether a difference belongs to the region or to the address. */
 static const struct {
   uint8_t     id;
   uint8_t     region;
@@ -807,8 +722,7 @@ static const struct {
   { QOS_REGION_SRAM1,         QOS_REGION_SRAM1, LAXITY_OFF_FIRST, 0u,                      "SRAM1"  },
   { QOS_REGION_SRAM2,         QOS_REGION_SRAM2, 0x00000u,         0u,                      "SRAM2"  },
   { QOS_REGION_SRAM3,         QOS_REGION_SRAM3, 0x00000u,         0u,                      "SRAM3"  },
-  /* past the aggressor buffers, which occupy one arena alignment plus two maximum footprints
-   * from the base of every region. */
+  /* past the aggressor buffers, which occupy one arena alignment plus two maximum footprints from the base of every region. */
   { QOS_REGION_SRAM2_ALT,     QOS_REGION_SRAM2, 0x09000u,         QOS_PLACEMENT_ALT_ADDR,  "SRAM2b" },
   { QOS_REGION_SRAM1_CONTROL, QOS_REGION_SRAM1, LAXITY_OFF_FIRST, QOS_PLACEMENT_CONTROL,   "SRAM1c" },
 };
@@ -880,8 +794,7 @@ static uint8_t laxity_place(void)
       uintptr_t reg_hi, taken, lo, hi, vlo, vhi;
       if (reg == NULL) { return 0u; }
       reg_hi = (uintptr_t)reg->base + reg->size;
-      /* the arena and the mem2mem buffers end one arena alignment plus two maximum footprints
-       * above the arena, and nothing else in this region may start below that. */
+      /* the arena and the mem2mem buffers end one arena alignment plus two maximum footprints above the arena, and nothing else in this region may start below that. */
       taken = (uintptr_t)laxity_arena[r] + LAXITY_ARENA_ALIGN + 2u * LAXITY_AGGR_MAX;
 
       lo = (uintptr_t)reg->base + stress_off[r];
@@ -897,17 +810,12 @@ static uint8_t laxity_place(void)
       if (vhi > reg_hi) { return 0u; }
       if (vlo < span_lo || vhi > span_hi) { return 0u; }
       if (vlo < taken) { return 0u; }
-      /* the victim window is above the aggressor window in SRAM1 and SRAM2 and below it in SRAM3,
-       * so what is checked is disjointness rather than an order. a victim reading the memory the
-       * aggressor is writing would still return a number, and that number would look like
-       * contention while measuring something else entirely. */
+      /* the victim window is above the aggressor window in SRAM1 and SRAM2 and below it in SRAM3, so what is checked is disjointness rather than an order. a victim reading the memory the aggressor is writing would still return a number, and that number would look like contention while measuring something else entirely. */
       if (vlo < hi && lo < vhi) { return 0u; }
       laxity_victim_base[r] = (uint8_t *)vlo;
       laxity_victim_window[r] = victim_size[r];
 
-      /* the descriptor page. it sits above the aggressor window in SRAM1 and SRAM2 and below it in
-       * SRAM3, so this is disjointness against both windows rather than an order. writing it as an
-       * order is what made the first build of this refuse to place at all. */
+      /* the descriptor page. it sits above the aggressor window in SRAM1 and SRAM2 and below it in SRAM3, so this is disjointness against both windows rather than an order. writing it as an order is what made the first build of this refuse to place at all. */
       {
         uintptr_t dlo = (uintptr_t)reg->base + desc_off[r];
         uintptr_t dhi = dlo + LAXITY_DESC_BYTES;
@@ -921,9 +829,7 @@ static uint8_t laxity_place(void)
         if (dlo < vhi && vlo < dhi) { return 0u; }
         laxity_desc_base[r] = (uint32_t)dlo;
 
-        /* the stack page for this region. the thread has been running on one of the three since
-         * before this function existed in the boot order, so what is still possible here is to
-         * refuse to measure when a page overlaps something rather than to move it. */
+        /* the stack page for this region. the thread has been running on one of the three since before this function existed in the boot order, so what is still possible here is to refuse to measure when a page overlaps something rather than to move it. */
         if (klo == 0u) { return 0u; }
         if (khi > reg_hi) { return 0u; }
         if (klo < taken) { return 0u; }
@@ -933,12 +839,7 @@ static uint8_t laxity_place(void)
       }
     }
 
-    /* SRAM4 carries no arena and no victim, only an aggressor window, and it is outside the
-     * reservation because it cannot be inside one: it sits at 0x28000000 in the SmartRun domain,
-     * outside the linker's RAM region, and the map file places no section in the SRAM4 region it
-     * declares, so nothing the linker allocated can collide with it. the clock is enabled here
-     * rather than assumed, although reading RCC_AHB3ENR on the running board showed bit 31 already
-     * set out of reset. */
+    /* SRAM4 carries no arena and no victim, only an aggressor window, and it is outside the reservation because it cannot be inside one: it sits at 0x28000000 in the SmartRun domain, outside the linker's RAM region, and the map file places no section in the SRAM4 region it declares, so nothing the linker allocated can collide with it. the clock is enabled here rather than assumed, although reading RCC_AHB3ENR on the running board showed bit 31 already set out of reset. */
     __HAL_RCC_SRAM4_CLK_ENABLE();
     laxity_stress_base[LAXITY_AGGR_REGIONS] = QOS_SRAM4_BASE;
     laxity_stress_span[LAXITY_AGGR_REGIONS] = LAXITY_STRESS_BYTES_S4;
@@ -980,8 +881,7 @@ static void laxity_build_cells(void)
   uint32_t n = 0u;
   for (uint32_t a = 0u; a < LAXITY_ARENAS; ++a)
   {
-    /* every arena label gets an aggressor off cell, which is what the contended numbers are
-     * compared against and what the control measures its noise floor in. */
+    /* every arena label gets an aggressor off cell, which is what the contended numbers are compared against and what the control measures its noise floor in. */
     laxity_cells[n].arena_slot = (uint8_t)a;
     laxity_cells[n].aggr_region = 0u;
     laxity_cells[n].foot_idx = 0u;
@@ -1003,8 +903,7 @@ static void laxity_build_cells(void)
   }
 }
 
-/* switch the aggressor only when the cell asks for something different, since a stop and start
- * costs more than the comparison does and the schedule repeats cells. */
+/* switch the aggressor only when the cell asks for something different, since a stop and start costs more than the comparison does and the schedule repeats cells. */
 static void laxity_set_aggressor(uint8_t region, uint8_t foot_idx)
 {
   uint32_t want = ((uint32_t)region << 8) | foot_idx;
@@ -1392,8 +1291,7 @@ static VOID laxity_infer_entry(ULONG argument)
  * lets the rest of the campaign measure what the stack costs when the radio is idle. */
 static uint8_t laxity_net_want;
 
-/* and the telemetry export stays on the UART whatever the radio does. a measurement whose own
- * transport is the aggressor mixes the two, which this project has already paid for twice. */
+/* and the telemetry export stays on the UART whatever the radio does. a measurement whose own transport is the aggressor mixes the two, which this project has already paid for twice. */
 static uint8_t laxity_net_export;
 
 static VOID laxity_net_entry(ULONG argument)
@@ -1487,8 +1385,7 @@ static void laxity_set_stack_src(uint8_t src)
   NVIC_SystemReset();
 }
 
-/* ask for a ballast size, which means asking for a reset for the same reason: the block is taken
- * before the measurement thread exists and nothing after that can take it again. */
+/* ask for a ballast size, which means asking for a reset for the same reason: the block is taken before the measurement thread exists and nothing after that can take it again. */
 static void laxity_set_ballast(uint8_t idx)
 {
   if (idx >= LAXITY_BALLASTS || idx == laxity_ballast_idx) { return; }

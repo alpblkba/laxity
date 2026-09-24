@@ -1,10 +1,13 @@
 schema_version = 1
 platform = "stm32u585"
+resolution = "region"
+resolution_note = "placement below region granularity is not resolved on this platform"
+
+# the three fields below are not authoritative and the Rust loader ignores them.
+# they stay because tools/laxity still reads them and refuses a characterisation without them, and every entry in this file names the campaign it was measured in instead.
 date = "2026-09-19"
 image_sha256 = "85945acbe7e42da8e84c43b789001108477d2c6126ab5a89ec304e42282395d4"
 elf_sha256 = "9bde5cc5b5a4cb0cc45bf5bb4c05b63de95cc4b06880a285aa8fb545bba5452a"
-resolution = "region"
-resolution_note = "placement below region granularity is not resolved on this platform"
 captures = [
   "20260919T212633Z-stress-fn-a-b1-default-on",
   "20260919T212944Z-stress-fn-a-b1-placed-on",
@@ -12,39 +15,158 @@ captures = [
   "20260919T230547Z-stress-fn-b-desc1",
 ]
 
+# each campaign is named once with its note, its image, its date and its captures, and every entry that carries a number names one of them. an entry naming none is refused and an entry naming a campaign that is not here is refused, so this is one place to write a provenance rather than a place to inherit one from.
+[[campaign]]
+name = "arena-or-stack-2026-09-16"
+note = "self-docs/ARENA-OR-STACK-2026-09-16.md"
+image_sha256 = "1d8018d5285f9d5eb51c28e4733804849c6435d443a6001a7978d608b7308aaa"
+date = "2026-09-16"
+captures = [
+  "20260916T210528Z-stress-as-a1-s1-g1",
+  "20260916T210720Z-stress-as-a1-s1-g2",
+  "20260916T210824Z-stress-as-a1-s1-g3",
+  "20260916T210929Z-stress-as-a1-s1-g4",
+  "20260916T211046Z-stress-as-a1-s2-g1",
+  "20260916T211150Z-stress-as-a1-s2-g2",
+  "20260916T211255Z-stress-as-a1-s2-g3",
+  "20260916T211400Z-stress-as-a1-s2-g4",
+  "20260916T211517Z-stress-as-a1-s3-g1",
+  "20260916T211621Z-stress-as-a1-s3-g2",
+  "20260916T211726Z-stress-as-a1-s3-g3",
+  "20260916T211830Z-stress-as-a1-s3-g4",
+  "20260916T211947Z-stress-as-a2-s1-g1",
+  "20260916T212052Z-stress-as-a2-s1-g2",
+  "20260916T212157Z-stress-as-a2-s1-g3",
+  "20260916T212301Z-stress-as-a2-s1-g4",
+  "20260916T212418Z-stress-as-a2-s2-g1",
+  "20260916T212523Z-stress-as-a2-s2-g2",
+  "20260916T212627Z-stress-as-a2-s2-g3",
+  "20260916T212732Z-stress-as-a2-s2-g4",
+  "20260916T212849Z-stress-as-a2-s3-g1",
+  "20260916T212953Z-stress-as-a2-s3-g2",
+  "20260916T213058Z-stress-as-a2-s3-g3",
+  "20260916T213203Z-stress-as-a2-s3-g4",
+  "20260916T213319Z-stress-as-a3-s1-g1",
+  "20260916T213424Z-stress-as-a3-s1-g2",
+  "20260916T213529Z-stress-as-a3-s1-g3",
+  "20260916T213633Z-stress-as-a3-s1-g4",
+  "20260916T213750Z-stress-as-a3-s2-g1",
+  "20260916T213855Z-stress-as-a3-s2-g2",
+  "20260916T213959Z-stress-as-a3-s2-g3",
+  "20260916T214104Z-stress-as-a3-s2-g4",
+  "20260916T214221Z-stress-as-a3-s3-g1",
+  "20260916T214325Z-stress-as-a3-s3-g2",
+  "20260916T214430Z-stress-as-a3-s3-g3",
+  "20260916T214535Z-stress-as-a3-s3-g4",
+]
+
+[[campaign]]
+name = "closing-2026-09-19"
+note = "self-docs/CLOSING-2026-09-19.md"
+image_sha256 = "e64f608343692b751681ef995b037fbb97be437929fff8412af0cf06a03cf9f4"
+date = "2026-09-19"
+captures = [
+  "20260919T080928Z-stress-cl-gate-open-1",
+  "20260919T081046Z-stress-cl-gate-open-2",
+  "20260919T081151Z-stress-cl-gate-open-3",
+  "20260919T081335Z-stress-cl-desc-s1-p1",
+  "20260919T081439Z-stress-cl-desc-s1-p2",
+  "20260919T081544Z-stress-cl-desc-s1-p3",
+  "20260919T081649Z-stress-cl-desc-s1-p4",
+  "20260919T081804Z-stress-cl-desc-s3-p1",
+  "20260919T081908Z-stress-cl-desc-s3-p2",
+  "20260919T082012Z-stress-cl-desc-s3-p3",
+  "20260919T082114Z-stress-cl-desc-s3-p4",
+  "20260919T082231Z-stress-cl-quiet-a1-s1",
+  "20260919T082336Z-stress-cl-quiet-a2-s1",
+  "20260919T082441Z-stress-cl-quiet-a3-s1",
+  "20260919T082558Z-stress-cl-quiet-a1-s2",
+  "20260919T082702Z-stress-cl-quiet-a2-s2",
+  "20260919T082807Z-stress-cl-quiet-a3-s2",
+  "20260919T082924Z-stress-cl-quiet-a1-s3",
+  "20260919T083028Z-stress-cl-quiet-a2-s3",
+  "20260919T083133Z-stress-cl-quiet-a3-s3",
+  "20260919T083250Z-stress-cl-gate-close-1",
+  "20260919T083407Z-stress-cl-gate-close-2",
+  "20260919T083511Z-stress-cl-gate-close-3",
+]
+
+# the six cells of the decomposition that had the aggressor in the stack's region with the arena elsewhere. they read 0.109 and 0.126 for SRAM1, 0.108 and 0.126 for SRAM2, and 0.114 and 0.113 for SRAM3, and the note reports their mean as 0.116.
+# why the mean is not keyed by a region from this campaign: the descriptor page sat in SRAM3 in every capture of it, so each region's pair contains one cell whose victim has an object in SRAM3 and one whose victim does not, and the first of each pair carries the descriptor term this file holds as a separate coefficient. no capture in that campaign separates the two.
 [[coefficient]]
 object = "stack"
 requester = "gpdma1"
 endpoint = "data"
-basis = "measured"
-value = 0.116
+basis = "mean"
+minimum = 0.108
+maximum = 0.126
+cells = 6
+campaign = "arena-or-stack-2026-09-16"
 
+# the six cells of the decomposition that had the aggressor in the arena's region with the stack elsewhere. they read 0.139 and 0.163 for SRAM1, 0.138 and 0.163 for SRAM2, and 0.152 and 0.152 for SRAM3, and the note reports their mean as 0.151.
+# why the mean is not keyed by a region from this campaign: the descriptor page sat in SRAM3 in every capture of it, so each region's pair contains one cell whose victim has an object in SRAM3 and one whose victim does not, and the first of each pair carries the descriptor term this file holds as a separate coefficient. no capture in that campaign separates the two.
 [[coefficient]]
-object = "runtime.state"
+object = "arena"
 requester = "gpdma1"
 endpoint = "data"
-basis = "measured"
-value = 0.003
+basis = "mean"
+minimum = 0.138
+maximum = 0.163
+cells = 6
+campaign = "arena-or-stack-2026-09-16"
 
+# the cell of the eight cell descriptor table with the descriptor page in SRAM3 and the stack in SRAM3, which is this overlap's configuration.
+# the conditions of that table: the arena in SRAM1 and the aggressor's data in SRAM2 in all eight cells, so the cost is the page being fetched into a region the victim uses rather than the aggressor's data traffic.
+# the same table reads 0.026 for the stack in SRAM1 against the page in SRAM1, so this number belongs to SRAM3 and the schema cannot yet say so.
 [[coefficient]]
 object = "stack"
 requester = "gpdma1"
 endpoint = "descriptors"
 basis = "measured"
-value = 0.029
+value = 0.020
+campaign = "closing-2026-09-19"
 
+# an upper bound and not a point estimate. the note bounds the 88 bytes at 0.001 and says they were never isolated, because moving them needs a section attribute or a linker change rather than a run time knob.
+[[coefficient]]
+object = "runtime.state"
+requester = "gpdma1"
+endpoint = "data"
+basis = "bounded"
+minimum = 0.0
+maximum = 0.001
+campaign = "closing-2026-09-19"
+
+# no capture has the radio associated, so there is nothing to attribute and no campaign.
 [[coefficient]]
 object = "stack"
 requester = "emw3080"
 endpoint = "spi dma"
 basis = "unmeasured"
 
-[[coefficient]]
-object = "arena"
-requester = "gpdma1"
-endpoint = "data"
+# the contention free charge, which is what a victim pays for occupying a region at all with every requester off, charged once per occupied region however many of the victim's parts are in it.
+# measured in experiment 2 of the campaign's note: the inference victim, no channel started at any point of any capture, the arena in three regions crossed with the stack in three regions for nine cells, every cell truncated to the first 2516 records, and a region sum that fits the nine cells to within one cycle against 30 for the additive shape and 3 for the maximum.
+# no accesses field: the inference victim's access count was never counted, which the captures record as "not counted for inference", so these charges stay with the victim they were measured on rather than being scaled to another one.
+# the read loop victim's charges exist and are not written here, because they are not reviewed yet.
+[[quiet]]
+region = "sram1"
+victim = "inference"
 basis = "measured"
-value = 0.151
+value = 0
+campaign = "closing-2026-09-19"
+
+[[quiet]]
+region = "sram2"
+victim = "inference"
+basis = "measured"
+value = 2
+campaign = "closing-2026-09-19"
+
+[[quiet]]
+region = "sram3"
+victim = "inference"
+basis = "measured"
+value = 31
+campaign = "closing-2026-09-19"
 
 [[unknown]]
 label = "emw3080 traffic rate"
@@ -62,4 +184,4 @@ text = [
 
 [[unknown]]
 label = "runtime.state"
-text = "88 B, immovable, and the residual above is its"
+text = "88 B, immovable, and the bound above is the note's"

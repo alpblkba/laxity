@@ -1,0 +1,5 @@
+[package]
+name = "laxity-types"
+version = "0.1.0"
+edition = "2021"
+description = "the memory region and object types laxity-core and laxity-elf both use"

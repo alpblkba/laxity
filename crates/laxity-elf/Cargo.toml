@@ -6,6 +6,7 @@ license = "Apache-2.0"
 description = "Allocated ARM ELF symbols and their memory regions"
 
 [dependencies]
+laxity-types = { path = "../laxity-types" }
 object = { version = "0.37.3", default-features = false, features = ["read_core", "elf", "std", "unaligned"] }
 
 [dev-dependencies]

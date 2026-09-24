@@ -1,8 +1,6 @@
 #![forbid(unsafe_code)]
 
-pub mod model;
-
-pub use model::{region_of, regions_spanned, Object, Region};
+pub use laxity_types::{overlap_bytes, region_of, regions_spanned, Object, Region};
 
 use object::read::elf::ElfFile32;
 use object::{
@@ -96,7 +94,7 @@ pub fn summarize<'a>(
         let mut total_bytes = 0;
         let mut members = Vec::new();
         for entry in objects {
-            let bytes = model::overlap_bytes(entry.object.addr, entry.object.bytes, region);
+            let bytes = overlap_bytes(entry.object.addr, entry.object.bytes, region);
             if bytes != 0 {
                 total_bytes += bytes;
                 members.push(&entry.object);

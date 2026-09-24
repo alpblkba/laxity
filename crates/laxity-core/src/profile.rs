@@ -1,6 +1,6 @@
 //! the platform profile, which is a fact about the part rather than a measurement on one board.
 
-use crate::model::Region;
+use laxity_types::Region;
 use serde::Deserialize;
 
 #[derive(Deserialize)]

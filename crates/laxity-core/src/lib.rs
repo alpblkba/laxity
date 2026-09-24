@@ -6,12 +6,11 @@
 
 pub mod characterisation;
 pub mod cost;
-pub mod model;
 pub mod placement;
 pub mod profile;
 
 pub use characterisation::{Basis, Characterisation, Coefficient, Quiet};
 pub use cost::{cost, quiet_cost, Cost, QuietCost, QuietTerm, Requester, Term};
-pub use model::{region_of, regions_spanned, Object, Region};
+pub use laxity_types::{region_of, regions_spanned, Object, Region};
 pub use placement::{occupied_regions, Address, Placement};
 pub use profile::Profile;

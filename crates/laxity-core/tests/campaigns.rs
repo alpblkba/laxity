@@ -4,7 +4,7 @@ use laxity_core::{
     cost, quiet_cost, Address, Basis, Characterisation, Placement, Region, Requester,
 };
 
-const HEADER: &str = "schema_version = 1\nplatform = \"stm32u585\"\ndate = \"2026-09-19\"\nimage_sha256 = \"85945acbe7e42da8e84c43b789001108477d2c6126ab5a89ec304e42282395d4\"\nresolution = \"region\"\ncaptures = [\"fixture\"]\n";
+const HEADER: &str = "schema_version = 1\nplatform = \"stm32u585\"\ndate = \"2026-09-19\"\nimage_sha256 = \"85945acbe7e42da8e84c43b789001108477d2c6126ab5a89ec304e42282395d4\"\nresolution = \"region\"\ncaptures = [\"fixture\"]\n\n[[campaign]]\nname = \"fixture\"\nnote = \"note.md\"\nimage_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\ndate = \"2026-09-20\"\ncaptures = [\"one-capture\"]\n";
 
 fn regions() -> Vec<Region> {
     vec![
@@ -29,7 +29,7 @@ fn addr_in(region: u8) -> u64 {
 /// the conditions that experiment measured under, which are the conditions these numbers are portable to and no further: the inference victim, no channel started at any point of any capture, the arena in three regions crossed with the stack in three regions for nine cells, every cell truncated to the first 2516 records, one image, and a region sum that fits the nine cells to within one cycle. the victim's access count was not counted, which is what the captures record as "not counted for inference", so the entries carry no accesses and cannot be scaled to another victim.
 fn inference_quiet() -> Characterisation {
     Characterisation::from_toml(&format!(
-        "{HEADER}\n[[quiet]]\nregion = \"sram1\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 0\n\n[[quiet]]\nregion = \"sram2\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 2\n\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 31\n"
+        "{HEADER}\n[[quiet]]\nregion = \"sram1\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 0\ncampaign = \"fixture\"\n\n[[quiet]]\nregion = \"sram2\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 2\ncampaign = \"fixture\"\n\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 31\ncampaign = \"fixture\"\n"
     ))
     .unwrap()
 }
@@ -68,7 +68,7 @@ fn a_quiet_charge_measured_at_an_uncounted_access_count_refuses_to_move_victims(
 #[test]
 fn the_descriptor_term_is_an_order_above_the_runtime_state_floor() {
     let characterisation = Characterisation::from_toml(&format!(
-        "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"gpdma1\"\nendpoint = \"descriptors\"\nbasis = \"measured\"\nvalue = 0.029\n\n[[coefficient]]\nobject = \"runtime.state\"\nrequester = \"gpdma1\"\nendpoint = \"data\"\nbasis = \"measured\"\nvalue = 0.003\n"
+        "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"gpdma1\"\nendpoint = \"descriptors\"\nbasis = \"measured\"\nvalue = 0.029\ncampaign = \"fixture\"\n\n[[coefficient]]\nobject = \"runtime.state\"\nrequester = \"gpdma1\"\nendpoint = \"data\"\nbasis = \"measured\"\nvalue = 0.003\ncampaign = \"fixture\"\n"
     ))
     .unwrap();
     let placements = vec![placed("stack", 3), placed("runtime.state", 3)];
@@ -100,7 +100,7 @@ fn the_descriptor_term_is_an_order_above_the_runtime_state_floor() {
 #[test]
 fn moving_the_stack_out_of_the_aggressors_region_removes_almost_all_of_the_penalty() {
     let characterisation = Characterisation::from_toml(&format!(
-        "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"gpdma1\"\nendpoint = \"data\"\nbasis = \"measured\"\nvalue = 0.116\n\n[[coefficient]]\nobject = \"runtime.state\"\nrequester = \"gpdma1\"\nendpoint = \"data\"\nbasis = \"measured\"\nvalue = 0.003\n"
+        "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"gpdma1\"\nendpoint = \"data\"\nbasis = \"measured\"\nvalue = 0.116\ncampaign = \"fixture\"\n\n[[coefficient]]\nobject = \"runtime.state\"\nrequester = \"gpdma1\"\nendpoint = \"data\"\nbasis = \"measured\"\nvalue = 0.003\ncampaign = \"fixture\"\n"
     ))
     .unwrap();
     let requesters = vec![Requester {
@@ -139,12 +139,12 @@ fn moving_the_stack_out_of_the_aggressors_region_removes_almost_all_of_the_penal
 #[test]
 fn a_borrowed_coefficient_never_produces_a_point_estimate() {
     let refused = Characterisation::from_toml(&format!(
-        "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"dma\"\nendpoint = \"borrowed\"\nbasis = \"borrowed\"\nborrowed_from = \"other-mcu\"\nvalue = 0.8\n"
+        "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"dma\"\nendpoint = \"borrowed\"\nbasis = \"borrowed\"\nborrowed_from = \"other-mcu\"\nvalue = 0.8\ncampaign = \"fixture\"\n"
     ));
     assert!(refused.unwrap_err().contains("borrowed coefficient"));
 
     let characterisation = Characterisation::from_toml(&format!(
-        "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"dma\"\nendpoint = \"borrowed\"\nbasis = \"borrowed\"\nborrowed_from = \"other-mcu\"\nminimum = 0.08\nmaximum = 0.8\n"
+        "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"dma\"\nendpoint = \"borrowed\"\nbasis = \"borrowed\"\nborrowed_from = \"other-mcu\"\nminimum = 0.08\nmaximum = 0.8\ncampaign = \"fixture\"\n"
     ))
     .unwrap();
     let requesters = vec![Requester {

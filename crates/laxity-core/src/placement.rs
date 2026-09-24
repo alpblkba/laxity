@@ -1,6 +1,6 @@
 //! where an object is, and how certain that is.
 
-use crate::model::{regions_spanned, Object, Region};
+use laxity_types::{regions_spanned, Object, Region};
 
 /// where an object's address comes from.
 ///
@@ -49,8 +49,11 @@ impl Placement {
         Placement { object, address }
     }
 
+    /// the regions this placement occupies.
+    ///
+    /// a placed object with no bytes is a declaration error rather than an object that is nowhere, so it still reports the region its address is in. the shared geometry counts the bytes an object and a region share and answers nothing for a zero length object, which is the right answer there and the wrong one here, so the guard sits at this call site rather than in laxity-types.
     pub fn regions(&self, regions: &[Region]) -> Vec<u8> {
-        regions_spanned(self.object.addr, self.object.bytes, regions)
+        regions_spanned(self.object.addr, self.object.bytes.max(1), regions)
     }
 }
 
@@ -102,6 +105,12 @@ mod tests {
             assert_eq!(address.resolve(), expected, "ballast {preceding:?}");
             assert!(!address.is_link_time());
         }
+    }
+
+    #[test]
+    fn a_placed_object_with_no_bytes_still_reports_its_region() {
+        let placed = Placement::new("empty", 0, ".bss", Address::LinkTime(0x2005_7654));
+        assert_eq!(placed.regions(&regions()), vec![3]);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! what a placement costs, and on what evidence.
 
-use crate::characterisation::{Basis, Characterisation};
-use crate::model::Region;
+use crate::characterisation::{Basis, Characterisation, Source};
+use laxity_types::Region;
 use crate::placement::{occupied_regions, Placement};
 
 /// one requester endpoint, in the region it touches. a rate of nothing is an endpoint that was declared but never characterised, which costs an unknown rather than a zero.
@@ -26,6 +26,8 @@ pub struct Term {
     pub low: Option<f64>,
     pub high: Option<f64>,
     pub basis: Basis,
+    /// the provenance of the entry this term came from, so that a reader can see which image each number was measured on rather than one claim for the file.
+    pub source: Option<Source>,
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +46,24 @@ impl Cost {
     /// whether every term that carries a number carries a single one. a borrowed term widens the total into a range and this is how a caller finds out without comparing two floats.
     pub fn is_point_estimate(&self) -> bool {
         self.low == self.high
+    }
+
+    /// how many terms carry no number at all, which is how many reasons there are that the total has no upper end.
+    pub fn unpriced(&self) -> usize {
+        self.terms.iter().filter(|term| term.high.is_none()).count()
+    }
+
+    /// the distinct images the terms that carry a number were measured on, in the order they first appear.
+    pub fn images(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for term in &self.terms {
+            if let Some(source) = &term.source {
+                if !out.contains(&source.image_sha256) {
+                    out.push(source.image_sha256.clone());
+                }
+            }
+        }
+        out
     }
 }
 
@@ -99,7 +119,9 @@ pub fn cost(
                 (Basis::Measured { value }, Some(count)) => {
                     (Some(value * count), Some(value * count))
                 }
-                (Basis::Borrowed { minimum, maximum, .. }, Some(count)) => {
+                (Basis::Borrowed { minimum, maximum, .. }, Some(count))
+                | (Basis::Bounded { minimum, maximum }, Some(count))
+                | (Basis::Mean { minimum, maximum, .. }, Some(count)) => {
                     (Some(minimum * count), Some(maximum * count))
                 }
                 _ => (None, None),
@@ -117,6 +139,7 @@ pub fn cost(
                 low,
                 high,
                 basis: coefficient.basis.clone(),
+                source: coefficient.source.clone(),
             });
         }
     }
@@ -174,7 +197,9 @@ pub fn quiet_cost(
         })?;
         let (low, high) = match &charge.basis {
             Basis::Measured { value } => (Some(*value), Some(*value)),
-            Basis::Borrowed { minimum, maximum, .. } => (Some(*minimum), Some(*maximum)),
+            Basis::Borrowed { minimum, maximum, .. }
+            | Basis::Bounded { minimum, maximum }
+            | Basis::Mean { minimum, maximum, .. } => (Some(*minimum), Some(*maximum)),
             Basis::Unmeasured { .. } => (None, None),
         };
         if let (Some(low), Some(high)) = (low, high) {
@@ -198,7 +223,7 @@ mod tests {
     use crate::characterisation::Characterisation;
     use crate::placement::Address;
 
-    const HEADER: &str = "schema_version = 1\nplatform = \"stm32u585\"\ndate = \"2026-09-20\"\nimage_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\nresolution = \"region\"\ncaptures = [\"fixture\"]\n";
+    const HEADER: &str = "schema_version = 1\nplatform = \"stm32u585\"\ndate = \"2026-09-20\"\nimage_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\nresolution = \"region\"\ncaptures = [\"fixture\"]\n\n[[campaign]]\nname = \"fixture\"\nnote = \"note.md\"\nimage_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\ndate = \"2026-09-20\"\ncaptures = [\"one-capture\"]\n";
 
     fn regions() -> Vec<Region> {
         vec![
@@ -218,7 +243,7 @@ mod tests {
 
     fn measured(value: f64) -> Characterisation {
         Characterisation::from_toml(&format!(
-            "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"gpdma1\"\nendpoint = \"data\"\nbasis = \"measured\"\nvalue = {value}\n"
+            "{HEADER}\n[[coefficient]]\nobject = \"stack\"\nrequester = \"gpdma1\"\nendpoint = \"data\"\nbasis = \"measured\"\nvalue = {value}\ncampaign = \"fixture\"\n"
         ))
         .unwrap()
     }
@@ -254,7 +279,7 @@ mod tests {
     #[test]
     fn a_region_the_victim_occupies_but_nobody_measured_is_an_error_rather_than_a_zero() {
         let characterisation = Characterisation::from_toml(&format!(
-            "{HEADER}\n[[quiet]]\nregion = \"sram1\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 0\n"
+            "{HEADER}\n[[quiet]]\nregion = \"sram1\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 0\ncampaign = \"fixture\"\n"
         ))
         .unwrap();
         let placements = vec![Placement::new("stack", 3072, ".bss", Address::LinkTime(0x2005_7654))];

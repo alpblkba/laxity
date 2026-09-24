@@ -7,7 +7,32 @@ use serde::Deserialize;
 pub enum Basis {
     Measured { value: f64 },
     Borrowed { from: String, minimum: f64, maximum: f64 },
+    /// an upper bound taken on this platform, for a quantity that was bounded from the outside rather than isolated. it carries a range for the reason a borrowed coefficient does: there is no single number to read, and a label that could be mistaken for one would put a measurement's authority behind a bound.
+    Bounded { minimum: f64, maximum: f64 },
+    /// a mean over several cells of one campaign, which is a number about a set of configurations rather than a measurement of one of them. it carries the range those cells read and how many there were, and no point value, because the mean is the one figure a reader must not take as the value of any single configuration.
+    Mean { minimum: f64, maximum: f64, cells: u32 },
     Unmeasured { command: String },
+}
+
+/// where one entry's number came from, resolved from the campaign the entry names.
+///
+/// it belongs to the entry rather than to the file, because a characterisation assembled from several campaigns has no one image, date or capture list, and a header that claims one attributes every entry to it. the campaign block is where the file writes it once, and naming a campaign is not a fallback: an entry that names none is refused exactly as one with no provenance at all was.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Source {
+    pub campaign: String,
+    pub note: String,
+    pub image_sha256: String,
+    pub date: String,
+    pub captures: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RawCampaign {
+    name: String,
+    note: Option<String>,
+    image_sha256: Option<String>,
+    date: Option<String>,
+    captures: Option<Vec<String>>,
 }
 
 impl Basis {
@@ -17,6 +42,12 @@ impl Basis {
             Basis::Measured { .. } => "measured, this platform".to_string(),
             Basis::Borrowed { from, .. } => {
                 format!("borrowed from {from}, order of magnitude only")
+            }
+            Basis::Bounded { maximum, .. } => {
+                format!("bounded at {maximum} on this platform, never isolated")
+            }
+            Basis::Mean { cells, .. } => {
+                format!("a mean over {cells} configurations, not a measurement of one")
             }
             Basis::Unmeasured { .. } => "unmeasured".to_string(),
         }
@@ -29,6 +60,8 @@ pub struct Coefficient {
     pub requester: String,
     pub endpoint: String,
     pub basis: Basis,
+    /// nothing only for an unmeasured entry, which has no measurement to attribute.
+    pub source: Option<Source>,
 }
 
 /// the cost a victim pays for occupying a region at all, with every requester off, charged once for each region the victim occupies however many of the victim's parts are in it.
@@ -42,6 +75,8 @@ pub struct Quiet {
     pub victim: String,
     pub basis: Basis,
     pub accesses: Option<u64>,
+    /// nothing only for an unmeasured entry, which has no measurement to attribute.
+    pub source: Option<Source>,
 }
 
 impl Quiet {
@@ -84,7 +119,9 @@ struct RawQuiet {
     value: Option<f64>,
     minimum: Option<f64>,
     maximum: Option<f64>,
+    cells: Option<u32>,
     borrowed_from: Option<String>,
+    campaign: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -96,7 +133,9 @@ struct RawCoefficient {
     value: Option<f64>,
     minimum: Option<f64>,
     maximum: Option<f64>,
+    cells: Option<u32>,
     borrowed_from: Option<String>,
+    campaign: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -110,6 +149,8 @@ struct RawCharacterisation {
     coefficient: Vec<RawCoefficient>,
     #[serde(default)]
     quiet: Vec<RawQuiet>,
+    #[serde(default)]
+    campaign: Vec<RawCampaign>,
 }
 
 #[derive(Clone, Debug)]
@@ -121,6 +162,8 @@ pub struct Characterisation {
     pub resolution: String,
     pub coefficients: Vec<Coefficient>,
     pub quiet: Vec<Quiet>,
+    /// the campaigns this file declares, each named once, which is where every entry's provenance is written.
+    pub campaigns: Vec<Source>,
 }
 
 /// the command that would turn an unmeasured coefficient into a measured one. it is derived from the requester rather than read out of the file, because the file carries it the same way under [[unknown]] and a second place to write it would be a second place to get it wrong.
@@ -141,6 +184,7 @@ fn basis_of(
     value: Option<f64>,
     minimum: Option<f64>,
     maximum: Option<f64>,
+    cells: Option<u32>,
     borrowed_from: Option<String>,
     command: String,
 ) -> Result<Basis, String> {
@@ -165,6 +209,33 @@ fn basis_of(
             }
             Ok(Basis::Borrowed { from, minimum: minimum.unwrap(), maximum: maximum.unwrap() })
         }
+        // an upper bound taken here rather than borrowed, so it names no other platform and still carries a range rather than a value.
+        "bounded" => {
+            if minimum.is_none() || maximum.is_none() {
+                return Err(format!("a bounded {kind} needs a minimum..maximum range"));
+            }
+            if value.is_some() {
+                return Err(format!("a bounded {kind} cannot carry a point value"));
+            }
+            if borrowed_from.is_some() {
+                return Err(format!("a bounded {kind} is measured here and names no other platform"));
+            }
+            Ok(Basis::Bounded { minimum: minimum.unwrap(), maximum: maximum.unwrap() })
+        }
+        // a mean over several cells, which carries the range they read and their count and never a point value, since the point value is what would be mistaken for a measurement of one configuration.
+        "mean" => {
+            if minimum.is_none() || maximum.is_none() {
+                return Err(format!("a mean {kind} needs a minimum..maximum range"));
+            }
+            if value.is_some() {
+                return Err(format!("a mean {kind} cannot carry a point value"));
+            }
+            let count = cells.unwrap_or(0);
+            if count < 2 {
+                return Err(format!("a mean {kind} needs the count of cells it averages, which is at least two"));
+            }
+            Ok(Basis::Mean { minimum: minimum.unwrap(), maximum: maximum.unwrap(), cells: count })
+        }
         // an unmeasured entry carries the command that would fix it, since a number there would be a guess wearing a measurement's clothes.
         "unmeasured" => {
             if value.is_some() || minimum.is_some() || maximum.is_some() {
@@ -172,7 +243,68 @@ fn basis_of(
             }
             Ok(Basis::Unmeasured { command })
         }
-        _ => Err(format!("{kind} basis must be measured, borrowed or unmeasured")),
+        _ => Err(format!("{kind} basis must be measured, borrowed, bounded, mean or unmeasured")),
+    }
+}
+
+/// the campaign blocks, each declared once, which is where the file writes a provenance the entries naming it inherit.
+fn campaigns_of(raw: Vec<RawCampaign>) -> Result<Vec<Source>, String> {
+    let mut out: Vec<Source> = Vec::new();
+    for item in raw {
+        let missing = |field: &str| Err(format!("the campaign {} has no {field}", item.name));
+        let note = match item.note.filter(|value| !value.is_empty()) {
+            Some(value) => value,
+            None => return missing("note"),
+        };
+        let image = match item.image_sha256.filter(|value| !value.is_empty()) {
+            Some(value) => value,
+            None => return missing("image_sha256"),
+        };
+        if image.len() != 64 || !image.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(format!("the campaign {} needs a 64 digit image_sha256", item.name));
+        }
+        let date = match item.date.filter(|value| !value.is_empty()) {
+            Some(value) => value,
+            None => return missing("date"),
+        };
+        let captures = match item.captures.filter(|value| !value.is_empty()) {
+            Some(value) => value,
+            None => return missing("capture list"),
+        };
+        if out.iter().any(|other| other.campaign == item.name) {
+            return Err(format!("the campaign {} is declared twice", item.name));
+        }
+        out.push(Source { campaign: item.name, note, image_sha256: image, date, captures });
+    }
+    Ok(out)
+}
+
+/// the provenance one entry carries, resolved from the campaign it names.
+///
+/// there is no fallback, to the header or to anything else. a header claiming one image for entries measured on several is how the misattribution this rule exists to catch survived in the first place, so an entry that names no campaign is refused and an entry naming a campaign this file does not declare is refused.
+fn source_of(
+    kind: &str,
+    what: &str,
+    basis: &Basis,
+    campaign: Option<String>,
+    campaigns: &[Source],
+) -> Result<Option<Source>, String> {
+    if matches!(basis, Basis::Unmeasured { .. }) {
+        return Ok(None);
+    }
+    let name = match campaign.filter(|value| !value.is_empty()) {
+        Some(value) => value,
+        None => {
+            return Err(format!(
+                "the {kind} for {what} carries a number and names no campaign, and there is no fallback to the header"
+            ))
+        }
+    };
+    match campaigns.iter().find(|source| source.campaign == name) {
+        Some(source) => Ok(Some(source.clone())),
+        None => Err(format!(
+            "the {kind} for {what} names the campaign {name}, which this file does not declare"
+        )),
     }
 }
 
@@ -180,14 +312,12 @@ impl Characterisation {
     pub fn from_toml(text: &str) -> Result<Characterisation, String> {
         let raw: RawCharacterisation = toml::from_str(text)
             .map_err(|err| format!("could not read the characterisation: {err}"))?;
-        let date = raw.date.ok_or("the characterisation needs a date")?;
-        let image = raw
-            .image_sha256
-            .ok_or("the characterisation needs a 64 digit image_sha256")?;
-        if image.len() != 64 || !image.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err("the characterisation needs a 64 digit image_sha256".to_string());
-        }
-        let captures = raw.captures.ok_or("the characterisation needs a capture list")?;
+        // the header's date, image and capture list are read and kept so that a caller can see what the file claims, and nothing here uses them, because every entry carries its own and a fallback would let a misattributed entry pass.
+        let date = raw.date.unwrap_or_default();
+        let image = raw.image_sha256.unwrap_or_default();
+        let captures = raw.captures.unwrap_or_default();
+
+        let campaigns = campaigns_of(raw.campaign)?;
 
         let mut coefficients = Vec::with_capacity(raw.coefficient.len());
         for item in raw.coefficient {
@@ -199,14 +329,18 @@ impl Characterisation {
                 item.value,
                 item.minimum,
                 item.maximum,
+                item.cells,
                 item.borrowed_from,
                 command,
             )?;
+            let what = format!("{} x {}.{}", item.object, item.requester, item.endpoint);
+            let source = source_of("coefficient", &what, &basis, item.campaign, &campaigns)?;
             coefficients.push(Coefficient {
                 object: item.object,
                 requester: item.requester,
                 endpoint: item.endpoint,
                 basis,
+                source,
             });
         }
 
@@ -220,6 +354,7 @@ impl Characterisation {
                 item.value,
                 item.minimum,
                 item.maximum,
+                item.cells,
                 item.borrowed_from,
                 command,
             )?;
@@ -232,11 +367,14 @@ impl Characterisation {
                     item.victim, item.region
                 ));
             }
+            let what = format!("{} in {}", item.victim, item.region);
+            let source = source_of("quiet charge", &what, &basis, item.campaign, &campaigns)?;
             quiet.push(Quiet {
                 region: item.region,
                 victim: item.victim,
                 basis,
                 accesses: item.accesses,
+                source,
             });
         }
 
@@ -249,6 +387,7 @@ impl Characterisation {
             resolution: raw.resolution.unwrap_or_else(|| "region".to_string()),
             coefficients,
             quiet,
+            campaigns,
         })
     }
 
@@ -268,7 +407,7 @@ impl Characterisation {
 mod tests {
     use super::*;
 
-    const HEADER: &str = "schema_version = 1\nplatform = \"stm32u585\"\ndate = \"2026-09-20\"\nimage_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\nresolution = \"region\"\ncaptures = [\"fixture\"]\n";
+    const HEADER: &str = "schema_version = 1\nplatform = \"stm32u585\"\ndate = \"2026-09-20\"\nimage_sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\nresolution = \"region\"\ncaptures = [\"fixture\"]\n\n[[campaign]]\nname = \"fixture\"\nnote = \"note.md\"\nimage_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\ndate = \"2026-09-20\"\ncaptures = [\"one-capture\"]\n";
 
     fn with(body: &str) -> Result<Characterisation, String> {
         Characterisation::from_toml(&format!("{HEADER}{body}"))
@@ -277,7 +416,7 @@ mod tests {
     #[test]
     fn the_three_bases_load_and_label_themselves_apart() {
         let loaded = with(
-            "\n[[coefficient]]\nobject = \"stack\"\nrequester = \"dma\"\nendpoint = \"measured\"\nbasis = \"measured\"\nvalue = 0.1\n\n[[coefficient]]\nobject = \"stack\"\nrequester = \"dma\"\nendpoint = \"borrowed\"\nbasis = \"borrowed\"\nborrowed_from = \"other-mcu\"\nminimum = 0.08\nmaximum = 0.8\n\n[[coefficient]]\nobject = \"stack\"\nrequester = \"radio\"\nendpoint = \"unknown\"\nbasis = \"unmeasured\"\n",
+            "\n[[coefficient]]\nobject = \"stack\"\nrequester = \"dma\"\nendpoint = \"measured\"\nbasis = \"measured\"\nvalue = 0.1\ncampaign = \"fixture\"\n\n[[coefficient]]\nobject = \"stack\"\nrequester = \"dma\"\nendpoint = \"borrowed\"\nbasis = \"borrowed\"\nborrowed_from = \"other-mcu\"\nminimum = 0.08\nmaximum = 0.8\ncampaign = \"fixture\"\n\n[[coefficient]]\nobject = \"stack\"\nrequester = \"radio\"\nendpoint = \"unknown\"\nbasis = \"unmeasured\"\n",
         )
         .unwrap();
         assert_eq!(loaded.coefficients.len(), 3);
@@ -290,11 +429,62 @@ mod tests {
     }
 
     #[test]
-    fn a_header_without_a_capture_list_or_an_image_is_refused() {
-        let no_image = "platform = \"x\"\ndate = \"2026-09-20\"\ncaptures = []\n";
-        assert!(Characterisation::from_toml(no_image).unwrap_err().contains("image_sha256"));
-        let short_image = "platform = \"x\"\ndate = \"2026-09-20\"\nimage_sha256 = \"abc\"\ncaptures = []\n";
-        assert!(Characterisation::from_toml(short_image).unwrap_err().contains("image_sha256"));
+    fn an_entry_that_carries_a_number_and_names_no_campaign_is_refused() {
+        let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"measured\"\nvalue = 0.1\n").unwrap_err();
+        assert_eq!(err, "the coefficient for s x d.e carries a number and names no campaign, and there is no fallback to the header");
+    }
+
+    #[test]
+    fn an_entry_naming_a_campaign_the_file_does_not_declare_is_refused() {
+        let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"measured\"\nvalue = 0.1\ncampaign = \"some-other-campaign\"\n").unwrap_err();
+        assert_eq!(err, "the coefficient for s x d.e names the campaign some-other-campaign, which this file does not declare");
+    }
+
+    #[test]
+    fn a_campaign_with_no_image_or_a_short_one_is_refused() {
+        let no_image = Characterisation::from_toml("platform = \"x\"\n\n[[campaign]]\nname = \"c\"\nnote = \"n.md\"\ndate = \"2026-09-20\"\ncaptures = [\"one\"]\n").unwrap_err();
+        assert_eq!(no_image, "the campaign c has no image_sha256");
+        let short = Characterisation::from_toml("platform = \"x\"\n\n[[campaign]]\nname = \"c\"\nnote = \"n.md\"\nimage_sha256 = \"abc\"\ndate = \"2026-09-20\"\ncaptures = [\"one\"]\n").unwrap_err();
+        assert_eq!(short, "the campaign c needs a 64 digit image_sha256");
+    }
+
+    #[test]
+    fn a_campaign_declared_twice_is_refused() {
+        const ONE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+        let block = format!("\n[[campaign]]\nname = \"c\"\nnote = \"n.md\"\nimage_sha256 = \"{ONE}\"\ndate = \"2026-09-20\"\ncaptures = [\"one\"]\n");
+        let err = Characterisation::from_toml(&format!("platform = \"x\"\n{block}{block}")).unwrap_err();
+        assert_eq!(err, "the campaign c is declared twice");
+    }
+
+    #[test]
+    fn an_entry_resolves_its_provenance_out_of_the_campaign_it_names() {
+        let loaded = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"measured\"\nvalue = 0.1\ncampaign = \"fixture\"\n").unwrap();
+        let source = loaded.coefficients[0].source.as_ref().unwrap();
+        assert_eq!(source.campaign, "fixture");
+        assert_eq!(source.note, "note.md");
+        assert_eq!(source.date, "2026-09-20");
+        assert_eq!(source.captures, vec!["one-capture".to_string()]);
+        assert_eq!(loaded.campaigns.len(), 1);
+    }
+
+    #[test]
+    fn a_quiet_charge_that_carries_a_number_and_names_no_campaign_is_refused() {
+        let err = with("\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 31\n").unwrap_err();
+        assert_eq!(err, "the quiet charge for inference in sram3 carries a number and names no campaign, and there is no fallback to the header");
+    }
+
+    #[test]
+    fn an_unmeasured_entry_needs_no_source_because_it_has_no_measurement() {
+        let loaded = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"radio\"\nendpoint = \"e\"\nbasis = \"unmeasured\"\n").unwrap();
+        assert!(loaded.coefficients[0].source.is_none());
+    }
+
+    #[test]
+    fn a_bounded_entry_loads_as_a_range_and_never_as_a_point() {
+        let loaded = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"bounded\"\nminimum = 0.0\nmaximum = 0.001\ncampaign = \"fixture\"\n").unwrap();
+        assert_eq!(loaded.coefficients[0].basis.label(), "bounded at 0.001 on this platform, never isolated");
+        let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"bounded\"\nvalue = 0.001\n").unwrap_err();
+        assert_eq!(err, "a bounded coefficient needs a minimum..maximum range");
     }
 
     #[test]
@@ -305,13 +495,13 @@ mod tests {
 
     #[test]
     fn a_coefficient_borrowed_from_the_platform_itself_is_refused() {
-        let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"borrowed\"\nborrowed_from = \"stm32u585\"\nminimum = 0.1\nmaximum = 0.2\n").unwrap_err();
+        let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"borrowed\"\nborrowed_from = \"stm32u585\"\nminimum = 0.1\nmaximum = 0.2\ncampaign = \"fixture\"\n").unwrap_err();
         assert!(err.contains("another platform"));
     }
 
     #[test]
     fn a_quiet_charge_loads_with_its_region_victim_and_access_count() {
-        let loaded = with("\n[[quiet]]\nregion = \"sram3\"\nvictim = \"read_loop\"\nbasis = \"measured\"\nvalue = 11\naccesses = 8192\n").unwrap();
+        let loaded = with("\n[[quiet]]\nregion = \"sram3\"\nvictim = \"read_loop\"\nbasis = \"measured\"\nvalue = 11\naccesses = 8192\ncampaign = \"fixture\"\n").unwrap();
         let charge = loaded.quiet_charge("sram3", "read_loop").unwrap();
         assert_eq!(charge.cycles(), Some(11.0));
         assert_eq!(charge.accesses, Some(8192));
@@ -321,7 +511,7 @@ mod tests {
 
     #[test]
     fn a_quiet_charge_without_an_access_count_refuses_to_scale() {
-        let loaded = with("\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 31\n").unwrap();
+        let loaded = with("\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 31\ncampaign = \"fixture\"\n").unwrap();
         let charge = loaded.quiet_charge("sram3", "inference").unwrap();
         assert_eq!(charge.cycles(), Some(31.0));
         assert_eq!(charge.accesses, None);
@@ -345,19 +535,39 @@ mod tests {
 
     #[test]
     fn a_borrowed_quiet_charge_may_not_carry_a_point_value() {
-        let err = with("\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"borrowed\"\nborrowed_from = \"other-mcu\"\nvalue = 31\n").unwrap_err();
+        let err = with("\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"borrowed\"\nborrowed_from = \"other-mcu\"\nvalue = 31\ncampaign = \"fixture\"\n").unwrap_err();
         assert!(err.contains("borrowed quiet charge"), "{err}");
     }
 
     #[test]
     fn one_region_and_victim_may_not_carry_two_quiet_charges() {
-        let body = "\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 31\n\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 32\n";
+        let body = "\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 31\ncampaign = \"fixture\"\n\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 32\ncampaign = \"fixture\"\n";
         assert_eq!(with(body).unwrap_err(), "two quiet charges for inference in sram3");
     }
 
     #[test]
+    fn a_mean_loads_as_a_range_with_its_cell_count_and_never_as_a_point() {
+        let loaded = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"mean\"\nminimum = 0.108\nmaximum = 0.126\ncells = 6\ncampaign = \"fixture\"\n").unwrap();
+        assert_eq!(loaded.coefficients[0].basis.label(), "a mean over 6 configurations, not a measurement of one");
+        match &loaded.coefficients[0].basis {
+            Basis::Mean { minimum, maximum, cells } => {
+                assert_eq!((*minimum, *maximum, *cells), (0.108, 0.126, 6))
+            }
+            other => panic!("expected a mean, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_mean_may_not_carry_a_point_value_or_omit_its_cell_count() {
+        let with_value = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"mean\"\nminimum = 0.1\nmaximum = 0.2\nvalue = 0.15\ncells = 6\n").unwrap_err();
+        assert_eq!(with_value, "a mean coefficient cannot carry a point value");
+        let no_cells = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"mean\"\nminimum = 0.1\nmaximum = 0.2\n").unwrap_err();
+        assert_eq!(no_cells, "a mean coefficient needs the count of cells it averages, which is at least two");
+    }
+
+    #[test]
     fn an_unknown_basis_is_refused() {
-        let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"guessed\"\nvalue = 1.0\n").unwrap_err();
-        assert_eq!(err, "coefficient basis must be measured, borrowed or unmeasured");
+        let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"guessed\"\nvalue = 1.0\ncampaign = \"fixture\"\n").unwrap_err();
+        assert_eq!(err, "coefficient basis must be measured, borrowed, bounded, mean or unmeasured");
     }
 }

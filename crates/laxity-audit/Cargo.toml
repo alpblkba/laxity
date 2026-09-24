@@ -1,0 +1,10 @@
+[package]
+name = "laxity-audit"
+version = "0.1.0"
+edition = "2021"
+description = "the join between an ELF, a platform profile and the cost model"
+
+[dependencies]
+laxity-core = { path = "../laxity-core" }
+laxity-elf = { path = "../laxity-elf" }
+laxity-types = { path = "../laxity-types" }

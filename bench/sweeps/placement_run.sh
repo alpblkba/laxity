@@ -56,6 +56,7 @@ usage: ./bench/sweeps/placement_run.sh <arm> [arm ...]
   health     two captures of one fixed stress configuration, back to back
   a-first    fifteen boots on the vendor default stack, before arm b
   b          ten boots at each of five ballast sizes
+  b-cost     three gate cells, the five ballast cells, then the same three again
   a-second   the other fifteen boots, after arm b
   all        a-first, then b, then a-second
 
@@ -278,10 +279,7 @@ REGION_ID = {"sram1": 1, "sram2": 2, "sram3": 3, "sram4": 4}
 
 d = pathlib.Path(sys.argv[1])
 kv = {}
-# stress.txt can hold bytes that came off a stream carrying framed records
-# beside the text, so it is read as bytes and decoded the way the parser decodes
-# that same stream, telemetry_parse.py line 148. text mode would raise on the
-# first such byte whichever encoding the locale resolves to.
+# stress.txt can hold bytes that came off a stream carrying framed records beside the text, so it is read as bytes and decoded the way the parser decodes that same stream, telemetry_parse.py line 148. text mode would raise on the first such byte whichever encoding the locale resolves to.
 for ln in (d / "stress.txt").read_bytes().decode("ascii", "replace").splitlines():
     if "=" in ln:
         k, _, v = ln.partition("=")
@@ -300,15 +298,9 @@ wrong = sum(1 for r in records
 
 median = "-"
 if restarts == 0:
-    # point 3 of the bandwidth sweep, one channel of width 4 moving 256 byte
-    # blocks at 200 kHz, which is the point every comparison in this tree reads
-    # and the only one in the capture under load at the configured rate.
+    # point 3 of the bandwidth sweep, one channel of width 4 moving 256 byte blocks at 200 kHz, which is the point every comparison in this tree reads and the only one in the capture under load at the configured rate.
     #
-    # the high byte is the sweep point on the stress path and the footprint
-    # index on the arena cross path, app_threadx.c lines 1358 and 1365, and
-    # nothing in the record says which path wrote it. campaign_report.py does
-    # not separate them either. that is a property of this tree rather than of
-    # this script, and it is left as it is.
+    # the high byte is the sweep point on the stress path and the footprint index on the arena cross path, app_threadx.c lines 1358 and 1365, and nothing in the record says which path wrote it. campaign_report.py does not separate them either. that is a property of this tree rather than of this script, and it is left as it is.
     cyc = [r["exec_cyc"] for r in records
            if ((r["aggressor_idx"] >> 8) & 0xFF) == 3]
     if not cyc:
@@ -425,6 +417,180 @@ arm_health() {
   printf 'difference %s\n' "$((m2 - m1))"
 }
 
+# one capture of one cell of the cost arm, answered with its capture directory and nothing else on stdout.
+#
+# the console byte sequences are the ones campaign_run.sh sends for its gate rows, read off its table and off run_one: the stack byte on its own first, because it resets the board and bytes that arrive during a boot are dropped, then the ballast byte on its own for the same reason, then the configuration bytes. the "-" column of that table expands to N and R, which is where those two come from.
+#
+# R puts the descriptor page in SRAM3. in the five ballast cells the stack is in SRAM3 as well, through the byte pool, so those five carry a descriptor fetch term that the three gate cells do not. it is the same constant in all five and R is what the "-" column sends by default, so it is left as it is.
+cost_one() {
+  local name="$1" arm="$2" stack_byte="$3" ballast_byte="$4" aggr_byte="$5"
+  local dir status line want sent want_src want_stack want_aggr
+
+  # what the board should answer for each console byte, which is the mapping campaign_run.sh keeps in stack_id() and region_id() and which laxity_poll_console defines. the pool's region is an image fact rather than an alphabet one: tx_byte_pool_buffer is at 0x2005764c in this image, which is SRAM3, and a stack that landed anywhere else stops the cell instead of being filed under this one.
+  case "$stack_byte" in
+    j) want_src=1 ; want_stack=1 ;;
+    k) want_src=2 ; want_stack=2 ;;
+    p) want_src="$POOL_SRC" ; want_stack=3 ;;
+    *) echo "no stack byte $stack_byte in the console alphabet" >&2 ; exit 1 ;;
+  esac
+  case "$aggr_byte" in
+    a) want_aggr=1 ;;
+    b) want_aggr=2 ;;
+    c) want_aggr=3 ;;
+    *) echo "no aggressor byte $aggr_byte in the console alphabet" >&2 ; exit 1 ;;
+  esac
+
+  # a capture killed part way through writing leaves a non-empty telemetry.bin and no stress.txt, so both have to be there before a cell counts as done.
+  dir="$(ls -dt results/raw/*-"$name" 2>/dev/null | head -1 || true)"
+  if [ -n "$dir" ] && [ -s "$dir/telemetry.bin" ] && [ -s "$dir/stress.txt" ]; then
+    echo "skip $name, already captured in $dir" >&2
+    printf '%s' "$dir"
+    return 0
+  fi
+
+  echo "=== $name: aggressor sram$want_aggr, stack sram$want_stack from source $want_src" >&2
+
+  send_bytes "$stack_byte"
+  sleep "$REBOOT"
+  # every cell sends a ballast byte and none can leave it out, because a cell that inherited the ballast of whatever ran before it would carry a pool layout other than the one it is filed under, and that difference would sit inside the number the cell reports rather than beside it.
+  send_bytes "$ballast_byte"
+  sleep "$REBOOT"
+  send_bytes i 0 "$aggr_byte" X C L 7 N R
+  sleep "$SETTLE"
+  sent="${stack_byte}${ballast_byte}i0${aggr_byte}XCL7NR"
+
+  # the board's own line rather than the bytes that were sent. the prefix runs to the descriptor page because everything in it is contiguous on the status line, and the three fields after it are checked by name because the read loop knobs that sit between them describe a victim this cell does not run.
+  want="stress victim=infer-stress m2m=0 stack=$want_stack arena=1 desc=3(0x2004b000)"
+  status="$(await_line "$want")"
+  if [ -z "$status" ]; then
+    echo "board never reported \"$want\" within ${CONFIRM}s, refusing to capture $name" >&2
+    exit 1
+  fi
+  if [ "$(field sweep "$status")" != bw ] ||
+     [ "$(field region "$status")" != "$want_aggr" ] ||
+     [ "$(field ok "$status")" != 1 ]; then
+    echo "the board reports sweep=$(field sweep "$status") region=$(field region "$status") ok=$(field ok "$status"), and this cell is the bw sweep in sram$want_aggr, so $name is not captured" >&2
+    exit 1
+  fi
+  line="$(await_line 'placement ok=')"
+  if [ -z "$line" ]; then
+    echo "board printed no placement line within ${CONFIRM}s" >&2
+    exit 1
+  fi
+  if [ "$(field stack_src "$line")" != "$want_src" ]; then
+    echo "the board is on stack_src=$(field stack_src "$line") and this cell asked for $want_src, so $name is not captured" >&2
+    exit 1
+  fi
+  # the golden vector is the only end to end check this firmware has, and a capture is not taken against a board that has stopped classifying the known window correctly.
+  if [ -z "$(await_line 'MATCH mismatch=0')" ]; then
+    echo "golden check is not reading MATCH with a zero mismatch count, stopping before $name" >&2
+    exit 1
+  fi
+
+  ./tools/stm32/capture.sh "$name" "$SECS" >&2
+  dir="$(ls -dt results/raw/*-"$name" | head -1)"
+
+  # the sweep, the victim and the placement are not in the record. the wire format was not changed for this campaign, so they go beside the capture, and the ballast and the stack address come off the board's placement line rather than off the request.
+  {
+    printf 'campaign=%s\n' "$CAMPAIGN"
+    printf 'arm=%s\n' "$arm"
+    printf 'victim=inference\n'
+    printf 'victim_region=sram1\n'
+    printf 'sweep=bw\n'
+    printf 'aggressor_region=sram%s\n' "$want_aggr"
+    printf 'aggressor=gpdma_stress\n'
+    printf 'channels_used=GPDMA1_12..15\n'
+    printf 'console_bytes=%s\n' "$sent"
+    printf 'arena_region=sram1\n'
+    printf 'stack_source=%s\n' "$(src_name "$(field stack_src "$line")")"
+    printf 'stack_addr=%s\n' "$(field stack_addr "$line")"
+    printf 'stack_region=sram%s\n' "$(field stack_region "$line")"
+    printf 'ballast=%s\n' "$(field ballast "$line")"
+    printf 'ballast_addr=%s\n' "$(field ballast_addr "$line")"
+    printf 'descriptor_region=sram3\n'
+    printf 'image_sha256=%s\n' "$(sed -n 's/^image_sha256=//p' "$dir/build.txt")"
+    printf 'stack_high_water=%s\n' "$(field shw "$status")"
+    printf 'stack_guard_hit=%s\n' "$(field sguard "$status")"
+    # sampled when the configuration was confirmed and the schedule is shuffled, so this is whichever point was active then and not the point the median reads. it is kept under a name that says so.
+    printf 'aggressor_config_at_confirm=%s\n' \
+      "$(printf '%s' "$status" | tr ' ' '\n' \
+         | grep -E '^(chan|width|block|stride|hz)=' | tr '\n' ' ')"
+    printf 'aggressor_sweep_points=1:1/4/256/0/50000 2:1/4/256/0/100000 '
+    printf '3:1/4/256/0/200000 4:1/4/256/0/400000 5:1/4/256/0/800000\n'
+    # tab and printable ASCII only. what is dropped is the frame bytes that were interleaved ahead of the match, which are an artifact of one UART carrying the records and the text together rather than anything the board said.
+    printf 'status_line=%s\n' \
+      "$(printf '%s' "$status" | LC_ALL=C tr -cd '\11\40-\176')"
+    printf 'placement_line=%s\n' \
+      "$(printf '%s' "$line" | LC_ALL=C tr -cd '\11\40-\176')"
+    printf 'victim_access_mix=not counted for inference; regions touched: '
+    printf 'arena@sram1 stack@sram%s statics@sram3(88B) weights@flash(12256B)\n' \
+      "$(field stack_region "$line")"
+  } > "$dir/stress.txt"
+
+  printf '%s' "$dir"
+}
+
+# the four lines every cell of this arm reports, all of them out of capture_stats.
+cost_report() {
+  local name="$1" dir="$2" stats r w m
+  stats="$(capture_stats "$dir")"
+  IFS=$'\t' read -r r w m <<< "$stats"
+  printf '%s dir %s\n' "$name" "$dir"
+  printf '%s restarts %s\n' "$name" "$r"
+  printf '%s wrong_region %s\n' "$name" "$w"
+  printf '%s median %s\n' "$name" "$m"
+}
+
+# one gate cell read at both ends of the arm. the difference is in cycles and it is printed rather than read, and it reads "-" when either end restarted, which is the same placeholder capture_stats answers with.
+gate_pair() {
+  local label="$1" dopen="$2" dclose="$3" so sc r w mo mc
+  so="$(capture_stats "$dopen")"
+  sc="$(capture_stats "$dclose")"
+  IFS=$'\t' read -r r w mo <<< "$so"
+  IFS=$'\t' read -r r w mc <<< "$sc"
+  printf 'gate-%s open median %s\n' "$label" "$mo"
+  printf 'gate-%s close median %s\n' "$label" "$mc"
+  if [ "$mo" = "-" ] || [ "$mc" = "-" ]; then
+    printf 'gate-%s difference -\n' "$label"
+  else
+    printf 'gate-%s difference %s\n' "$label" "$((mc - mo))"
+  fi
+}
+
+# the three gate cells, the five ballast cells, then the same three gate cells again, in that order and in one invocation. self-docs/PLACEMENT-DETERMINISM-2026-09-22.md puts the gate at the opening and at the closing of every image, so the order is the protocol rather than a convenience.
+arm_b_cost() {
+  local go1 go2 go3 gc1 gc2 gc3 dir pair byte bytes
+
+  echo "=== b-cost: three gate cells, five ballast cells, then the same three gate cells"
+
+  # the gate cells send f so that their ballast is pinned at zero rather than inherited from whatever ran before them. the byte pool hands blocks out in allocation order, the ballast first at app_threadx.c line 588, then the measurement stack at 609, the exporter stack at 617 and the network stack at 642, so a ballast block shifts every pool object allocated after it. these three take their stack from a fixed page, but the exporter's stack still comes from the pool and is still an object the board accesses while a capture runs, so a ballast left over from a b-cost cell is not inert for them. a gate whose two ends differ in any knob measures drift plus that knob.
+  go1="$(cost_one placement-gate-open-1 gate-open j f a)"
+  cost_report placement-gate-open-1 "$go1"
+  go2="$(cost_one placement-gate-open-2 gate-open k f a)"
+  cost_report placement-gate-open-2 "$go2"
+  go3="$(cost_one placement-gate-open-3 gate-open k f b)"
+  cost_report placement-gate-open-3 "$go3"
+
+  for pair in $BALLASTS; do
+    byte="${pair%%:*}"
+    bytes="${pair##*:}"
+    dir="$(cost_one "placement-bcost-$bytes" b-cost "$POOL_BYTE" "$byte" c)"
+    cost_report "placement-bcost-$bytes" "$dir"
+  done
+
+  gc1="$(cost_one placement-gate-close-1 gate-close j f a)"
+  cost_report placement-gate-close-1 "$gc1"
+  gc2="$(cost_one placement-gate-close-2 gate-close k f a)"
+  cost_report placement-gate-close-2 "$gc2"
+  gc3="$(cost_one placement-gate-close-3 gate-close k f b)"
+  cost_report placement-gate-close-3 "$gc3"
+
+  echo
+  gate_pair 1 "$go1" "$gc1"
+  gate_pair 2 "$go2" "$gc2"
+  gate_pair 3 "$go3" "$gc3"
+}
+
 [ "$#" -gt 0 ] || { usage; exit 2; }
 
 pin_image
@@ -436,6 +602,7 @@ for arm in "$@"; do
     a-first)  arm_a first ;;
     a-second) arm_a second ;;
     b)        arm_b ;;
+    b-cost)   arm_b_cost ;;
     all)      arm_a first; arm_b; arm_a second ;;
     *)        echo "unknown arm $arm" >&2; usage >&2; exit 2 ;;
   esac

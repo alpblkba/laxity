@@ -7,8 +7,7 @@
 #
 # every knob is chosen on the board at run time. one image produces all 28 captures, since relinking the same source has moved a median here by 85 cycles and a binary per configuration would put the linker inside every measured difference.
 #
-# the predictions this campaign tests were written before it ran, in
-# self-docs/INTERFERENCE-CAMPAIGN-2026-09-15.md.
+# the predictions this campaign tests were written before it ran, in self-docs/INTERFERENCE-CAMPAIGN-2026-09-15.md.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 . tools/stm32/lib.sh

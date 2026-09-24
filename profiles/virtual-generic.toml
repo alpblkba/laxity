@@ -7,6 +7,7 @@ architecture = "synthetic"
 
 [[memory_regions]]
 id = "memory-alpha"
+qos_id = 1
 label = "MEM-A"
 start = 0x10000000
 size = 0x00010000
@@ -14,6 +15,7 @@ kind = "virtual"
 
 [[memory_regions]]
 id = "memory-beta"
+qos_id = 2
 label = "MEM-B"
 start = 0x10010000
 size = 0x00020000
@@ -21,6 +23,7 @@ kind = "virtual"
 
 [[memory_regions]]
 id = "memory-gamma"
+qos_id = 3
 label = "MEM-C"
 start = 0x10030000
 size = 0x00008000

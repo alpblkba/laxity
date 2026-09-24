@@ -8,6 +8,7 @@ clock_hz = 160000000
 
 [[memory_regions]]
 id = "sram1"
+qos_id = 1
 label = "SRAM1"
 start = 0x20000000
 size = 0x00030000
@@ -17,6 +18,7 @@ metadata = { activation_target = "true" }
 
 [[memory_regions]]
 id = "sram2"
+qos_id = 2
 label = "SRAM2"
 start = 0x20030000
 size = 0x00010000
@@ -26,6 +28,7 @@ metadata = { activation_target = "true" }
 
 [[memory_regions]]
 id = "sram3"
+qos_id = 3
 label = "SRAM3"
 start = 0x20040000
 size = 0x00080000
@@ -35,6 +38,7 @@ metadata = { activation_target = "true" }
 
 [[memory_regions]]
 id = "sram4"
+qos_id = 4
 label = "SRAM4"
 start = 0x28000000
 size = 0x00004000

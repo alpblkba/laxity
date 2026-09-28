@@ -1,3 +1,6 @@
+#![doc = "the laxity telemetry viewer, as a library so that one binary can own it and its own binary can stay a shim."]
+
+mod audit;
 mod experiment;
 mod lx_v2;
 mod measurement;
@@ -30,6 +33,7 @@ use serialport::{
 };
 use tachyonfx::{fx, EffectManager, Interpolation};
 
+use audit::AuditModel;
 use experiment::{
     Activity, ExperimentState, MemoryRegionState, Mode, Penalty, PlacementStats, Relation,
 };
@@ -79,6 +83,10 @@ struct Options {
     profile: Option<PathBuf>,
     headless: bool,
     duration: Option<Duration>,
+    /// the audit screen's three inputs. it appears when the ELF and the characterisation are both given, since neither the telemetry stream nor the device profile carries what a placement costs.
+    elf: Option<PathBuf>,
+    characterisation: Option<PathBuf>,
+    app_config: Option<PathBuf>,
 }
 
 enum Args {
@@ -170,6 +178,12 @@ struct App {
     region_areas: BTreeMap<MemoryRegionId, Rect>,
     memory_scene_key: Option<(u64, Option<u64>, ViewMetric, Option<MemoryRegionId>)>,
     memory_scene: Option<MemorySceneModel>,
+    /// the audit, its cursor, and which of the two lower panes is showing. nothing when the inputs were not given or the audit refused, and the screen then says which.
+    audit: Option<AuditModel>,
+    audit_error: Option<String>,
+    selected_object: usize,
+    audit_provenance: bool,
+    audit_what_if: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -177,6 +191,7 @@ enum View {
     #[default]
     Telemetry,
     Memory,
+    Audit,
 }
 
 impl Input {
@@ -408,6 +423,8 @@ impl App {
             None => "replay only".to_string(),
         };
 
+        let (audit, audit_error) = load_audit(options);
+
         Self {
             source,
             telemetry: TelemetryState::default(),
@@ -435,6 +452,11 @@ impl App {
             last_display_update: None,
             view: View::Telemetry,
             metric: ViewMetric::P50,
+            audit,
+            audit_error,
+            selected_object: 0,
+            audit_provenance: false,
+            audit_what_if: false,
             selected_region: 0,
             semantic_effects: Vec::new(),
             region_areas: BTreeMap::new(),
@@ -706,6 +728,12 @@ impl App {
                 .process_effects(elapsed.into(), frame.buffer_mut(), screen);
             return;
         }
+        if self.view == View::Audit {
+            self.draw_audit_view(frame, screen);
+            self.effects
+                .process_effects(elapsed.into(), frame.buffer_mut(), screen);
+            return;
+        }
         let experiment = self.display_state.as_ref();
 
         if screen.width >= WIDE_MIN_WIDTH && screen.height >= WIDE_MIN_HEIGHT {
@@ -745,6 +773,134 @@ impl App {
 
         self.effects
             .process_effects(elapsed.into(), frame.buffer_mut(), screen);
+    }
+
+    /// move the cursor over the object list, wrapping the way the memory view's region cursor does.
+    fn select_object(&mut self, step: isize) {
+        let count = self.audit.as_ref().map(|model| model.objects.len()).unwrap_or(0);
+        if count == 0 {
+            return;
+        }
+        let next = self.selected_object as isize + step;
+        self.selected_object = next.rem_euclid(count as isize) as usize;
+    }
+
+    /// the audit screen: the objects that landed in declared regions, the selected one's overlaps, and the total as the lower bound it is.
+    fn draw_audit_view(&mut self, frame: &mut Frame, screen: Rect) {
+        let areas = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Min(6),
+            Constraint::Min(6),
+            Constraint::Length(3),
+        ])
+        .split(screen);
+
+        let Some(model) = self.audit.as_ref() else {
+            let reason = self.audit_error.clone().unwrap_or_else(|| {
+                "no audit: pass --elf and --characterisation, and --app for the window".to_string()
+            });
+            frame.render_widget(
+                Paragraph::new(reason).block(Block::bordered().title(" placement audit ")),
+                screen,
+            );
+            return;
+        };
+
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{}  window {} cycles",
+                truncate_middle(&model.elf, 50),
+                model.window_cycles
+            ))
+            .block(Block::bordered().title(" placement audit ")),
+            areas[0],
+        );
+
+        let mut rows: Vec<Line> = Vec::new();
+        for (index, object) in model.objects.iter().enumerate() {
+            let marker = if index == self.selected_object { ">" } else { " " };
+            rows.push(Line::from(format!(
+                "{marker} {:<16} {:>9} B  {}",
+                truncate_middle(&object.name, 16),
+                object.bytes,
+                object.regions
+            )));
+        }
+        frame.render_widget(
+            Paragraph::new(rows).block(Block::bordered().title(" objects, largest first ")),
+            areas[1],
+        );
+
+        let selected = model.objects.get(self.selected_object);
+        let mut lower: Vec<Line> = Vec::new();
+        let title = if self.audit_what_if {
+            for line in model.what_if(self.selected_object) {
+                lower.push(Line::from(format!("  {:<8} {}", line.region, line.verdict)));
+                // the basis and the image sit behind the provenance key here for the reason they do in the overlaps pane: one row per region stays readable and the evidence is one keypress away.
+                if self.audit_provenance {
+                    for term in &line.terms {
+                        lower.push(Line::from(format!("    {:<22} {}", term.endpoint, term.detail)));
+                    }
+                }
+            }
+            " what if it were placed elsewhere, Tab to go back "
+        } else {
+            match selected {
+                Some(object) if object.overlaps.is_empty() => {
+                    lower.push(Line::from("  no requester touches a region this object is in"))
+                }
+                Some(object) => {
+                    lower.push(Line::from(format!(
+                        "  {:<20} {:<6} {:<13} {:>8} {:>12} {}",
+                        "requester", "region", "coefficient", "xacts", "estimate", "basis"
+                    )));
+                    for overlap in &object.overlaps {
+                        lower.push(Line::from(format!(
+                            "  {:<20} {:<6} {:<13} {:>8} {:>12} {}",
+                            truncate_middle(&overlap.endpoint, 20),
+                            overlap.region,
+                            overlap.coefficient,
+                            overlap.xacts,
+                            overlap.estimate,
+                            overlap.basis
+                        )));
+                        if self.audit_provenance {
+                            lower.push(Line::from(format!(
+                                "    {}",
+                                overlap.provenance.clone().unwrap_or_else(|| {
+                                    "no source, because there is no measurement".to_string()
+                                })
+                            )));
+                        }
+                    }
+                }
+                None => lower.push(Line::from("  no object landed in a declared region")),
+            }
+            if self.audit_provenance {
+                " overlaps with provenance, p to fold "
+            } else {
+                " overlaps, p for provenance, Tab for what if "
+            }
+        };
+        frame.render_widget(
+            Paragraph::new(lower).block(Block::bordered().title(title)),
+            areas[2],
+        );
+
+        let total = if model.unpriced == 0 {
+            format!("total {:+.0} cyc, every overlap carries a number", model.total_low)
+        } else {
+            format!(
+                "total at least {:+.0} cyc, {} overlap{} unmeasured, so no upper bound",
+                model.total_low,
+                model.unpriced,
+                if model.unpriced == 1 { "" } else { "s" }
+            )
+        };
+        frame.render_widget(
+            Paragraph::new(total).block(Block::bordered().title(" cost ")),
+            areas[3],
+        );
     }
 
     fn draw_memory_view(&mut self, frame: &mut Frame, screen: Rect, now: Instant) {
@@ -2011,8 +2167,54 @@ impl Health {
     }
 }
 
-fn main() -> ExitCode {
-    match parse_args() {
+/// build the audit screen's model, or the reason there is none.
+///
+/// it needs three files the telemetry stream does not carry: the ELF for the objects, the platform profile as TOML because laxity-core parses its own, and the characterisation for what a region costs. a missing one is reported on the screen rather than refused at startup, since the viewer's job is the telemetry and the audit is a second screen.
+fn load_audit(options: &Options) -> (Option<AuditModel>, Option<String>) {
+    let (Some(elf), Some(characterisation)) = (options.elf.as_deref(), options.characterisation.as_deref())
+    else {
+        return (None, None);
+    };
+    let Some(profile_path) = options.profile.as_deref() else {
+        return (
+            None,
+            Some("the audit needs --profile as well, because laxity-core reads the platform profile as TOML".to_string()),
+        );
+    };
+    let load = |path: &std::path::Path| {
+        std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
+    };
+    let built = load(profile_path)
+        .and_then(|text| laxity_core::profile::Profile::from_toml(&text))
+        .and_then(|profile| {
+            load(characterisation)
+                .and_then(|text| {
+                    laxity_core::characterisation::Characterisation::from_toml(&text)
+                })
+                .and_then(|characterisation| {
+                    let app = options.app_config.as_deref().map(|path| path.display().to_string());
+                    AuditModel::load(elf, &profile, &characterisation, app.as_deref())
+                })
+        });
+    match built {
+        Ok(model) => (Some(model), None),
+        Err(error) => (None, Some(error)),
+    }
+}
+
+/// keep both ends of a long name around three dots, which is the convention crates/laxity-elf/examples/objects.rs and the audit report already use, so all three truncate the same way.
+fn truncate_middle(text: &str, width: usize) -> String {
+    if text.len() <= width || width < 5 {
+        return text.to_string();
+    }
+    let left = (width - 3) / 2;
+    let right = text.len() - (width - 3 - left);
+    format!("{}...{}", &text[..left], &text[right..])
+}
+
+/// the viewer's whole command line, given its arguments rather than reading them, so that the laxity binary can hand it a subcommand's arguments and this crate's own binary can hand it the process arguments.
+pub fn run_cli(args: Vec<String>) -> ExitCode {
+    match parse_args(args) {
         Ok(Args::Help) => {
             print_help();
             ExitCode::SUCCESS
@@ -2078,11 +2280,25 @@ fn run_tui(terminal: &mut DefaultTerminal, options: &Options, device: Device) ->
                         KeyCode::Char('m') => {
                             app.view = match app.view {
                                 View::Telemetry => View::Memory,
-                                View::Memory => View::Telemetry,
+                                View::Memory => View::Audit,
+                                View::Audit => View::Telemetry,
                             }
                         }
                         KeyCode::Tab if app.view == View::Memory => {
                             app.metric = app.metric.next();
+                        }
+                        // Tab cycles what the view is showing, which in the memory view is the metric and here is the lower pane.
+                        KeyCode::Tab if app.view == View::Audit => {
+                            app.audit_what_if = !app.audit_what_if;
+                        }
+                        KeyCode::Char('p') if app.view == View::Audit => {
+                            app.audit_provenance = !app.audit_provenance;
+                        }
+                        KeyCode::Up if app.view == View::Audit => {
+                            app.select_object(-1);
+                        }
+                        KeyCode::Down if app.view == View::Audit => {
+                            app.select_object(1);
                         }
                         KeyCode::Up if app.view == View::Memory => {
                             let count = app.device.device.memory_regions.len();
@@ -2159,13 +2375,16 @@ fn headless_summary(stats: &Stats) -> String {
     )
 }
 
-fn parse_args() -> Result<Args, String> {
-    let mut args = env::args().skip(1).peekable();
+fn parse_args(argv: Vec<String>) -> Result<Args, String> {
+    let mut args = argv.into_iter().peekable();
     let mut source = None;
     let mut record = None;
     let mut profile = None;
     let mut headless = false;
     let mut duration = None;
+    let mut elf = None;
+    let mut characterisation = None;
+    let mut app_config = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -2192,6 +2411,12 @@ fn parse_args() -> Result<Args, String> {
             }
             "--record" => record = Some(PathBuf::from(required_value(&mut args, "--record")?)),
             "--profile" => profile = Some(PathBuf::from(required_value(&mut args, "--profile")?)),
+            "--elf" => elf = Some(PathBuf::from(required_value(&mut args, "--elf")?)),
+            "--characterisation" => {
+                characterisation =
+                    Some(PathBuf::from(required_value(&mut args, "--characterisation")?))
+            }
+            "--app" => app_config = Some(PathBuf::from(required_value(&mut args, "--app")?)),
             "--duration" => {
                 let value = required_value(&mut args, "--duration")?;
                 duration = Some(parse_duration(&value)?);
@@ -2220,6 +2445,9 @@ fn parse_args() -> Result<Args, String> {
         profile,
         headless,
         duration,
+        elf,
+        characterisation,
+        app_config,
     }))
 }
 
@@ -2537,6 +2765,11 @@ usage:
   laxity-tui --serial [PATH] [--record PATH] [--duration SECONDS] [--profile PATH]
   laxity-tui --file PATH [--headless] [--record PATH] [--profile PATH]
 
+the audit screen, reachable with m, needs three more inputs:
+  --elf PATH              the binary whose objects are priced
+  --characterisation PATH the measured coefficients
+  --app PATH              the application config, for the window
+
 sources:
   --udp PORT       listen on 0.0.0.0:PORT
   --serial [PATH]  read 921600 8N1; auto-detect one ST-LINK when omitted
@@ -2610,6 +2843,9 @@ mod tests {
             source,
             record,
             profile: None,
+            elf: None,
+            characterisation: None,
+            app_config: None,
             headless: false,
             duration: None,
         }
@@ -2697,6 +2933,119 @@ mod tests {
                 manufacturer: Some("STMicroelectronics".to_string()),
                 product: Some(product.to_string()),
             }),
+        }
+    }
+
+    fn audit_model_fixture() -> audit::AuditModel {
+        audit::AuditModel {
+            elf: "build/target/laxity-u585.elf".to_string(),
+            window_cycles: 320_320,
+            objects: vec![
+                audit::Object {
+                    name: "arena".to_string(),
+                    bytes: 348_160,
+                    regions: "sram1,sram2,sram3".to_string(),
+                    overlaps: vec![audit::Overlap {
+                        endpoint: "gpdma1.data".to_string(),
+                        region: "sram3".to_string(),
+                        coefficient: "0.138..0.163".to_string(),
+                        xacts: "25626".to_string(),
+                        estimate: "+3536..+4177".to_string(),
+                        basis: "mean",
+                        provenance: Some(
+                            "arena-or-stack-2026-09-16, note.md, image 1d8018d5, 2026-09-16, 36 captures"
+                                .to_string(),
+                        ),
+                    }],
+                },
+                audit::Object {
+                    name: "runtime.state".to_string(),
+                    bytes: 88,
+                    regions: "sram3".to_string(),
+                    overlaps: Vec::new(),
+                },
+            ],
+            total_low: 6816.0,
+            unpriced: 1,
+            candidates: vec![
+                vec![
+                    audit::WhatIf {
+                        region: "sram1".to_string(),
+                        verdict: "no requester in this region, nothing to load".to_string(),
+                        terms: Vec::new(),
+                    },
+                    audit::WhatIf {
+                        region: "sram3".to_string(),
+                        verdict: "+3741 cyc, 1 of 1 endpoint priced".to_string(),
+                        terms: Vec::new(),
+                    },
+                ],
+                Vec::new(),
+            ],
+        }
+    }
+
+    fn audit_app() -> App {
+        let mut app = test_app(&test_options(SourceSpec::Udp(50505), None));
+        app.view = View::Audit;
+        app.audit = Some(audit_model_fixture());
+        app
+    }
+
+    fn audit_screen(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let now = Instant::now();
+        terminal
+            .draw(|frame| app.draw(frame, Duration::ZERO, now))
+            .unwrap()
+            .buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn audit_view_shows_objects_overlaps_and_the_total_as_a_lower_bound() {
+        let mut app = audit_app();
+        let screen = audit_screen(&mut app);
+        for text in [
+            "placement audit",
+            "objects, largest first",
+            "arena",
+            "sram1,sram2,sram3",
+            "gpdma1.data",
+            "mean",
+            "total at least +6816 cyc",
+            "1 overlap unmeasured",
+        ] {
+            assert!(screen.contains(text), "missing {text}");
+        }
+    }
+
+    #[test]
+    fn the_cursor_walks_the_objects_and_p_unfolds_the_provenance() {
+        let mut app = audit_app();
+        assert!(!audit_screen(&mut app).contains("1d8018d5"));
+        app.audit_provenance = true;
+        assert!(audit_screen(&mut app).contains("image 1d8018d5"));
+        app.select_object(1);
+        assert_eq!(app.selected_object, 1);
+        let screen = audit_screen(&mut app);
+        assert!(screen.contains("no requester touches a region this object is in"));
+        // the cursor wraps, the way the memory view's region cursor does.
+        app.select_object(1);
+        assert_eq!(app.selected_object, 0);
+    }
+
+    #[test]
+    fn the_what_if_pane_renders_its_rows_on_the_audit_screen() {
+        let mut app = audit_app();
+        app.audit_what_if = true;
+        let screen = audit_screen(&mut app);
+        assert!(screen.contains("what if it were placed elsewhere"));
+        for region in ["sram1", "sram2", "sram3"] {
+            assert!(screen.contains(region), "missing {region}");
         }
     }
 
@@ -3281,6 +3630,9 @@ mod tests {
             source: SourceSpec::Udp(50505),
             record: None,
             profile: None,
+            elf: None,
+            characterisation: None,
+            app_config: None,
             headless: true,
             duration: None,
         };

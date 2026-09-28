@@ -167,7 +167,9 @@ pub struct Characterisation {
 }
 
 /// the command that would turn an unmeasured coefficient into a measured one. it is derived from the requester rather than read out of the file, because the file carries it the same way under [[unknown]] and a second place to write it would be a second place to get it wrong.
-fn characterise_command(requester: &str) -> String {
+///
+/// public because a caller that finds a requester endpoint with no coefficient at all has no Basis to read the command out of, and building the string there would be that second place.
+pub fn characterise_command(requester: &str) -> String {
     format!("laxity characterise --requester {requester}")
 }
 

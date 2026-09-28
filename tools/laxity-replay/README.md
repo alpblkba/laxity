@@ -3,7 +3,7 @@
 `tools/laxity_replay.py` sends an existing capture to the TUI over its UDP source without changing a byte. Start the receiver before the sender, since UDP does not retain packets for a listener that is not bound yet.
 
 ```sh
-./build/laxity-tui/release/laxity-tui --udp 50505 --record /tmp/replayed.bin
+./target/release/laxity-tui --udp 50505 --record /tmp/replayed.bin
 python3 tools/laxity_replay.py results/raw/RUN/telemetry.bin --udp 127.0.0.1:50505
 ```
 

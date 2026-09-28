@@ -1,0 +1,14 @@
+[package]
+name = "laxity"
+version = "0.1.0"
+edition = "2021"
+description = "the laxity host command"
+
+[[bin]]
+name = "laxity"
+path = "src/main.rs"
+
+[dependencies]
+laxity-audit = { path = "../laxity-audit" }
+laxity-core = { path = "../laxity-core" }
+laxity-tui = { path = "../laxity-tui" }

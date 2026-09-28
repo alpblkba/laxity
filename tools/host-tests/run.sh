@@ -79,4 +79,6 @@ lines=$(wc -l < "$OUT/stream.csv")
 
 [ "$fail" -eq 0 ] && echo "parser ok" || { echo "parser checks failed"; exit 1; }
 
-python3 tools/host-tests/test_audit.py
+python3 tools/host-tests/test_toml.py
+# the audit's checks moved to crates/laxity-core and crates/laxity-audit when the Python audit was
+# removed, so they run under cargo test --workspace rather than here.

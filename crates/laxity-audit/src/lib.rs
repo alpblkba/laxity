@@ -3,6 +3,8 @@
 //! laxity-elf says where the symbols are, the profile says what the regions are, the characterisation says what a region costs, and laxity-core prices the placement. this crate carries none of those four and only puts them together, which is why laxity-core does not depend on laxity-elf: the model prices a placement whatever produced it, and a placement from a hand written table stays as valid an input as one read out of a binary.
 #![forbid(unsafe_code)]
 
+pub mod render;
+
 use laxity_core::characterisation::Characterisation;
 use laxity_core::cost::{cost, quiet_cost, Cost, QuietCost, Requester};
 use laxity_core::placement::{Address, Placement};

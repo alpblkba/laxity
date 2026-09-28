@@ -1,46 +1,39 @@
 #!/usr/bin/env bash
-# put laxity on PATH by symlinking it into ~/.local/bin.
+# build the laxity binary and put it on PATH.
 #
-# a symlink rather than a copy, so the command and the repository cannot drift apart. laxity
-# resolves the link to find the repository, which is also why moving the checkout is fine and
-# copying the file is not.
+# the binary owns audit and tui and hands every board subcommand to tools/laxity, so the script stays
+# where it is and is not installed: the binary finds it next to itself, at tools/laxity under the
+# current directory, or at $LAXITY_PYTHON. installing a copy of the script would give the binary two
+# scripts to choose between, which is the one thing it must not have to guess about.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-SRC="$(pwd)/tools/laxity"
+ROOT="$(pwd)"
 BIN="${LAXITY_BIN_DIR:-$HOME/.local/bin}"
-DST="$BIN/laxity"
 
-[ -x "$SRC" ] || { echo "$SRC is missing or not executable" >&2; exit 1; }
+command -v cargo >/dev/null || { echo "cargo is not on PATH, install Rust first" >&2; exit 1; }
+[ -x "$ROOT/tools/laxity" ] || { echo "$ROOT/tools/laxity is missing or not executable" >&2; exit 1; }
 
-mkdir -p "$BIN"
+# --root puts the binary in BIN/bin, so the parent of the bin directory is what cargo is given.
+PARENT="$(dirname "$BIN")"
+[ "$(basename "$BIN")" = "bin" ] || PARENT="$BIN"
 
-if [ -e "$DST" ] || [ -L "$DST" ]; then
-  CURRENT="$(readlink "$DST" 2>/dev/null || echo "a regular file")"
-  if [ "$CURRENT" = "$SRC" ]; then
-    echo "already linked: $DST -> $SRC"
-  else
-    echo "$DST already exists and points at $CURRENT"
-    printf 'replace it? [y/N] '
-    read -r answer
-    case "$answer" in
-      y|Y|yes) ln -sfn "$SRC" "$DST"; echo "replaced: $DST -> $SRC" ;;
-      *) echo "left alone. nothing was installed."; exit 0 ;;
-    esac
-  fi
-else
-  ln -s "$SRC" "$DST"
-  echo "linked: $DST -> $SRC"
-fi
+echo "building laxity"
+cargo install --path crates/laxity --root "$PARENT" --force
+DST="$PARENT/bin/laxity"
 
-# the shell rc file belongs to whoever owns the shell, so this reports and does not edit.
+echo
+echo "installed: $DST"
+echo "the Python script stays at $ROOT/tools/laxity for the delegated subcommands"
+echo "audit and tui are the binary's own, laxity --help says which is which"
+
 case ":$PATH:" in
-  *":$BIN:"*) echo "$BIN is on PATH, run: laxity doctor" ;;
+  *":$PARENT/bin:"*) echo "$PARENT/bin is on PATH, run: laxity doctor" ;;
   *)
     echo
-    echo "$BIN is not on PATH. add this line to your shell rc file yourself:"
+    echo "$PARENT/bin is not on PATH. add this line to your shell rc file yourself:"
     echo
-    echo "    export PATH=\"$BIN:\$PATH\""
+    echo "    export PATH=\"$PARENT/bin:\$PATH\""
     echo
     case "$(basename "${SHELL:-}")" in
       zsh)  echo "on zsh that file is ~/.zshrc" ;;
@@ -48,3 +41,10 @@ case ":$PATH:" in
     esac
     ;;
 esac
+
+# the binary looks for the script next to itself first, so a checkout that moves keeps working only
+# when the repository is the one the current directory is in, or when LAXITY_PYTHON names it.
+echo
+echo "if you run laxity from outside this checkout, set:"
+echo
+echo "    export LAXITY_PYTHON=\"$ROOT/tools/laxity\""

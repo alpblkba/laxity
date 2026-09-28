@@ -1,0 +1,50 @@
+flowchart TB
+
+subgraph REQUESTER["Requester endpoints"]
+    direction LR
+    DATA["Data accesses"]
+    FETCH["Linked-list<br/>descriptor fetches"]
+end
+
+subgraph MEMORY["Banks"]
+    direction LR
+    A["Bank A<br/>Victim arena + stack"]
+    B["Bank B<br/>Victim state<br/>Requester descriptor page"]
+    C["Other bank<br/>No victim object<br/>No charge to this victim"]
+end
+
+subgraph CHARGES["Bank-level charges"]
+    direction LR
+    DATA_COST["One data charge per bank<br/>One object or several"]
+    DESC_COST["Descriptor fetch charge<br/>A separate term"]
+end
+
+WITHIN["Move within a bank<br/>The charge stays the same"]
+TOTAL["Victim contention cost"]
+
+DATA --> A
+DATA --> C
+FETCH --> B
+A --> DATA_COST
+B --> DESC_COST
+A -.-> WITHIN
+DATA_COST --> TOTAL
+DESC_COST --> TOTAL
+
+style REQUESTER fill:#FFF5DF,stroke:#D7A249,stroke-width:1.3px,color:#2B2418
+style MEMORY fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212B
+style CHARGES fill:#ECF7FF,stroke:#A5CBE8,stroke-width:1.3px,color:#17212B
+
+classDef requester fill:#FFF5DF,stroke:#D7A249,color:#2B2418,stroke-width:1.6px;
+classDef memory fill:#F2EEFF,stroke:#9276D8,color:#211A32,stroke-width:1.8px;
+classDef charge fill:#E8FAFC,stroke:#49AEB7,color:#17212B,stroke-width:1.6px;
+classDef rule fill:#F8FAFC,stroke:#94A3B8,color:#334155,stroke-width:1.4px;
+classDef result fill:#EDF9F1,stroke:#65AD79,color:#17251B,stroke-width:1.6px;
+
+class DATA,FETCH requester;
+class A,B,C memory;
+class DATA_COST,DESC_COST charge;
+class WITHIN rule;
+class TOTAL result;
+
+linkStyle default stroke:#547896,stroke-width:2.4px;

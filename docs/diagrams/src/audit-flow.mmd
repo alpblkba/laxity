@@ -1,0 +1,69 @@
+flowchart TB
+
+subgraph INPUTS["Audit inputs"]
+    direction LR
+    ELF["ELF"]
+    PROFILE["Platform profile<br/>Region map + clock"]
+    CONFIG["Application config<br/>Requesters, window, deadline"]
+    CHAR["Characterisation<br/>Coefficients + provenance"]
+end
+
+subgraph AUDIT["Placement and overlap"]
+    direction TB
+    SYMBOLS["Read the symbol table"]
+    MAP["Map each object<br/>to every bank it touches"]
+    OVERLAP["Find object/requester<br/>bank overlaps"]
+    LOOKUP["Look up each coefficient"]
+end
+
+subgraph ORIGIN["One provenance label per coefficient"]
+    direction LR
+    MEASURED["Measured on this part"]
+    BORROWED["Borrowed from another part<br/>Order of magnitude only"]
+    MEAN["Mean across configurations"]
+    UNKNOWN["Unmeasured"]
+    MEASURED ~~~ BORROWED ~~~ MEAN ~~~ UNKNOWN
+end
+
+subgraph OUTPUTS["Audit output"]
+    direction LR
+    PLACEMENT["Placement table"]
+    PRICE["Price per overlap<br/>with its provenance label"]
+    TOTAL["Total against deadline<br/>Explicitly a lower bound<br/>if any term is unmeasured"]
+end
+
+ELF --> SYMBOLS
+SYMBOLS --> MAP
+PROFILE --> MAP
+MAP --> OVERLAP
+CONFIG --> OVERLAP
+OVERLAP --> LOOKUP
+CHAR --> LOOKUP
+LOOKUP --> ORIGIN
+MAP --> PLACEMENT
+ORIGIN --> PRICE
+PRICE --> TOTAL
+
+style INPUTS fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212B
+style AUDIT fill:#ECF7FF,stroke:#A5CBE8,stroke-width:1.3px,color:#17212B
+style ORIGIN fill:#F5FAFE,stroke:#BED6E7,stroke-width:1.3px,color:#17212B
+style OUTPUTS fill:#DCEFFF,stroke:#69A9DB,stroke-width:1.7px,color:#17212B
+
+classDef input fill:#F8FAFC,stroke:#94A3B8,color:#334155,stroke-width:1.4px;
+classDef process fill:#E8FAFC,stroke:#49AEB7,color:#17212B,stroke-width:1.6px;
+classDef measured fill:#EDF9F1,stroke:#65AD79,color:#17251B,stroke-width:1.6px;
+classDef borrowed fill:#FFF5DF,stroke:#D7A249,color:#2B2418,stroke-width:1.6px;
+classDef mean fill:#F2EEFF,stroke:#9276D8,color:#211A32,stroke-width:1.6px;
+classDef unknown fill:#FFF0EE,stroke:#D9776A,color:#3A201C,stroke-width:1.6px;
+classDef result fill:#EAF4FF,stroke:#5B9BD5,color:#17212B,stroke-width:1.6px;
+
+class ELF,PROFILE,CONFIG,CHAR input;
+class SYMBOLS,MAP,OVERLAP,LOOKUP process;
+class MEASURED measured;
+class BORROWED borrowed;
+class MEAN mean;
+class UNKNOWN unknown;
+class PLACEMENT,PRICE,TOTAL result;
+
+linkStyle default stroke:#547896,stroke-width:2.4px;
+linkStyle 0,1,2 stroke:none,stroke-width:0;

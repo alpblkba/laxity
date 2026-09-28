@@ -9,20 +9,19 @@ The default profile describes the measured B-U585I-IOT02A and STM32U585 backend.
 Build from the repository root so Cargo output stays under the ignored `build/` tree.
 
 ```sh
-cargo build --manifest-path tools/laxity-tui/Cargo.toml \
+cargo build -p laxity-tui \
     --release \
-    --locked \
-    --target-dir build/laxity-tui
+    --locked
 ```
 
 Choose one source. `--profile` is optional and defaults to `profiles/stm32u585.toml` through the embedded copy of that profile.
 
 ```sh
-./build/laxity-tui/release/laxity-tui --serial
-./build/laxity-tui/release/laxity-tui --serial /dev/cu.usbmodem21303
-./build/laxity-tui/release/laxity-tui --udp 50505
-./build/laxity-tui/release/laxity-tui --file results/raw/RUN/telemetry.bin
-./build/laxity-tui/release/laxity-tui \
+./target/release/laxity-tui --serial
+./target/release/laxity-tui --serial /dev/cu.usbmodem21303
+./target/release/laxity-tui --udp 50505
+./target/release/laxity-tui --file results/raw/RUN/telemetry.bin
+./target/release/laxity-tui \
     --udp 50505 \
     --profile profiles/virtual-generic.toml \
     --record /absolute/path/telemetry.bin
@@ -66,7 +65,7 @@ Build the production-backed virtual target, start the TUI, then emit a determini
 
 ```sh
 ./tools/laxity-sim/build.sh
-./build/laxity-tui/release/laxity-tui \
+./target/release/laxity-tui \
     --udp 50505 \
     --record /tmp/laxity-sim.bin
 ./build/laxity-sim/laxity-sim \
@@ -78,7 +77,7 @@ Build the production-backed virtual target, start the TUI, then emit a determini
 Replay a real capture with its record release cadence by running the receiver before the sender.
 
 ```sh
-./build/laxity-tui/release/laxity-tui \
+./target/release/laxity-tui \
     --udp 50505 \
     --record /tmp/laxity-replay.bin
 python3 tools/laxity_replay.py \
@@ -95,15 +94,12 @@ The live replay utility preserves every source byte and reconstructs pacing from
 Run the TUI tests without an STM32 SDK or board.
 
 ```sh
-cargo test --manifest-path tools/laxity-tui/Cargo.toml \
-    --locked \
-    --target-dir build/laxity-tui
-cargo clippy --manifest-path tools/laxity-tui/Cargo.toml \
+cargo test -p laxity-tui --locked
+cargo clippy -p laxity-tui \
     --locked \
     --all-targets \
-    --target-dir build/laxity-tui \
     -- -D warnings
-python3 tools/laxity-tui/test_e2e.py
+python3 crates/laxity-tui/test_e2e.py
 ```
 
 The end-to-end check streams baseline, contention, and CRC scenarios through the live UDP source, then requires paced replay to match direct file parsing and byte recording. It builds both host tools under `build/` and needs no board or STM32 SDK.
@@ -111,9 +107,8 @@ The end-to-end check streams baseline, contention, and CRC scenarios through the
 `results/raw/` is intentionally ignored, so the full real-capture regression is an explicit local check rather than a test that silently passes in a clean clone. Run it on a workspace containing the known capture:
 
 ```sh
-cargo test --manifest-path tools/laxity-tui/Cargo.toml \
+cargo test -p laxity-tui \
     --locked \
-    --target-dir build/laxity-tui \
     -- --ignored known_real_capture_keeps_golden_accounting_and_experiment_state
 ```
 

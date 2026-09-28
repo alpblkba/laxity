@@ -4,7 +4,17 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[lib]
+name = "laxity_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "laxity-tui"
+path = "src/main.rs"
+
 [dependencies]
+laxity-audit = { path = "../laxity-audit" }
+laxity-core = { path = "../laxity-core" }
 crossterm = "=0.29.0"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 serialport = { version = "=4.10.1", default-features = false }

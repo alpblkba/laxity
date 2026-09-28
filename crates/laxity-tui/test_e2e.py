@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-TUI = ROOT / "build/laxity-tui/debug/laxity-tui"
+TUI = ROOT / "target/debug/laxity-tui"
 SIM = ROOT / "build/laxity-sim/laxity-sim"
 REPLAY = ROOT / "tools/laxity_replay.py"
 sys.path.insert(0, str(ROOT / "tools"))
@@ -48,17 +48,7 @@ def checked(command, timeout=90):
 
 def build_tools():
     checked([str(ROOT / "tools/laxity-sim/build.sh")])
-    checked(
-        [
-            "cargo",
-            "build",
-            "--manifest-path",
-            str(ROOT / "tools/laxity-tui/Cargo.toml"),
-            "--locked",
-            "--target-dir",
-            str(ROOT / "build/laxity-tui"),
-        ]
-    )
+    checked(["cargo", "build", "-p", "laxity-tui", "--locked"])
 
 
 def unused_port():

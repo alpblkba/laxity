@@ -84,6 +84,10 @@ struct ProfileDevice {
 #[serde(deny_unknown_fields)]
 struct ProfileMemoryRegion {
     id: String,
+    /// the numeric region id the firmware and the wire format use, which laxity-core requires and this viewer does not read. it is declared because the struct denies unknown fields, so a profile carrying it would otherwise be refused, and it is allowed to stay unread rather than being dropped, since dropping it is what made the profile unloadable here.
+    #[serde(default)]
+    #[allow(dead_code)]
+    qos_id: Option<u8>,
     label: String,
     start: u64,
     size: u64,

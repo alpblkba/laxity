@@ -91,29 +91,55 @@ captures = [
   "20260919T083511Z-stress-cl-gate-close-3",
 ]
 
-# the six cells of the decomposition that had the aggressor in the stack's region with the arena elsewhere. they read 0.109 and 0.126 for SRAM1, 0.108 and 0.126 for SRAM2, and 0.114 and 0.113 for SRAM3, and the note reports their mean as 0.116.
-# why the mean is not keyed by a region from this campaign: the descriptor page sat in SRAM3 in every capture of it, so each region's pair contains one cell whose victim has an object in SRAM3 and one whose victim does not, and the first of each pair carries the descriptor term this file holds as a separate coefficient. no capture in that campaign separates the two.
+[[campaign]]
+name = "descriptor-free-2026-09-26"
+note = "bench/sweeps/descriptor_free_run.sh"
+image_sha256 = "653627b466c79d563ee1a63267342544dff65b5ebc1ccb8e30cb14480cc934b4"
+date = "2026-09-26"
+captures = [
+  "20260926T224243Z-df-gate-open-1",
+  "20260926T224426Z-df-gate-open-2",
+  "20260926T224555Z-df-gate-open-3",
+  "20260926T224726Z-df-a1-s2-ag1",
+  "20260926T224854Z-df-a1-s2-ag2",
+  "20260926T225037Z-df-a1-s3-ag1",
+  "20260926T225206Z-df-a1-s3-ag3",
+  "20260926T225349Z-df-a2-s1-ag1",
+  "20260926T225518Z-df-a2-s1-ag2",
+  "20260926T225701Z-df-a2-s3-ag2",
+  "20260926T225831Z-df-a2-s3-ag3",
+  "20260926T230015Z-df-a3-s1-ag1",
+  "20260926T230145Z-df-a3-s1-ag3",
+  "20260926T230326Z-df-a3-s2-ag2",
+  "20260926T230456Z-df-a3-s2-ag3",
+  "20260926T230638Z-df-gate-close-1",
+  "20260926T230821Z-df-gate-close-2",
+  "20260926T230950Z-df-gate-close-3",
+]
+
+# the six cells that had the aggressor in the stack's region with the arena elsewhere, measured with the descriptor page in SRAM4 where no victim object sits, so the data term stands on its own rather than carrying a descriptor term in half the cells.
+# the six read 0.1068 and 0.1047 for SRAM1, 0.1067 and 0.1067 for SRAM2, and 0.1044 and 0.1056 for SRAM3, a spread of 0.1044 to 0.1068, and their mean is the value below.
+# they are replicates of one measurement rather than configurations that could not be separated, which is why this is a point estimate and not a range, and why it carries no region key.
+# the limit: a region dependent term below about 0.001 cannot be resolved here, because the gate drifted by that order across the run, at 0.0000, 0.0004 and 0.0006 for its three cells between the opening capture and the closing one.
 [[coefficient]]
 object = "stack"
 requester = "gpdma1"
 endpoint = "data"
-basis = "mean"
-minimum = 0.108
-maximum = 0.126
-cells = 6
-campaign = "arena-or-stack-2026-09-16"
+basis = "measured"
+value = 0.106
+campaign = "descriptor-free-2026-09-26"
 
-# the six cells of the decomposition that had the aggressor in the arena's region with the stack elsewhere. they read 0.139 and 0.163 for SRAM1, 0.138 and 0.163 for SRAM2, and 0.152 and 0.152 for SRAM3, and the note reports their mean as 0.151.
-# why the mean is not keyed by a region from this campaign: the descriptor page sat in SRAM3 in every capture of it, so each region's pair contains one cell whose victim has an object in SRAM3 and one whose victim does not, and the first of each pair carries the descriptor term this file holds as a separate coefficient. no capture in that campaign separates the two.
+# the six cells that had the aggressor in the arena's region with the stack elsewhere, measured with the descriptor page in SRAM4 where no victim object sits, so the data term stands on its own rather than carrying a descriptor term in half the cells.
+# the six read 0.1465 and 0.1462 for SRAM1, 0.1455 and 0.1455 for SRAM2, and 0.1461 and 0.1463 for SRAM3, a spread of 0.1455 to 0.1465, and their mean is the value below.
+# they are replicates of one measurement rather than configurations that could not be separated, which is why this is a point estimate and not a range, and why it carries no region key.
+# the limit: a region dependent term below about 0.001 cannot be resolved here, because the gate drifted by that order across the run, at 0.0000, 0.0004 and 0.0006 for its three cells between the opening capture and the closing one.
 [[coefficient]]
 object = "arena"
 requester = "gpdma1"
 endpoint = "data"
-basis = "mean"
-minimum = 0.138
-maximum = 0.163
-cells = 6
-campaign = "arena-or-stack-2026-09-16"
+basis = "measured"
+value = 0.146
+campaign = "descriptor-free-2026-09-26"
 
 # the cell of the eight cell descriptor table with the descriptor page in SRAM3 and the stack in SRAM3, which is this overlap's configuration.
 # the conditions of that table: the arena in SRAM1 and the aggressor's data in SRAM2 in all eight cells, so the cost is the page being fetched into a region the victim uses rather than the aggressor's data traffic.

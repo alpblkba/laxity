@@ -222,19 +222,40 @@ pub fn run(args: &[String]) -> Result<String, String> {
     // one target is several cells, since the campaign measured this coefficient in six configurations, so a target that matches more than one is refused with their names rather than measured in whichever came first.
     let cell = match matching.as_slice() {
         [one] => *one,
+        // naming cells of some other target would be a next step into the wrong place, so this says which targets are implemented and stops.
         [] => {
-            return Err(format!(
-                "no campaign row arms {object} x {requester}.{endpoint}{}; the rows this command carries are {}",
-                name.map(|n| format!(" as {n}")).unwrap_or_default(),
-                CELLS.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
-            ))
+            let mut targets: Vec<String> = CELLS
+                .iter()
+                .map(|cell| format!("{} x {}.{}", cell.object, cell.requester, cell.endpoint))
+                .collect();
+            targets.sort();
+            targets.dedup();
+            return Err(match name {
+                Some(name) => format!(
+                    "no cell named {name} measures {object} x {requester}.{endpoint}; the cells for it are {}",
+                    CELLS.iter()
+                        .filter(|c| c.object == object && c.requester == requester && c.endpoint == endpoint)
+                        .map(|c| c.name).collect::<Vec<_>>().join(", ")
+                ),
+                None => format!(
+                    "no measurement implemented for {object} x {requester}.{endpoint}. this command measures {}",
+                    targets.join(", ")
+                ),
+            });
         }
+        // the printed remediation stops at the target, because the characterisation carries no cell and one target is several configurations. this is where the second step is stated, so it lists what to run rather than saying what is wrong.
         several => {
-            return Err(format!(
-                "{} rows arm {object} x {requester}.{endpoint}, so --cell has to choose one of {}",
-                several.len(),
-                several.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
-            ))
+            let mut lines = format!(
+                "{object} x {requester}.{endpoint} was measured in {} configurations and the characterisation names none of them, so one has to be chosen:\n",
+                several.len()
+            );
+            for cell in several {
+                lines.push_str(&format!(
+                    "  laxity characterise --object {object} --requester {requester} --endpoint {endpoint} --cell {}\n      {}\n",
+                    cell.name, cell.describes
+                ));
+            }
+            return Err(lines);
         }
     };
 
@@ -421,13 +442,13 @@ fn median(values: &mut Vec<u32>) -> f64 {
 fn basis_of(fit: &Fit) -> (Basis, Option<String>) {
     if fit.restarts > 0 {
         return (
-            Basis::Unmeasured { command: "laxity characterise".to_string() },
+            Basis::Unmeasured { remediation: "run: laxity characterise".to_string() },
             Some(format!("the board reset {} times inside the capture, so its records come from more than one configuration", fit.restarts)),
         );
     }
     if fit.wrong_region > 0 {
         return (
-            Basis::Unmeasured { command: "laxity characterise".to_string() },
+            Basis::Unmeasured { remediation: "run: laxity characterise".to_string() },
             Some(format!("{} records name an aggressor region other than the one this cell is filed under, so the capture is filed under a configuration the board was not in", fit.wrong_region)),
         );
     }
@@ -824,14 +845,18 @@ mod tests {
         let args: Vec<String> = ["--object", "stack", "--requester", "emw3080", "--endpoint", "spi dma"]
             .iter().map(|s| s.to_string()).collect();
         let error = run(&args).unwrap_err();
-        assert!(error.contains("no campaign row arms stack x emw3080.spi dma"), "{error}");
-        assert!(error.contains("df-a1-s2-ag1"), "{error}");
+        assert!(error.contains("no measurement implemented for stack x emw3080.spi dma"), "{error}");
+        // it names what is implemented rather than cells of a target nobody asked about.
+        assert!(error.contains("this command measures arena x gpdma1.data"), "{error}");
+        assert!(!error.contains("df-a1-s2-ag1"), "{error}");
 
         // the campaign measured this coefficient in six configurations, so the target alone does not name a cell.
         let args: Vec<String> = ["--object", "arena", "--requester", "gpdma1", "--endpoint", "data"]
             .iter().map(|s| s.to_string()).collect();
         let error = run(&args).unwrap_err();
-        assert!(error.contains("6 rows arm arena x gpdma1.data"), "{error}");
-        assert!(error.contains("--cell has to choose one"), "{error}");
+        assert!(error.contains("measured in 6 configurations"), "{error}");
+        // the refusal is the second step of a remediation, so it carries the commands to run rather than a complaint.
+        assert!(error.contains("--cell df-a1-s2-ag1"), "{error}");
+        assert_eq!(error.matches("laxity characterise --object arena").count(), 6, "{error}");
     }
 }

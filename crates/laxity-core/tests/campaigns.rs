@@ -198,8 +198,8 @@ fn an_unmeasured_coefficient_produces_the_command_rather_than_a_number() {
     assert!(answer.terms[0].high.is_none());
     assert_eq!(answer.high, 0.0);
     match &answer.bases()[0] {
-        Basis::Unmeasured { command } => {
-            assert_eq!(command, "laxity characterise --requester emw3080")
+        Basis::Unmeasured { remediation: command } => {
+            assert_eq!(command, "run: laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'")
         }
         other => panic!("expected an unmeasured basis, got {other:?}"),
     }

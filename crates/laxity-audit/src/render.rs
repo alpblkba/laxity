@@ -221,10 +221,10 @@ pub fn report(
                 // a reader who takes the spread for noise will trust the number more than it can bear, so the line says which kind of spread it is.
                 line!(out, "    the spread is across configurations and not measurement uncertainty");
             }
-            Basis::Unmeasured { command } => {
+            Basis::Unmeasured { remediation } => {
                 line!(out, "  {:<28} {:<7} {:<14} {:>8} {:>14}",
                          truncate(&label, 28), region, "unknown", xacts, "unknown");
-                line!(out, "    unmeasured, run: {command}");
+                line!(out, "    unmeasured, {remediation}");
             }
         }
     }

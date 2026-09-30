@@ -2,13 +2,12 @@
 //!
 //! the renderer lives here rather than in whatever runs it, so that the laxity binary and this crate's own example print the same report from the same code.
 
-use crate::{audit, region_label, ObjectSpec, Workload};
+use crate::{audit, candidates, region_label, DeclaredWorkload};
 use laxity_core::characterisation::{Basis, Characterisation};
-use laxity_core::cost::Requester;
 use laxity_core::placement::occupied_regions;
 use laxity_core::profile::Profile;
 use std::fmt::Write as _;
-use std::{fs, path::Path};
+use std::path::Path;
 
 /// one line of the report, written into the string the caller will print.
 macro_rules! line {
@@ -24,74 +23,6 @@ const PERCENT_DIGITS: usize = 1;
 /// the digits a coefficient is printed to, which is what the characterisation stores rather than what the float can hold.
 const COEFFICIENT_DIGITS: usize = 3;
 
-/// the window and the deadline an application declares for one workload, or nothing for each that it does not.
-///
-/// the window belongs to the application rather than to the part or to the measurement, so it is read out of a laxity.toml rather than assumed here. this is a line scanner and not a TOML parser because laxity-audit depends on three crates and none of them is a parser, and two integers under a named table do not justify a fourth.
-pub fn declared_window(path: &str, workload: &str) -> (Option<u64>, Option<u64>) {
-    let text = fs::read_to_string(path).unwrap_or_default();
-    let mut inside = false;
-    let (mut window, mut deadline) = (None, None);
-    for line in text.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            inside = line == format!("[workload.{workload}]");
-            continue;
-        }
-        if !inside {
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("window_cycles") {
-            window = value.trim_start_matches([' ', '=']).trim().parse().ok();
-        }
-        if let Some(value) = line.strip_prefix("deadline_cycles") {
-            deadline = value.trim_start_matches([' ', '=']).trim().parse().ok();
-        }
-    }
-    (window, deadline)
-}
-
-/// the reference application's workload, which is a declaration and not a measurement, and which is public so that the viewer prices the same one this report does rather than carrying a second copy of it. the objects are the three the stm32u585 characterisation names, mapped to the symbols that carry them, and the transaction rate is the standard point of the bandwidth sweep that every campaign in this tree reports against.
-pub fn reference_workload(sram3: u8, window_cycles: u64) -> Workload {
-    Workload {
-        name: "inference".to_string(),
-        window_cycles,
-        objects: vec![
-            ObjectSpec { name: "arena".into(), symbols: vec!["laxity_arena_span".into()] },
-            ObjectSpec { name: "stack".into(), symbols: vec!["tx_byte_pool_buffer".into()] },
-            ObjectSpec {
-                name: "runtime.state".into(),
-                symbols: vec![
-                    "laxity_net_ctx".into(),
-                    "laxity_out".into(),
-                    "laxity_arena".into(),
-                    "laxity_net".into(),
-                ],
-            },
-        ],
-        requesters: vec![
-            Requester {
-                name: "gpdma1".into(),
-                endpoint: "data".into(),
-                region: sram3,
-                transactions_per_second: Some(12_800_000.0),
-            },
-            Requester {
-                name: "gpdma1".into(),
-                endpoint: "descriptors".into(),
-                region: sram3,
-                transactions_per_second: Some(12_800_000.0),
-            },
-            Requester {
-                name: "emw3080".into(),
-                endpoint: "spi dma".into(),
-                region: sram3,
-                transactions_per_second: None,
-            },
-        ],
-    }
-}
-
-
 /// the whole report as text.
 ///
 /// the audited image's hash is an argument rather than something computed here, since hashing would need a dependency this crate does not have, and an unsupplied hash reports as not known to be the measured image rather than as a match.
@@ -103,14 +34,14 @@ pub fn report(
     audited: Option<&str>,
 ) -> Result<String, String> {
     let mut out = String::new();
-    let sram3 = profile.region_named("sram3").map(|region| region.id).unwrap_or(3);
-    let (declared, deadline) = match config {
-        Some(path) => declared_window(path, "inference"),
-        None => (None, None),
+    // no laxity.toml means no declaration, so there is no workload to price and the report says what is missing rather than pricing a workload of its own.
+    let declared = match config {
+        Some(path) => DeclaredWorkload::load(path, "inference", profile, elf)?,
+        None => DeclaredWorkload::undeclared("inference"),
     };
-    // the window has to be a number before anything can be a percentage of it, so an undeclared window falls back to a stated default and the output says the declaration is missing.
-    let work = reference_workload(sram3, declared.unwrap_or(320_000));
-    let report = audit(elf, profile, characterisation, &work, audited)?;
+    let work = &declared.workload;
+    let deadline = declared.deadline_cycles;
+    let report = audit(elf, profile, characterisation, work, audited)?;
 
     line!(out, "laxity audit  {}", elf.display());
     line!(out);
@@ -118,7 +49,7 @@ pub fn report(
     line!(out, "  workload       {}, window {} cycles at {} Hz, {:.2} ms",
              work.name, work.window_cycles, profile.clock_hz,
              1000.0 * work.window_cycles as f64 / profile.clock_hz as f64);
-    match (config, declared) {
+    match (config, declared.declared_window) {
         (Some(path), Some(_)) => line!(out, "  window         declared in {path}"),
         // the window belongs to the application, so when no laxity.toml declares it the output says the number is this example's and not anybody's measurement.
         _ => {
@@ -160,6 +91,90 @@ pub fn report(
     }
     for line in &report.unplaced {
         line!(out, "  not placed: {line}");
+    }
+    for note in &report.partial_symbols {
+        for line in wrap(&format!("symbols: {note}"), 76) {
+            line!(out, "  {line}");
+        }
+    }
+    for note in &declared.unresolved {
+        for line in wrap(&format!("declaration: {note}"), 76) {
+            line!(out, "  {line}");
+        }
+    }
+    // the audit reads a size from the ELF for one object and from the declaration for another, and this tree holds three true sizes for the stack alone, so every number above says which one it is.
+    for entry in &report.size_from {
+        for line in wrap(&format!(
+            "source: {}, size from {}, address from {}.",
+            entry.object, entry.size, entry.address), 76) {
+            line!(out, "  {line}");
+        }
+    }
+    for note in &report.contradictions {
+        for line in wrap(&format!("disagreement: {note}"), 76) {
+            line!(out, "  {line}");
+        }
+    }
+
+    if !report.runtime_placed.is_empty() {
+        line!(out);
+        line!(out, "placed at run time, so not in the total");
+        line!(out);
+        for object in &report.runtime_placed {
+            let regions: Vec<String> = object
+                .regions
+                .iter()
+                .map(|id| region_label(&profile.regions, *id))
+                .collect();
+            line!(out, "  {}", object.name);
+            for line in wrap(&format!(
+                "the symbol {} resolved for it is {} B at 0x{:08x}, which covers {}, and the declaration names no region of its own. that address is the extent this object may be placed within and not where it is, so where it went is chosen at run time and cannot be read out of this ELF.",
+                object.symbol, object.span_bytes, object.addr, regions.join(", ")), 76) {
+                line!(out, "  {line}");
+            }
+            let Some(bytes) = object.declared_bytes else {
+                for line in wrap(
+                    "the declaration gives no size for it either, so not even a cost per candidate region can be formed.", 76) {
+                    line!(out, "  {line}");
+                }
+                continue;
+            };
+            for line in wrap(&format!(
+                "the declaration says the object is {bytes} B, which is where the sizes below come from. there is no one placement for it and therefore no one placement cost, so the cost per candidate region is the answer."), 76) {
+                line!(out, "  {line}");
+            }
+            for coefficient in &object.coefficients {
+                line!(out, "    {coefficient}, measured and not in the total above");
+            }
+            line!(out);
+            line!(out, "    {:<8} {:>27} {:>9}  {}", "region", "contention", "quiet", "basis");
+            for candidate in candidates(
+                &object.name,
+                bytes,
+                &object.section,
+                profile,
+                characterisation,
+                work,
+            ) {
+                let contention = match (&candidate.cost, &candidate.note) {
+                    (Some(priced), _) if priced.unpriced() == 0 && priced.is_point_estimate() => {
+                        format!("{:+.0} cyc", priced.high)
+                    }
+                    (Some(priced), _) => format!("{:+.0} cyc, {} unpriced", priced.low, priced.unpriced()),
+                    // the table has one line per region, so a reason keeps its first clause and the full sentence stays on the audit screen.
+                    (None, Some(note)) => note.split(',').next().unwrap_or(note).to_string(),
+                    (None, None) => "unknown".to_string(),
+                };
+                // the contention free charge is part of what the placement costs and nobody knows which one is paid until the object lands, so it sits beside the contention rather than under the total.
+                let quiet = candidate
+                    .quiet
+                    .map(|cycles| format!("{cycles:+.0} cyc"))
+                    .unwrap_or_else(|| "unknown".to_string());
+                line!(out, "    {:<8} {:>27} {:>9}  {}",
+                         candidate.region, truncate(&contention, 27), quiet,
+                         candidate.quiet_basis.unwrap_or_else(|| "no charge recorded".to_string()));
+            }
+        }
     }
 
     line!(out);

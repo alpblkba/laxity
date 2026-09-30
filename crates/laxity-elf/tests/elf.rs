@@ -1,3 +1,4 @@
+use laxity_core::profile::ProfileDocument;
 use laxity_elf::{
     parse_elf, read_elf, region_of, regions_spanned, summarize, AllocatedObject, Region,
 };
@@ -144,25 +145,10 @@ fn rejects_malformed_unsupported_and_stripped_inputs() {
 
 fn profile() -> Vec<Region> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles/stm32u585.toml");
-    let table: toml::Table = fs::read_to_string(path).unwrap().parse().unwrap();
-    table["memory_regions"]
-        .as_array()
+    ProfileDocument::from_toml(&fs::read_to_string(path).unwrap())
         .unwrap()
-        .iter()
-        .map(|entry| Region {
-            // The SRAM suffix matches the firmware's numeric ids because the profile carries string ids.
-            id: entry["id"]
-                .as_str()
-                .unwrap()
-                .strip_prefix("sram")
-                .unwrap()
-                .parse()
-                .unwrap(),
-            name: entry["label"].as_str().unwrap().to_owned(),
-            base: entry["start"].as_integer().unwrap().try_into().unwrap(),
-            bytes: entry["size"].as_integer().unwrap().try_into().unwrap(),
-        })
-        .collect()
+        .labelled_regions()
+        .unwrap()
 }
 
 fn image() -> Option<(Vec<AllocatedObject>, Vec<Region>)> {

@@ -2,13 +2,10 @@
 //!
 //! the printed report shows everything at once, which is what a pipe wants and what a reader of a real firmware cannot use: the reference image carries 1277 allocated symbols. this screen is the same audit walked one object at a time.
 
-use laxity_audit::render::{declared_window, reference_workload};
-use laxity_audit::{audit, region_label, Audit, Workload};
+use laxity_audit::{audit, region_label, Audit, DeclaredWorkload, Workload};
 use laxity_core::characterisation::{characterise_command, Basis, Characterisation};
-use laxity_core::cost::{cost, Requester};
-use laxity_core::placement::{Address, Placement};
+use laxity_core::cost::Requester;
 use laxity_core::profile::Profile;
-use laxity_core::Region;
 use std::path::Path;
 
 /// one overlap of one object with one requester endpoint.
@@ -94,64 +91,40 @@ fn what_if_rows(
     profile: &Profile,
     characterisation: &Characterisation,
     work: &Workload,
+    with_quiet_charge: bool,
 ) -> Vec<WhatIf> {
-    profile
-        .regions
-        .iter()
-        .map(|region| candidate_row(object, bytes, section, region, profile, characterisation, work))
+    laxity_audit::candidates(object, bytes, section, profile, characterisation, work)
+        .into_iter()
+        .map(|candidate| candidate_row(candidate, work, with_quiet_charge))
         .collect()
 }
 
-/// one candidate region, priced by moving the object there and calling the model.
+/// one candidate region, laid out for the screen from the shared pricing in laxity_audit::candidates.
 fn candidate_row(
-    object: &str,
-    bytes: u64,
-    section: &str,
-    region: &Region,
-    profile: &Profile,
-    characterisation: &Characterisation,
+    candidate: laxity_audit::Candidate,
     work: &Workload,
+    with_quiet_charge: bool,
 ) -> WhatIf {
-    let row = |verdict: String, terms: Vec<WhatIfTerm>| WhatIf {
-        region: region.name.clone(),
-        verdict,
-        terms,
+    // an object placed at run time pays a contention free charge for whichever region it lands in, and which one that is is not known, so its rows carry that charge beside the contention. a placed object's charge is already in the report's own quiet section and is not repeated here.
+    let quiet = match (with_quiet_charge, candidate.quiet, &candidate.quiet_basis) {
+        (false, _, _) => String::new(),
+        (true, Some(cycles), Some(basis)) => format!(", quiet {cycles:+.0} cyc, {basis}"),
+        (true, None, Some(basis)) => format!(", quiet unknown, {basis}"),
+        (true, _, _) => format!(", quiet unknown, no charge for {} in this region", work.name),
     };
-
-    // whether the object fits is arithmetic on two sizes and nothing else. laxity_types::regions_spanned answers which declared regions a span touches, which is a different question: a span running off the top of the last declared region touches nothing above it, so it reads as contained.
-    if bytes > region.bytes {
-        return row(
-            format!("does not fit, {bytes} B in a {} B region", region.bytes),
-            Vec::new(),
-        );
-    }
-    let placed = Placement::new(object, bytes, section, Address::LinkTime(region.base));
+    let Some(priced) = candidate.cost else {
+        return WhatIf {
+            region: candidate.region.clone(),
+            verdict: format!("{}{quiet}", candidate.note.unwrap_or_else(|| "unknown".to_string())),
+            terms: Vec::new(),
+        };
+    };
 
     let here: Vec<&Requester> = work
         .requesters
         .iter()
-        .filter(|requester| requester.region == region.id)
+        .filter(|requester| requester.region == candidate.region_id)
         .collect();
-    if here.is_empty() {
-        return row("no requester in this region, nothing to load".to_string(), Vec::new());
-    }
-
-    // the model refuses a coefficient whose object is not in the placement it is given, so the characterisation is narrowed to this object's entries first. that is the filter laxity_audit::audit already applies for the whole placement, done here for one object rather than a second rule invented for the screen.
-    let mut mine = characterisation.clone();
-    mine.coefficients.retain(|coefficient| coefficient.object == object);
-
-    let priced = match cost(
-        std::slice::from_ref(&placed),
-        &work.requesters,
-        &mine,
-        &profile.regions,
-        work.window_cycles,
-        profile.clock_hz,
-    ) {
-        Ok(priced) => priced,
-        Err(error) => return row(format!("not priced: {error}"), Vec::new()),
-    };
-
     let mut terms = Vec::new();
     for requester in &here {
         let endpoint = format!("{}.{}", requester.name, requester.endpoint);
@@ -185,16 +158,17 @@ fn candidate_row(
 
     // the number first and then how much of it is priced, because a figure standing alone reads as the cost of the placement rather than as the part of it anybody has measured.
     let carried = priced.terms.len() - priced.unpriced();
-    row(
-        format!(
-            "{} cyc, {} of {} endpoint{} priced",
+    WhatIf {
+        region: candidate.region.clone(),
+        verdict: format!(
+            "{} cyc, {} of {} endpoint{} priced{quiet}",
             estimate_text(Some(priced.low), Some(priced.high)),
             carried,
             here.len(),
             if here.len() == 1 { "" } else { "s" }
         ),
         terms,
-    )
+    }
 }
 
 impl AuditModel {
@@ -205,12 +179,12 @@ impl AuditModel {
         characterisation: &Characterisation,
         app_config: Option<&str>,
     ) -> Result<AuditModel, String> {
-        let sram3 = profile.region_named("sram3").map(|region| region.id).unwrap_or(3);
-        let window = app_config
-            .and_then(|path| declared_window(path, "inference").0)
-            .unwrap_or(320_000);
-        let work = reference_workload(sram3, window);
-        let report: Audit = audit(elf, profile, characterisation, &work, None)?;
+        let declared = match app_config {
+            Some(path) => DeclaredWorkload::load(path, "inference", profile, elf)?,
+            None => DeclaredWorkload::undeclared("inference"),
+        };
+        let work = &declared.workload;
+        let report: Audit = audit(elf, profile, characterisation, work, None)?;
 
         let mut objects: Vec<Object> = report
             .placements
@@ -253,10 +227,17 @@ impl AuditModel {
                     .collect(),
             })
             .collect();
+        // an object the ELF cannot fix a region for is on the screen with its declared size, not with the size of the reservation it lives in, and with no overlap rows, since it has no placement for a term to belong to. its candidate rows are the whole answer for it.
+        objects.extend(report.runtime_placed.iter().map(|object| Object {
+            name: object.name.clone(),
+            bytes: object.declared_bytes.unwrap_or(0),
+            regions: "chosen at run time".to_string(),
+            overlaps: Vec::new(),
+        }));
         // largest first, because the object that dominates a placement is the one a reader wants under the cursor when the screen opens.
         objects.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.name.cmp(&b.name)));
 
-        let candidates = report
+        let placed_sizes = report
             .placements
             .iter()
             .map(|placed| (placed.object.name.clone(), placed.object.bytes, placed.object.section.clone()))
@@ -264,12 +245,38 @@ impl AuditModel {
         let candidates = objects
             .iter()
             .map(|object| {
-                let (_, bytes, section) = candidates
+                if let Some(runtime) =
+                    report.runtime_placed.iter().find(|entry| entry.name == object.name)
+                {
+                    return match runtime.declared_bytes {
+                        // the object moves at run time, so the per candidate cost is the answer rather than one number, and it is computed on the object's own size out of the declaration.
+                        Some(bytes) => what_if_rows(
+                            &object.name,
+                            bytes,
+                            // the section of the symbol the object is carved out of, rather than an assumed one.
+                            &runtime.section,
+                            profile,
+                            characterisation,
+                            &work,
+                            true,
+                        ),
+                        None => profile
+                            .regions
+                            .iter()
+                            .map(|region| WhatIf {
+                                region: region.name.clone(),
+                                verdict: "placed at run time, and the declaration gives no size for it, so no cost per candidate can be formed".to_string(),
+                                terms: Vec::new(),
+                            })
+                            .collect(),
+                    };
+                }
+                let (_, bytes, section) = placed_sizes
                     .iter()
                     .find(|(name, _, _)| name == &object.name)
                     .cloned()
                     .unwrap_or_else(|| (object.name.clone(), object.bytes, ".bss".to_string()));
-                what_if_rows(&object.name, bytes, &section, profile, characterisation, &work)
+                what_if_rows(&object.name, bytes, &section, profile, characterisation, &work, false)
             })
             .collect();
 
@@ -294,7 +301,7 @@ impl AuditModel {
 mod tests {
     use super::*;
 
-    const PROFILE: &str = "[device]\nid = \"stm32u585\"\nclock_hz = 160000000\n\n[[memory_regions]]\nid = \"sram1\"\nqos_id = 1\nstart = 0x20000000\nsize = 0x00030000\n\n[[memory_regions]]\nid = \"sram2\"\nqos_id = 2\nstart = 0x20030000\nsize = 0x00010000\n\n[[memory_regions]]\nid = \"sram3\"\nqos_id = 3\nstart = 0x20040000\nsize = 0x00080000\n\n[[memory_regions]]\nid = \"sram4\"\nqos_id = 4\nstart = 0x28000000\nsize = 0x00004000\n";
+    const PROFILE: &str = "schema_version = 1\n\n[device]\nid = \"stm32u585\"\ndisplay_name = \"B-U585I-IOT02A / STM32U585AI\"\narchitecture = \"Cortex-M33\"\nclock_hz = 160000000\n\n[[memory_regions]]\nid = \"sram1\"\nqos_id = 1\nlabel = \"SRAM1\"\nstart = 0x20000000\nsize = 0x00030000\n\n[[memory_regions]]\nid = \"sram2\"\nqos_id = 2\nlabel = \"SRAM2\"\nstart = 0x20030000\nsize = 0x00010000\n\n[[memory_regions]]\nid = \"sram3\"\nqos_id = 3\nlabel = \"SRAM3\"\nstart = 0x20040000\nsize = 0x00080000\n\n[[memory_regions]]\nid = \"sram4\"\nqos_id = 4\nlabel = \"SRAM4\"\nstart = 0x28000000\nsize = 0x00004000\n";
 
     fn profile() -> Profile {
         Profile::from_toml(PROFILE).unwrap()
@@ -341,6 +348,7 @@ mod tests {
             &profile(),
             &characterisation(&measured("stack", "data", 0.106)),
             &work(vec![requester("gpdma1", "data", 3, Some(12_800_000.0))]),
+            false,
         );
         assert_eq!(rows.len(), 4);
         for row in &rows {
@@ -361,6 +369,7 @@ mod tests {
             &profile(),
             &characterisation(&measured("stack", "data", 0.106)),
             &work(vec![requester("gpdma1", "data", 3, Some(12_800_000.0))]),
+            false,
         );
         let row = rows.iter().find(|row| row.region == "sram3").unwrap();
         // 12.8 million transactions a second over a 320320 cycle window at 160 MHz is 25625.6 of them, and 0.106 of those is 2716 cycles.
@@ -387,6 +396,7 @@ mod tests {
                 requester("gpdma1", "descriptors", 3, Some(12_800_000.0)),
                 requester("emw3080", "spi dma", 3, None),
             ]),
+            false,
         );
         let row = rows.iter().find(|row| row.region == "sram3").unwrap();
         assert_eq!(row.verdict, "+3229 cyc, 2 of 3 endpoints priced");
@@ -409,6 +419,7 @@ mod tests {
             &profile(),
             &characterisation(&measured("arena", "data", 0.146)),
             &work(vec![requester("gpdma1", "data", 3, Some(12_800_000.0))]),
+            false,
         );
         let small = rows.iter().find(|row| row.region == "sram2").unwrap();
         assert_eq!(small.verdict, "does not fit, 348160 B in a 65536 B region");
@@ -427,6 +438,7 @@ mod tests {
             &profile(),
             &characterisation(&measured("arena", "data", 0.146)),
             &work(vec![requester("gpdma1", "data", 4, Some(12_800_000.0))]),
+            false,
         );
         let last = rows.iter().find(|row| row.region == "sram4").unwrap();
         assert_eq!(last.verdict, "does not fit, 20000 B in a 16384 B region");
@@ -443,6 +455,7 @@ mod tests {
             &profile(),
             &characterisation(&measured("stack", "data", 0.106)),
             &work(vec![requester("gpdma1", "data", 4, Some(12_800_000.0))]),
+            false,
         );
         let last = rows.iter().find(|row| row.region == "sram4").unwrap();
         assert_eq!(last.verdict, "+2716 cyc, 1 of 1 endpoint priced");
@@ -458,6 +471,7 @@ mod tests {
             &profile(),
             &characterisation(entries),
             &work(vec![requester("gpdma1", "data", 3, Some(12_800_000.0))]),
+            false,
         );
         let row = rows.iter().find(|row| row.region == "sram3").unwrap();
         assert_eq!(row.verdict, "+0..+26 cyc, 1 of 1 endpoint priced");
@@ -480,6 +494,7 @@ mod tests {
                 requester("gpdma1", "data", 3, Some(12_800_000.0)),
                 requester("emw3080", "spi dma", 3, None),
             ]),
+            false,
         );
         let row = rows.iter().find(|row| row.region == "sram3").unwrap();
         assert_eq!(row.verdict, "+2716 cyc, 1 of 2 endpoints priced");

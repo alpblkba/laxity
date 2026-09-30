@@ -4,11 +4,13 @@
 //!
 //! the model is ported from the audit subcommand of tools/laxity and reproduces its validation and its provenance labels. it reads no ELF, no linker map, no capture and no serial port, because those belong to the crates that call this one.
 
+pub mod application;
 pub mod characterisation;
 pub mod cost;
 pub mod placement;
 pub mod profile;
 
+pub use application::{ApplicationDocument, SymbolKind};
 pub use characterisation::{Basis, Characterisation, Coefficient, Quiet};
 pub use cost::{cost, quiet_cost, Cost, QuietCost, QuietTerm, Requester, Term};
 pub use laxity_types::{region_of, regions_spanned, Object, Region};

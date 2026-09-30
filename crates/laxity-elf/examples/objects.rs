@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use laxity_core::profile::ProfileDocument;
 use laxity_elf::{read_elf, summarize, AllocatedObject, Region};
 use std::{error::Error, fmt::Write as _, fs, path::Path};
 
@@ -26,41 +27,16 @@ fn run() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// the regions this report names, taken from the shared display projection. what stays here is the check that belongs to a renderer: these names go into fixed width columns, and a long one is printed on its own line without passing through the cell sanitiser.
 fn profile(text: &str) -> Result<Vec<Region>, Box<dyn Error>> {
-    let table: toml::Table = text.parse()?;
-    let entries = table
-        .get("memory_regions")
-        .and_then(toml::Value::as_array)
-        .ok_or("profile needs a memory_regions array")?;
-    entries
+    let regions = ProfileDocument::from_toml(text)?.labelled_regions()?;
+    if regions
         .iter()
-        .enumerate()
-        .map(|(index, entry)| {
-            let name = entry
-                .get("label")
-                .or_else(|| entry.get("id"))
-                .and_then(toml::Value::as_str)
-                .ok_or("region needs a label or id")?;
-            if name.is_empty() || !name.is_ascii() || name.chars().any(char::is_control) {
-                return Err("region names must be nonempty printable ASCII".into());
-            }
-            Ok(Region {
-                // Local ids preserve profile order because this example never exposes numeric ids.
-                id: u8::try_from(index + 1)?,
-                name: name.to_owned(),
-                base: entry
-                    .get("start")
-                    .and_then(toml::Value::as_integer)
-                    .ok_or("region needs an integer start")?
-                    .try_into()?,
-                bytes: entry
-                    .get("size")
-                    .and_then(toml::Value::as_integer)
-                    .ok_or("region needs an integer size")?
-                    .try_into()?,
-            })
-        })
-        .collect()
+        .any(|region| !region.name.is_ascii() || region.name.chars().any(char::is_control))
+    {
+        return Err("region names must be printable ASCII".into());
+    }
+    Ok(regions)
 }
 
 fn number(value: u64) -> String {
@@ -332,13 +308,18 @@ mod tests {
     }
 
     #[test]
-    fn profile_requires_usable_regions() {
-        let text = "[[memory_regions]]\nid='ram'\nlabel='RAM'\nstart=0x20000000\nsize=1024\n";
+    fn region_ids_come_from_qos_id_rather_than_from_the_profile_order() {
+        let text = "schema_version = 1\n\n[device]\nid='x'\ndisplay_name='X'\narchitecture='test'\n\n[[memory_regions]]\nid='ram'\nqos_id=1\nlabel='RAM'\nstart=0x20000000\nsize=1024\n\n[[memory_regions]]\nid='tail'\nqos_id=4\nlabel='TAIL'\nstart=0x20000400\nsize=1024\n";
         let regions = profile(text).unwrap();
         assert_eq!(regions[0].name, "RAM");
         assert_eq!(regions[0].base, 0x20000000);
-        assert!(profile("[device]").is_err());
+        // the second region is declared second and carries qos_id 4, which is the id the firmware and every telemetry record use for it. the order would have said 2.
+        assert_eq!(regions[1].id, 4);
+        // a bare [device] is refused by the shared schema now, rather than by this file's own check for a memory_regions array, and the schema names the first field the device table owes it.
+        let bare = profile("[device]").unwrap_err().to_string();
+        assert!(bare.contains("missing field `id`"), "{bare}");
         assert!(profile(&text.replace("size=1024", "size=-1")).is_err());
         assert!(profile(&text.replace("label='RAM'", "label=''")).is_err());
+        assert!(profile(&text.replace("qos_id=4\n", "")).is_err());
     }
 }

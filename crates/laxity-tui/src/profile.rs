@@ -1,12 +1,12 @@
-use std::{
-    collections::BTreeMap,
-    error::Error,
-    fmt::{self, Display},
-    fs, io,
-    path::Path,
-};
+//! the device model a screen renders, built from the profile document laxity-core parses.
+//!
+//! this file holds no schema and no parse. what it holds is the projection: the display name, the region kinds, the logical domains and the requester kinds the telemetry and memory screens need, out of the same document the cost model reads.
 
-use serde::Deserialize;
+use std::{collections::BTreeMap, path::Path};
+
+use laxity_core::profile::ProfileDocument;
+
+pub use laxity_core::profile::ProfileError;
 
 use crate::model::{
     AddressRange, Device, DeviceCapabilities, DeviceId, MemoryKind, MemoryRegion, MemoryRegionId,
@@ -17,135 +17,18 @@ pub const STM32U585_PROFILE: &str = include_str!("../../../profiles/stm32u585.to
 #[cfg(test)]
 pub const VIRTUAL_GENERIC_PROFILE: &str = include_str!("../../../profiles/virtual-generic.toml");
 
-const PROFILE_SCHEMA_VERSION: u32 = 1;
-
-#[derive(Debug)]
-pub enum ProfileError {
-    Io(io::Error),
-    Parse(toml::de::Error),
-    Invalid(String),
-}
-
-impl Display for ProfileError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(error) => error.fmt(formatter),
-            Self::Parse(error) => error.fmt(formatter),
-            Self::Invalid(message) => message.fmt(formatter),
-        }
-    }
-}
-
-impl Error for ProfileError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Io(error) => Some(error),
-            Self::Parse(error) => Some(error),
-            Self::Invalid(_) => None,
-        }
-    }
-}
-
-impl From<io::Error> for ProfileError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-impl From<toml::de::Error> for ProfileError {
-    fn from(error: toml::de::Error) -> Self {
-        Self::Parse(error)
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfileDocument {
-    schema_version: u32,
-    device: ProfileDevice,
-    #[serde(default)]
-    memory_regions: Vec<ProfileMemoryRegion>,
-    #[serde(default)]
-    requesters: Vec<ProfileRequester>,
-    #[serde(default)]
-    capabilities: ProfileCapabilities,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfileDevice {
-    id: String,
-    display_name: String,
-    architecture: String,
-    clock_hz: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfileMemoryRegion {
-    id: String,
-    /// the numeric region id the firmware and the wire format use, which laxity-core requires and this viewer does not read. it is declared because the struct denies unknown fields, so a profile carrying it would otherwise be refused, and it is allowed to stay unread rather than being dropped, since dropping it is what made the profile unloadable here.
-    #[serde(default)]
-    #[allow(dead_code)]
-    qos_id: Option<u8>,
-    label: String,
-    start: u64,
-    size: u64,
-    kind: Option<String>,
-    logical_domain: Option<String>,
-    #[serde(default)]
-    metadata: BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfileRequester {
-    id: String,
-    label: String,
-    kind: String,
-}
-
-#[derive(Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct ProfileCapabilities {
-    cycle_counter: bool,
-    stall_cycles: bool,
-    cache_metrics: bool,
-    dma_telemetry: bool,
-    placement_control: bool,
-    physical_addresses: bool,
-    physical_topology: bool,
-    control_channel: bool,
-    energy: bool,
-    temperature: bool,
-    bandwidth: bool,
-}
-
 pub fn load_profile(path: impl AsRef<Path>) -> Result<Device, ProfileError> {
-    parse_profile(&fs::read_to_string(path)?)
+    device(ProfileDocument::load(path)?)
 }
 
 pub fn parse_profile(source: &str) -> Result<Device, ProfileError> {
-    let profile: ProfileDocument = toml::from_str(source)?;
-    if profile.schema_version != PROFILE_SCHEMA_VERSION {
-        return Err(ProfileError::Invalid(format!(
-            "unsupported profile schema version: {}",
-            profile.schema_version
-        )));
-    }
-    require_text("device.id", &profile.device.id)?;
-    require_text("device.display_name", &profile.device.display_name)?;
-    require_text("device.architecture", &profile.device.architecture)?;
-    if profile.device.clock_hz == Some(0) {
-        return Err(ProfileError::Invalid(
-            "device.clock_hz must be greater than zero".to_string(),
-        ));
-    }
+    device(ProfileDocument::from_toml(source)?)
+}
 
+/// what is checked here and not in the document is what only a screen cares about: that an address range is representable, and that the ids the screens key their maps by are unique.
+fn device(profile: ProfileDocument) -> Result<Device, ProfileError> {
     let mut memory_regions = BTreeMap::new();
     for raw in profile.memory_regions {
-        require_text("memory_regions.id", &raw.id)?;
-        require_text("memory_regions.label", &raw.label)?;
         let range = AddressRange::new(raw.start, raw.size);
         if raw.size == 0 || range.end().is_none() {
             return Err(ProfileError::Invalid(format!(
@@ -171,9 +54,6 @@ pub fn parse_profile(source: &str) -> Result<Device, ProfileError> {
 
     let mut requesters = BTreeMap::new();
     for raw in profile.requesters {
-        require_text("requesters.id", &raw.id)?;
-        require_text("requesters.label", &raw.label)?;
-        require_text("requesters.kind", &raw.kind)?;
         let id = RequesterId::new(raw.id);
         let requester = Requester {
             id: id.clone(),
@@ -217,14 +97,6 @@ pub fn stm32u585() -> Result<Device, ProfileError> {
 #[cfg(test)]
 pub fn virtual_generic() -> Result<Device, ProfileError> {
     parse_profile(VIRTUAL_GENERIC_PROFILE)
-}
-
-fn require_text(field: &str, value: &str) -> Result<(), ProfileError> {
-    if value.trim().is_empty() {
-        Err(ProfileError::Invalid(format!("{field} must not be empty")))
-    } else {
-        Ok(())
-    }
 }
 
 fn memory_kind(value: String) -> MemoryKind {
@@ -333,5 +205,17 @@ size = 1
             parse_profile(&overflow),
             Err(ProfileError::Invalid(message)) if message.contains("address range")
         ));
+    }
+
+    #[test]
+    fn the_viewer_and_the_cost_model_read_one_document() {
+        // the same bytes reach both, so a region the screens show is a region the model can price, which is what the two parsers did not guarantee.
+        let device = stm32u585().unwrap();
+        let profile = laxity_core::profile::Profile::from_toml(STM32U585_PROFILE).unwrap();
+        assert_eq!(device.memory_regions.len(), profile.regions.len());
+        for region in &profile.regions {
+            let shown = &device.memory_regions[&MemoryRegionId::new(region.name.clone())];
+            assert_eq!(shown.range.start, region.base);
+        }
     }
 }

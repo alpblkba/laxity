@@ -2,9 +2,9 @@ Output build/tapes/laxity-memory.gif
 Set Height 800
 Source docs/tapes/common.tape
 
-Type "laxity tui --file build/tapes/same-region-contention.bin"
+Type "laxity tui --serial"
 Enter
-Wait+Screen /replay complete/
+Wait+Screen /stream live/
 Type "m"
 Wait+Screen /memory view controls/
 Sleep 4s

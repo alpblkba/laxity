@@ -377,9 +377,9 @@ dependencies = [
 name = "laxity-elf"
 version = "0.1.0"
 dependencies = [
+ "laxity-core",
  "laxity-types",
  "object",
- "toml",
 ]
 
 [[package]]

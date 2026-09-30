@@ -2,9 +2,9 @@ Output build/tapes/laxity-cross-region.gif
 Set Height 800
 Source docs/tapes/common.tape
 
-Type "laxity tui --file build/tapes/cross-region-contention.bin"
+Type "laxity tui --serial"
 Enter
-Wait+Screen /replay complete/
+Wait+Screen /stream live/
 Sleep 3s
 Type "m"
 Wait+Screen /memory view controls/

@@ -11,6 +11,7 @@ deadline_cycles = 5119994
 workload = "inference"
 name = "arena"
 symbol = "laxity_arena_s1"
+symbol_kind = "reservation"
 map_symbol = "laxity_arena_span"
 size = 2944
 movable = true

@@ -25,7 +25,14 @@ import telemetry_parse
 # reported and the two tables only mean something side by side.
 CAMPAIGNS = ("interference-2026-09-15", "mechanism-2026-09-16", "arena-or-stack-2026-09-16",
              "closing-2026-09-19", "wifi-2026-09-19", "paired-2026-09-19",
-             "final-2026-09-19")
+             "final-2026-09-19",
+             # the descriptor free round, which ran after this list was written and was never added
+             # to it, so its twelve captures were on disk and unreadable here.
+             "descriptor-free-2026-09-26",
+             # captures taken by laxity characterise, which measures one cell rather than running a
+             # campaign. they are here so that this fit can be read against the command's own over
+             # the same bytes, and they belong to no campaign until somebody files them under one.
+             "laxity-characterise")
 
 # the cells every capture of the closing campaign is read against, measured at the start and again
 # at the end. the expected values are the decomposition's, and the gate is 0.010 cycles per

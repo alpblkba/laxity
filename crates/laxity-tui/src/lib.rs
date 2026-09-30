@@ -2476,7 +2476,10 @@ fn set_source(target: &mut Option<SourceSpec>, value: SourceSpec) -> Result<(), 
     Ok(())
 }
 
-fn find_serial_port() -> Result<PathBuf, String> {
+/// the board's virtual COM port, resolved the one way this tree resolves it.
+///
+/// it is public because the console writer in crates/laxity arms a cell over the same port this viewer reads, and a second discovery would be a second thing to keep in step with LAXITY_PORT and LAXITY_STLINK_SN.
+pub fn find_serial_port() -> Result<PathBuf, String> {
     if let Some(path) = env::var_os("LAXITY_PORT").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(path));
     }

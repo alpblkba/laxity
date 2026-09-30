@@ -12,3 +12,5 @@ path = "src/main.rs"
 laxity-audit = { path = "../laxity-audit" }
 laxity-core = { path = "../laxity-core" }
 laxity-tui = { path = "../laxity-tui" }
+# the same pin crates/laxity-tui carries, so the console writer and the viewer open the port through one version.
+serialport = { version = "=4.10.1", default-features = false }

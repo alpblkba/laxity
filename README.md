@@ -91,9 +91,9 @@ laxity tui --file results/raw/RUN/telemetry.bin
 </details>
 
 <details>
-<summary>Same-region and cross-region cells on a live board</summary>
+<summary>A selected cross-region cell on a live board</summary>
 
-![The telemetry and memory views on a live board as the firmware's cross walks the arena and GPDMA1 through the regions, labelling each cell same region or cross region](assets/laxity-cross-region.gif)
+![A live board armed to hold one cross region cell, the arena in SRAM1 against GPDMA1 in SRAM3, with the penalty measured against that placement's own aggressor off p50](assets/laxity-cross-region.gif)
 
 </details>
 

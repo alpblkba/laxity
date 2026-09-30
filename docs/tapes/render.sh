@@ -24,6 +24,16 @@ board_tape() {
     case "$1" in overview|memory|cross-region) return 0 ;; *) return 1 ;; esac
 }
 
+# The console keys that select the cell a tape records, or nothing to record whatever the schedule is on.
+#
+# The board's arena cross shuffles, so an unarmed recording catches a cell rather than choosing one, which is
+# why cross-region.tape could not keep the promise its name makes. i puts the victim on the stress schedule,
+# where the arena is the slot rather than the cross, 7 puts that arena in SRAM1 and c puts the aggressor in
+# SRAM3, so the arena and the requester are in different regions for the whole recording.
+tape_keys() {
+    case "$1" in cross-region) echo "i7c" ;; *) echo "" ;; esac
+}
+
 # Whether the board is attached, flashed and streaming cleanly, decided once and by the same reader the tapes record.
 #
 # The headless reader fails outright when no ST-LINK port is there and when the stream carries no header
@@ -65,6 +75,13 @@ for tape in "$@"; do
         if ! board_ready; then
             echo "skipping $tape: no board streaming, so assets/ keeps the recording it has" >&2
             continue
+        fi
+        keys=$(tape_keys "$tape")
+        if [ -n "$keys" ]; then
+            # The console writer confirms the board reports what the keys ask for and exits non zero when it
+            # does not, so a tape never records a cell nobody selected while the caption says one was.
+            laxity console "$keys" | sed 's/^/  /'
+            sleep 1
         fi
     fi
     if [ "$tape" = audit ]; then

@@ -353,6 +353,7 @@ dependencies = [
  "laxity-audit",
  "laxity-core",
  "laxity-tui",
+ "serialport",
 ]
 
 [[package]]

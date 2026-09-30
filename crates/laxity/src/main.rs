@@ -2,6 +2,7 @@
 //!
 //! audit and tui are this binary's own, and they call crates/laxity-audit and crates/laxity-tui rather than carrying a second copy of either. every other subcommand still lives in the Python script and is handed to it untouched, which is a state to leave rather than a design to keep, so --help says which is which.
 
+mod characterise;
 mod console;
 
 use laxity_audit::render::report;
@@ -46,12 +47,22 @@ fn main() -> ExitCode {
             }
         },
         "console" => match console::run(&rest) {
+            Ok(armed) => {
+                print!("{}", armed.report);
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("laxity console: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        "characterise" => match characterise::run(&rest) {
             Ok(text) => {
                 print!("{text}");
                 ExitCode::SUCCESS
             }
             Err(error) => {
-                eprintln!("laxity console: {error}");
+                eprintln!("laxity characterise: {error}");
                 ExitCode::FAILURE
             }
         },
@@ -147,6 +158,9 @@ native, this binary:
   audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]
                  price a placement read out of an ELF, on stdout
   tui [options]  the telemetry viewer, laxity tui --help for its options
+  characterise --object OBJECT --requester NAME --endpoint ENDPOINT
+                 measure one coefficient cell on the board and print it with
+                 the TOML to paste, writing nothing into the characterisation
   console <keys> [--allow-reset]
                  send console keys to the board and report what it says it
                  became, for example laxity console i7c

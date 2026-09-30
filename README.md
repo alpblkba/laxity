@@ -2,7 +2,7 @@
 
 Laxity is middleware for neural inference on microcontrollers that share memory with DMA and peripherals. It sits between the application and the inference backend, selects the activation arena, and records what each pass costs. Its host tools connect those measurements to memory placement, so you can inspect which objects share a bank with competing traffic.
 
-![Laxity replaying the simulated same-region contention scenario](assets/laxity-tui.gif)
+![The viewer reading a B-U585I-IOT02A over its serial port, showing the cell the reference firmware is measuring, the placement comparison filling in, then the memory view](assets/laxity-tui.gif)
 
 The reference integration runs on a B-U585I-IOT02A with an STM32U585, ThreadX and ST Edge AI Core. Arena selection currently lives in the reference firmware, while the application retains control of task scheduling. STM32U585 is the only measured hardware backend, so loading another platform profile does not establish its timing behaviour.
 
@@ -84,27 +84,27 @@ laxity tui --file results/raw/RUN/telemetry.bin
 ```
 
 <details>
-<summary>Memory placement under same-region traffic</summary>
+<summary>Memory placement on a live board</summary>
 
-![Memory view of the simulated same-region contention scenario](assets/laxity-memory.gif)
+![The memory view on a live board, with each region's p50 and p95 filling in as the firmware moves the arena between SRAM1, SRAM2 and SRAM3](assets/laxity-memory.gif)
 
 </details>
 
 <details>
-<summary>Cross-region traffic</summary>
+<summary>Same-region and cross-region cells on a live board</summary>
 
-![Telemetry and memory views of the simulated cross-region contention scenario](assets/laxity-cross-region.gif)
+![The telemetry and memory views on a live board as the firmware's cross walks the arena and GPDMA1 through the regions, labelling each cell same region or cross region](assets/laxity-cross-region.gif)
 
 </details>
 
 <details>
 <summary>A rejected telemetry frame</summary>
 
-![The simulated CRC corruption scenario with one rejected frame](assets/laxity-crc.gif)
+![The simulated CRC corruption scenario with one rejected frame, which is fault injection the board does not perform](assets/laxity-crc.gif)
 
 </details>
 
-The [VHS tapes](docs/tapes/README.md) reproduce these recordings from `scenarios/`. Their renderer builds the current command and checks the input streams before recording, so an older installed viewer cannot supply the GIFs. Run it after changing the viewer or a tape to replace the images linked here.
+The [VHS tapes](docs/tapes/README.md) reproduce these recordings. Three of them read an attached board over its serial port and the renderer refuses to record one when no board is streaming, so a missing board leaves the published image alone rather than replacing it with an empty screen. The rejected frame is replayed from `scenarios/` instead, since a corrupt frame is fault injection the firmware will not perform on request. Their renderer builds the current command before recording, so an older installed viewer cannot supply the GIFs.
 
 ```sh
 ./docs/tapes/render.sh

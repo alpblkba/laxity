@@ -30,11 +30,28 @@ const SETTLE_SECS: u64 = 8;
 /// how long the golden verdict is waited for, from LAXITY_CONFIRM in descriptor_free_run.sh. the board prints its status set once a second.
 const GOLDEN_SECS: u64 = 20;
 
-/// the run name the capture directory is filed under.
-const CAPTURE_NAME: &str = "characterise";
+/// the campaign name this command files a capture under.
+///
+/// it is not one of the hand run campaigns and says so. bench/sweeps/campaign_report.py reads a capture only when its campaign is one it knows, so this name is in that script's CAMPAIGNS list, and an operator who decides a capture belongs to a campaign renames it here and in the paste block together.
+const CAMPAIGN: &str = "laxity-characterise";
+
+/// the point table of the bandwidth sweep, from sweep_points() in bench/sweeps/descriptor_free_run.sh, as index:channels/width/block/stride/triggerHz.
+const BW_POINTS: &str = "1:1/4/256/0/50000 2:1/4/256/0/100000 3:1/4/256/0/200000 4:1/4/256/0/400000 5:1/4/256/0/800000";
+
+/// the names one cell is filed under, which are what victim_name(), region_name() and sweep_name() in bench/sweeps/descriptor_free_run.sh turn its columns into.
+struct Filing {
+    victim: &'static str,
+    victim_region: &'static str,
+    sweep: &'static str,
+    aggressor_region: &'static str,
+    arena_region: &'static str,
+    stack_region: &'static str,
+}
 
 /// one cell of the campaign: the console keys that arm it and what it measures.
 struct Cell {
+    /// the name the campaign files this cell under, so a result can be put beside the campaign's own capture of it.
+    name: &'static str,
     object: &'static str,
     requester: &'static str,
     endpoint: &'static str,
@@ -43,6 +60,8 @@ struct Cell {
     aggressor_region: u8,
     /// the victim words, passes and loads the footprint and region keys come to together. neither key decides any of them on its own, which is why the console writer cannot check them and this can: vwords is the footprint clamped to the window the region has, and vpasses is the requested load count divided by vwords.
     victim: (&'static str, &'static str, &'static str),
+    /// the names bench/sweeps writes into a stress.txt for this cell: the victim, its region, the sweep, the aggressor's region, the arena's and the stack's.
+    filing: Filing,
     /// what the keys select, for the report and for the campaign entry.
     describes: &'static str,
 }
@@ -50,22 +69,134 @@ struct Cell {
 /// the cells this command can arm.
 ///
 /// each one is a row of the TABLE in descriptor_free_run.sh with its columns turned back into the console keys the script sends. only the cells this tree has a method for are here, because a target with no row is a cell nobody has decided how to arm.
+/// the cells this command can arm.
+///
+/// each one is a row of the TABLE in bench/sweeps/descriptor_free_run.sh with its columns turned back into the console keys the script sends, under the name the campaign files it under. only the six rows whose aggressor is in the arena's own region are here, which are the six the characterisation's arena entry was read from.
 const CELLS: &[Cell] = &[
-    // df-a1-s2-ag1: i 0 a X C L NS k 7, which is the arena in SRAM1 with the aggressor in the arena's region and the stack out of the way in SRAM2, and the descriptor page in SRAM4 where no victim object sits.
+    // df-a1-s2-ag1: i 0 a X C L NS k 7, the aggressor in the arena's own region with the stack elsewhere.
     Cell {
+        name: "df-a1-s2-ag1",
         object: "arena",
         requester: "gpdma1",
         endpoint: "data",
         keys: "ki0aXCL7NS",
         aggressor_region: 1,
-        // C is 4096 bytes, which is 1024 words and under SRAM1's 131072 byte window, so the clamp does not bite. L is 8192 loads, which is 8 passes of those words.
+        // C is 4096 bytes, which is 1024 words and under the 131072 byte window SRAM1 gives the read loop victim, so the clamp does not bite. L is 8192 loads, which is 8 passes of those words.
         victim: ("1024", "8", "8192"),
+        filing: Filing {
+            victim: "inference",
+            victim_region: "sram1",
+            sweep: "bw",
+            aggressor_region: "sram1",
+            arena_region: "sram1",
+            stack_region: "sram2",
+        },
         describes: "arena sram1, stack sram2, aggressor sram1, descriptors sram4, bandwidth sweep",
+    },
+    // df-a1-s3-ag1: i 0 a X C L NS n 7, the aggressor in the arena's own region with the stack elsewhere.
+    Cell {
+        name: "df-a1-s3-ag1",
+        object: "arena",
+        requester: "gpdma1",
+        endpoint: "data",
+        keys: "ni0aXCL7NS",
+        aggressor_region: 1,
+        // C is 4096 bytes, which is 1024 words and under the 131072 byte window SRAM1 gives the read loop victim, so the clamp does not bite. L is 8192 loads, which is 8 passes of those words.
+        victim: ("1024", "8", "8192"),
+        filing: Filing {
+            victim: "inference",
+            victim_region: "sram1",
+            sweep: "bw",
+            aggressor_region: "sram1",
+            arena_region: "sram1",
+            stack_region: "sram3",
+        },
+        describes: "arena sram1, stack sram3, aggressor sram1, descriptors sram4, bandwidth sweep",
+    },
+    // df-a2-s1-ag2: i 0 b X C L NS j 8, the aggressor in the arena's own region with the stack elsewhere.
+    Cell {
+        name: "df-a2-s1-ag2",
+        object: "arena",
+        requester: "gpdma1",
+        endpoint: "data",
+        keys: "ji0bXCL8NS",
+        aggressor_region: 2,
+        // C is 4096 bytes, which is 1024 words and under the 131072 byte window SRAM1 gives the read loop victim, so the clamp does not bite. L is 8192 loads, which is 8 passes of those words.
+        victim: ("1024", "8", "8192"),
+        filing: Filing {
+            victim: "inference",
+            victim_region: "sram1",
+            sweep: "bw",
+            aggressor_region: "sram2",
+            arena_region: "sram2",
+            stack_region: "sram1",
+        },
+        describes: "arena sram2, stack sram1, aggressor sram2, descriptors sram4, bandwidth sweep",
+    },
+    // df-a2-s3-ag2: i 0 b X C L NS n 8, the aggressor in the arena's own region with the stack elsewhere.
+    Cell {
+        name: "df-a2-s3-ag2",
+        object: "arena",
+        requester: "gpdma1",
+        endpoint: "data",
+        keys: "ni0bXCL8NS",
+        aggressor_region: 2,
+        // C is 4096 bytes, which is 1024 words and under the 131072 byte window SRAM1 gives the read loop victim, so the clamp does not bite. L is 8192 loads, which is 8 passes of those words.
+        victim: ("1024", "8", "8192"),
+        filing: Filing {
+            victim: "inference",
+            victim_region: "sram1",
+            sweep: "bw",
+            aggressor_region: "sram2",
+            arena_region: "sram2",
+            stack_region: "sram3",
+        },
+        describes: "arena sram2, stack sram3, aggressor sram2, descriptors sram4, bandwidth sweep",
+    },
+    // df-a3-s1-ag3: i 0 c X C L NS j 9, the aggressor in the arena's own region with the stack elsewhere.
+    Cell {
+        name: "df-a3-s1-ag3",
+        object: "arena",
+        requester: "gpdma1",
+        endpoint: "data",
+        keys: "ji0cXCL9NS",
+        aggressor_region: 3,
+        // C is 4096 bytes, which is 1024 words and under the 131072 byte window SRAM1 gives the read loop victim, so the clamp does not bite. L is 8192 loads, which is 8 passes of those words.
+        victim: ("1024", "8", "8192"),
+        filing: Filing {
+            victim: "inference",
+            victim_region: "sram1",
+            sweep: "bw",
+            aggressor_region: "sram3",
+            arena_region: "sram3",
+            stack_region: "sram1",
+        },
+        describes: "arena sram3, stack sram1, aggressor sram3, descriptors sram4, bandwidth sweep",
+    },
+    // df-a3-s2-ag3: i 0 c X C L NS k 9, the aggressor in the arena's own region with the stack elsewhere.
+    Cell {
+        name: "df-a3-s2-ag3",
+        object: "arena",
+        requester: "gpdma1",
+        endpoint: "data",
+        keys: "ki0cXCL9NS",
+        aggressor_region: 3,
+        // C is 4096 bytes, which is 1024 words and under the 131072 byte window SRAM1 gives the read loop victim, so the clamp does not bite. L is 8192 loads, which is 8 passes of those words.
+        victim: ("1024", "8", "8192"),
+        filing: Filing {
+            victim: "inference",
+            victim_region: "sram1",
+            sweep: "bw",
+            aggressor_region: "sram3",
+            arena_region: "sram3",
+            stack_region: "sram2",
+        },
+        describes: "arena sram3, stack sram2, aggressor sram3, descriptors sram4, bandwidth sweep",
     },
 ];
 
 pub fn run(args: &[String]) -> Result<String, String> {
-    let (mut object, mut requester, mut endpoint) = (None, None, None);
+    let (mut object, mut requester, mut endpoint, mut name) = (None, None, None, None);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         let mut value = |name: &str| {
@@ -75,29 +206,43 @@ pub fn run(args: &[String]) -> Result<String, String> {
             "--object" => object = Some(value("--object")?),
             "--requester" => requester = Some(value("--requester")?),
             "--endpoint" => endpoint = Some(value("--endpoint")?),
+            "--cell" => name = Some(value("--cell")?),
             other => return Err(format!("unknown argument {other}")),
         }
     }
     let (Some(object), Some(requester), Some(endpoint)) = (object, requester, endpoint) else {
-        return Err("usage: laxity characterise --object OBJECT --requester NAME --endpoint ENDPOINT".to_string());
+        return Err("usage: laxity characterise --object OBJECT --requester NAME --endpoint ENDPOINT [--cell NAME]".to_string());
     };
 
-    let cell = CELLS
+    let matching: Vec<&Cell> = CELLS
         .iter()
-        .find(|cell| cell.object == object && cell.requester == requester && cell.endpoint == endpoint)
-        .ok_or_else(|| {
-            format!(
-                "no campaign row arms {object} x {requester}.{endpoint}; the rows this command carries are {}",
-                CELLS.iter().map(|c| format!("{} x {}.{}", c.object, c.requester, c.endpoint))
-                    .collect::<Vec<_>>().join(", ")
-            )
-        })?;
+        .filter(|cell| cell.object == object && cell.requester == requester && cell.endpoint == endpoint)
+        .filter(|cell| name.as_deref().is_none_or(|want| cell.name == want))
+        .collect();
+    // one target is several cells, since the campaign measured this coefficient in six configurations, so a target that matches more than one is refused with their names rather than measured in whichever came first.
+    let cell = match matching.as_slice() {
+        [one] => *one,
+        [] => {
+            return Err(format!(
+                "no campaign row arms {object} x {requester}.{endpoint}{}; the rows this command carries are {}",
+                name.map(|n| format!(" as {n}")).unwrap_or_default(),
+                CELLS.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
+            ))
+        }
+        several => {
+            return Err(format!(
+                "{} rows arm {object} x {requester}.{endpoint}, so --cell has to choose one of {}",
+                several.len(),
+                several.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
+            ))
+        }
+    };
 
     let mut out = String::new();
     // every cell of a measurement has to come from one image. a relink of identical sources moved a median here by 85 cycles, so the hash is read before the capture and again after it, and a number is not reported across a change.
     let before = image_hash()?;
     out.push_str(&format!("image {before}\n"));
-    out.push_str(&format!("cell  {}\n", cell.describes));
+    out.push_str(&format!("cell  {}, {}\n", cell.name, cell.describes));
     out.push_str(&format!("keys  {}\n", cell.keys));
     out.push('\n');
 
@@ -113,12 +258,32 @@ pub fn run(args: &[String]) -> Result<String, String> {
     std::thread::sleep(Duration::from_secs(SETTLE_SECS));
 
     // the only end to end check this firmware has, waited for the way the campaign script waits for it.
-    let golden = console::await_golden(GOLDEN_SECS).map_err(|why| format!("{out}{why}"))?;
-    out.push_str(&format!("\ngolden {golden}\n"));
+    let before_golden = console::await_golden(GOLDEN_SECS).map_err(|why| format!("{out}{why}"))?;
+    out.push_str(&format!("\ngolden before {before_golden}\n"));
 
     out.push_str(&format!("\ncapturing {CAPTURE_SECS}s through tools/stm32/capture.sh\n"));
-    let dir = capture_run(CAPTURE_NAME, CAPTURE_SECS)?;
+    let dir = capture_run(cell.name, CAPTURE_SECS)?;
     out.push_str(&format!("captured to {dir}\n"));
+    // the capture describes the cell it was taken in as soon as it exists, rather than after the fit, so a run that fails between the two still leaves a directory the campaign reporter reads.
+    let stress = armed
+        .lines
+        .iter()
+        .find(|line| line.starts_with("stress "))
+        .ok_or_else(|| format!("{out}the board printed no stress line to file the capture under"))?;
+    write_stress(&dir, cell, stress)?;
+    out.push_str(&format!("wrote {dir}/stress.txt\n"));
+
+    // the script checks the golden vector once, before the capture. this checks it again, because a gate at one end cannot see what happened between the ends, which is the same hole the campaign's own drift gate exists to close.
+    let after_golden = match console::await_golden(GOLDEN_SECS) {
+        Ok(line) => line,
+        Err(why) => {
+            return Err(format!(
+                "{out}golden before {before_golden}\n{why}\nthe board classified correctly before the capture and does not after it, so the capture in {dir} is kept and no number is reported"
+            ))
+        }
+    };
+    out.push_str(&format!("golden after  {after_golden}\n"));
+
     let bytes = std::fs::read(format!("{dir}/telemetry.bin"))
         .map_err(|error| format!("cannot read {dir}/telemetry.bin: {error}"))?;
     let capture = laxity_tui::records(&bytes)?;
@@ -335,7 +500,7 @@ fn report(cell: &Cell, fit: &Fit, capture: &laxity_tui::Capture, image: &str, di
     out.push_str(&format!("  \"{}\",\n", dir.trim_start_matches("results/raw/")));
     out.push_str("]\n\n");
     // the entries already in the file carry what is behind their number in the comment above them, and one of them is a mean of six replicates with a gate cell at each end of its run. a reader comparing that entry with this one has to be able to see the difference without opening a capture.
-    out.push_str(&format!("# {}\n", cell.describes));
+    out.push_str(&format!("# {}, {}\n", cell.name, cell.describes));
     out.push_str(&format!(
         "# one capture, {} records at {} points, {} of them fitted, {} at the aggressor off point.\n",
         capture.records.len(), fit.points.len(), fit.used, fit.quiet_n
@@ -418,6 +583,81 @@ fn newest_capture(name: &str) -> Option<String> {
         .collect();
     found.sort();
     found.pop().map(|dir| format!("results/raw/{dir}"))
+}
+
+/// describe the capture beside itself, in the fields and the order bench/sweeps/descriptor_free_run.sh writes them.
+///
+/// bench/sweeps/campaign_report.py reads a capture only when this file is there and names a campaign it knows, so without it a directory this command wrote is one the campaign tooling skips and the cell it was taken in lives only in stdout. every field that can be read off the board's own line is read off it rather than off the table that asked for it, which is the script's own rule.
+fn write_stress(dir: &str, cell: &Cell, status: &str) -> Result<(), String> {
+    let field = |name: &str| console::field_of(status, name).unwrap_or_else(|| "unknown".to_string());
+    // the descriptor field is the region and the address it landed at, as 4(0x28003000), and the script files the two separately.
+    let desc_region = field("desc");
+    let desc_addr = status
+        .split_whitespace()
+        .find_map(|token| token.strip_prefix("desc="))
+        .and_then(|value| value.split_once('('))
+        .map(|(_, rest)| rest.trim_end_matches(')').to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let image = std::fs::read_to_string(format!("{dir}/build.txt"))
+        .map_err(|error| format!("cannot read {dir}/build.txt: {error}"))?
+        .lines()
+        .find_map(|line| line.strip_prefix("image_sha256=").map(str::to_string))
+        .ok_or_else(|| format!("{dir}/build.txt carries no image_sha256"))?;
+    let at_confirm: Vec<String> = status
+        .split_whitespace()
+        .filter(|token| {
+            ["chan=", "width=", "block=", "stride=", "hz="].iter().any(|k| token.starts_with(k))
+        })
+        .map(str::to_string)
+        .collect();
+    // tab and printable ASCII only. what is dropped is frame bytes that were interleaved ahead of the match, which are an artifact of one UART carrying the records and the text together.
+    let clean: String = status.chars().filter(|c| *c == '\t' || (' '..='~').contains(c)).collect();
+
+    let text = format!(
+        "campaign={CAMPAIGN}\n\
+         experiment=cell\n\
+         victim={}\n\
+         victim_region={}\n\
+         victim_words={}\n\
+         victim_passes={}\n\
+         loads_per_window={}\n\
+         sweep={}\n\
+         aggressor_region={}\n\
+         aggressor=gpdma_stress\n\
+         channels_used=GPDMA1_12..15\n\
+         console_bytes={}\n\
+         arena_region={}\n\
+         stack_region={}\n\
+         descriptor_region=sram{}\n\
+         descriptor_addr={}\n\
+         image_sha256={image}\n\
+         config=cell\n\
+         stack_high_water={}\n\
+         stack_guard_hit={}\n\
+         aggressor_config_at_confirm={} \n\
+         aggressor_sweep_points={BW_POINTS}\n\
+         status_line={clean}\n\
+         victim_access_mix=not counted for inference; regions touched: arena@{} stack@{} statics@sram3(88B) weights@flash(12256B)\n",
+        cell.filing.victim,
+        cell.filing.victim_region,
+        cell.victim.0,
+        cell.victim.1,
+        cell.victim.2,
+        cell.filing.sweep,
+        cell.filing.aggressor_region,
+        cell.keys,
+        cell.filing.arena_region,
+        cell.filing.stack_region,
+        desc_region,
+        desc_addr,
+        field("shw"),
+        field("sguard"),
+        at_confirm.join(" "),
+        cell.filing.arena_region,
+        cell.filing.stack_region,
+    );
+    std::fs::write(format!("{dir}/stress.txt"), text)
+        .map_err(|error| format!("cannot write {dir}/stress.txt: {error}"))
 }
 
 /// the image in the build tree, hashed the way descriptor_free_run.sh hashes it.
@@ -541,7 +781,7 @@ mod tests {
     #[test]
     fn the_victim_fields_are_checked_against_the_board_rather_than_assumed() {
         const STRESS: &str = "stress victim=infer-stress m2m=0 stack=2 arena=1 desc=4(0x28003000) vregion=1 vwords=1024 vpasses=8 vloads=8192 sweep=bw region=1 ok=1";
-        let cell = &CELLS[0];
+        let cell = CELLS.iter().find(|cell| cell.name == "df-a1-s2-ag1").unwrap();
         assert!(check_victim(cell, &[STRESS.to_string()]).is_ok());
         // the same footprint key in a region whose window clamps it produces another vwords, which is why no per key table can answer for it.
         let clamped = STRESS.replace("vwords=1024", "vwords=512").replace("vpasses=8", "vpasses=16");
@@ -551,6 +791,33 @@ mod tests {
         assert!(none.contains("no stress line"), "{none}");
     }
 
+    /// every cell is a row of the campaign's own table, and its keys have to say the same thing its filing does.
+    #[test]
+    fn each_cell_s_keys_agree_with_the_names_it_is_filed_under() {
+        for cell in CELLS {
+            // console_bytes in the campaign's stress.txt is stack, victim, sweep, aggressor, victim region, footprint, loads, arena, extra, which is the order these keys are written in.
+            let keys: Vec<char> = cell.keys.chars().collect();
+            assert_eq!(keys.len(), 10, "{}", cell.name);
+            let stack = match keys[0] { 'j' => "sram1", 'k' => "sram2", 'n' => "sram3", other => panic!("{other}") };
+            assert_eq!(stack, cell.filing.stack_region, "{}", cell.name);
+            assert_eq!(keys[1], 'i');
+            assert_eq!(keys[2], '0');
+            let aggr = match keys[3] { 'a' => 1u8, 'b' => 2, 'c' => 3, 'd' => 4, other => panic!("{other}") };
+            assert_eq!(aggr, cell.aggressor_region, "{}", cell.name);
+            assert_eq!(format!("sram{aggr}"), cell.filing.aggressor_region, "{}", cell.name);
+            assert_eq!(keys[4], 'X');
+            assert_eq!(cell.filing.victim_region, "sram1");
+            let arena = match keys[7] { '7' => "sram1", '8' => "sram2", '9' => "sram3", other => panic!("{other}") };
+            assert_eq!(arena, cell.filing.arena_region, "{}", cell.name);
+            assert_eq!(&cell.keys[8..], "NS", "{}", cell.name);
+            // the six are the aggressor in the arena's own region, which is what the characterisation's arena entry was read from.
+            assert_eq!(cell.filing.aggressor_region, cell.filing.arena_region, "{}", cell.name);
+            assert_ne!(cell.filing.stack_region, cell.filing.arena_region, "{}", cell.name);
+        }
+        let names: Vec<&str> = CELLS.iter().map(|cell| cell.name).collect();
+        assert_eq!(names, ["df-a1-s2-ag1", "df-a1-s3-ag1", "df-a2-s1-ag2", "df-a2-s3-ag2", "df-a3-s1-ag3", "df-a3-s2-ag3"]);
+    }
+
     /// the command carries only the cells the campaign has a row for, so a target nobody decided how to arm is refused by name.
     #[test]
     fn a_target_with_no_campaign_row_is_refused() {
@@ -558,6 +825,13 @@ mod tests {
             .iter().map(|s| s.to_string()).collect();
         let error = run(&args).unwrap_err();
         assert!(error.contains("no campaign row arms stack x emw3080.spi dma"), "{error}");
-        assert!(error.contains("arena x gpdma1.data"), "{error}");
+        assert!(error.contains("df-a1-s2-ag1"), "{error}");
+
+        // the campaign measured this coefficient in six configurations, so the target alone does not name a cell.
+        let args: Vec<String> = ["--object", "arena", "--requester", "gpdma1", "--endpoint", "data"]
+            .iter().map(|s| s.to_string()).collect();
+        let error = run(&args).unwrap_err();
+        assert!(error.contains("6 rows arm arena x gpdma1.data"), "{error}");
+        assert!(error.contains("--cell has to choose one"), "{error}");
     }
 }

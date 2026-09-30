@@ -7,7 +7,7 @@ mod measurement;
 mod model;
 mod profile;
 mod scene;
-mod telemetry;
+pub mod telemetry;
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -2474,6 +2474,39 @@ fn set_source(target: &mut Option<SourceSpec>, value: SourceSpec) -> Result<(), 
     }
     *target = Some(value);
     Ok(())
+}
+
+/// one reading of the board, for a caller that wants the records rather than a screen.
+pub struct Capture {
+    pub metadata: telemetry::Metadata,
+    pub records: Vec<telemetry::LxRecord>,
+    pub stats: telemetry::Stats,
+}
+
+/// what the parser made of a recorded stream.
+///
+/// this exists so that a measurement and this viewer read one wire format through one parser. it is the same TelemetryState the screen feeds, so a frame this accepts is a frame the screen would have accepted, and nothing here re-implements the framing, the CRC or the record layout.
+pub fn records(bytes: &[u8]) -> Result<Capture, String> {
+    let mut state = telemetry::TelemetryState::default();
+    let mut records = Vec::new();
+    let mut metadata = None;
+    for delta in [state.feed(bytes), state.finish()] {
+        for event in delta.events {
+            match event {
+                telemetry::LxEvent::Header(header) => {
+                    if metadata.is_none() {
+                        metadata = Some(header.metadata);
+                    }
+                }
+                telemetry::LxEvent::Record(record) => records.push(record),
+            }
+        }
+    }
+    let metadata = metadata.ok_or_else(|| {
+        "the capture carries no header frame, so the clock its cycles are counted on is unknown"
+            .to_string()
+    })?;
+    Ok(Capture { metadata, records, stats: state.stats })
 }
 
 /// the board's virtual COM port, resolved the one way this tree resolves it.

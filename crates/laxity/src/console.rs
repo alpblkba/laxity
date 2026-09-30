@@ -26,8 +26,8 @@ struct Confirm {
     value: &'static str,
 }
 
-/// the status lines the exporter prints, in the order it prints them.
-const LINES: [&str; 3] = ["placement ", "stress ", "net "];
+/// the status lines the exporter prints, in the order it prints them. the inference line answers for no key and is read because the golden verdict is on it.
+const LINES: [&str; 4] = ["placement ", "stress ", "net ", "infer "];
 
 const fn on(line: &'static str, field: &'static str, value: &'static str) -> Option<Confirm> {
     Some(Confirm { line, field, value })
@@ -95,7 +95,13 @@ const KEY_GAP: Duration = Duration::from_millis(50);
 /// long enough for several of the board's once a second status sets, and for the reboot a stack or ballast key asks for.
 const CONFIRM_FOR: Duration = Duration::from_secs(8);
 
-pub fn run(args: &[String]) -> Result<String, String> {
+/// what one arming answers with: the text a caller prints, and the board's own lines, so a caller that has to check a field no single key determines can read them rather than parse the text.
+pub struct Armed {
+    pub report: String,
+    pub lines: Vec<String>,
+}
+
+pub fn run(args: &[String]) -> Result<Armed, String> {
     let mut keys: Option<String> = None;
     let mut allow_reset = false;
     for arg in args {
@@ -162,7 +168,48 @@ pub fn run(args: &[String]) -> Result<String, String> {
             "{out}the board does not report the state these keys ask for, so nothing is armed"
         ));
     }
-    Ok(out)
+    Ok(Armed { report: out, lines })
+}
+
+/// wait for the board to classify the golden window correctly, which is the only end to end check this firmware has.
+///
+/// bench/sweeps/descriptor_free_run.sh waits for this before every capture and stops without it, since a board that has stopped classifying is a board whose cycles are still plausible. this matches on the same text the script greps for.
+pub fn await_golden(seconds: u64) -> Result<String, String> {
+    let path = laxity_tui::find_serial_port()?;
+    let mut port = serialport::new(path.to_string_lossy(), 921_600)
+        .data_bits(serialport::DataBits::Eight)
+        .parity(serialport::Parity::None)
+        .stop_bits(serialport::StopBits::One)
+        .flow_control(serialport::FlowControl::None)
+        .timeout(Duration::from_millis(200))
+        .open()
+        .map_err(|error| format!("cannot open {}: {error}", path.display()))?;
+
+    let started = Instant::now();
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let mut last = String::new();
+    while started.elapsed() < Duration::from_secs(seconds) {
+        match port.read(&mut chunk) {
+            Ok(0) => {}
+            Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+            Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(error) => return Err(format!("cannot read the board: {error}")),
+        }
+        while let Some((index, line)) = take_status(&mut buffer) {
+            if LINES[index] != "infer " {
+                continue;
+            }
+            if line.contains("MATCH mismatch=0") {
+                return Ok(line);
+            }
+            last = line;
+        }
+    }
+    if last.is_empty() {
+        return Err(format!("the board printed no inference line in {seconds}s, so the golden check cannot be read"));
+    }
+    Err(format!("the board is not classifying the golden window: {last}"))
 }
 
 /// the fields the board has to report for a set of keys to have arrived.
@@ -290,7 +337,7 @@ fn take_status(buffer: &mut Vec<u8>) -> Option<(usize, String)> {
 }
 
 /// one `name=value` field of a status line, with the address a descriptor field carries in brackets left off.
-fn field_of(line: &str, field: &str) -> Option<String> {
+pub fn field_of(line: &str, field: &str) -> Option<String> {
     line.split_whitespace().find_map(|token| {
         let (name, value) = token.split_once('=')?;
         (name == field).then(|| value.split('(').next().unwrap_or(value).to_string())

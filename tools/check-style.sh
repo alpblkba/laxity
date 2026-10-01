@@ -43,6 +43,12 @@ COMMAND_FILES=$(git ls-files -c -o --exclude-standard '*.md' '*.toml' '*.sh' '*.
   | grep -vE '^(target|results|self-docs|tracelog)/|^firmware/stm32u585/Middlewares/' || true)
 LAXITY_BIN="${LAXITY_BIN:-./target/release/laxity}"
 
+# a gate that passes by doing nothing is worse than no gate, so an absent binary fails rather than
+# reporting itself and exiting zero.
+if [ -n "$COMMAND_FILES" ] && [ ! -x "$LAXITY_BIN" ]; then
+  report "  cargo build --release -p laxity" "no $LAXITY_BIN, so no quoted command can be checked:"
+fi
+
 if [ -n "$COMMAND_FILES" ] && [ -x "$LAXITY_BIN" ]; then
   # a command is the first word of a backtick span, of a quoted string, or of a line in a fenced block. prose that mentions a subcommand mid sentence is not one of those and is not checked, which is the boundary this pattern draws.
   # a command is the first word of a backtick span, of a quoted string, or of a line in a fenced block. prose that mentions a subcommand mid sentence is not one of those and is not checked, which is the boundary this pattern draws.
@@ -50,6 +56,24 @@ if [ -n "$COMMAND_FILES" ] && [ -x "$LAXITY_BIN" ]; then
     | sed -e 's/^ *//' -e 's/`//g' -e 's/"//g' -e 's|^\./||' -e 's|^[a-z/]*/laxity |laxity |' \
     | grep -E '^laxity (audit|console|characterise|tui|doctor|boards|build|flash|capture|analyse|run|sim|wifi)\b' \
     | sed -e 's/ [0-9]*[|>].*//' -e 's/ *&&.*//' -e 's/ *$//' | sort -u || true)
+  # a backtick span holding exactly "laxity <word>" is a document naming a subcommand. the pattern
+  # above cannot find one that does not exist, because it is anchored on the names that do, and a
+  # README naming a subcommand nobody built is the hole this closes. prose is not inside backticks,
+  # so this produces no false positive on a sentence that happens to contain the word.
+  named=$(grep -hoE '`laxity [a-z-]+`' $COMMAND_FILES 2>/dev/null | tr -d '`' | sort -u || true)
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    # the binary exits non zero for an unknown name and pipefail would make the whole pipeline
+    # fail with it, which would throw away the grep's own answer.
+    if { $LAXITY_BIN --dry-run "${line#laxity }" 2>&1 || true; } | grep -q 'unknown subcommand'; then
+      report "  $line" "a document names a subcommand this binary does not have:"
+    else
+      echo "  ok, name only: $line"
+    fi
+  done <<EOF
+$named
+EOF
+
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     skip=""
@@ -63,9 +87,10 @@ if [ -n "$COMMAND_FILES" ] && [ -x "$LAXITY_BIN" ]; then
       *'\') skip="a continued line" ;;
       # the help text lays a subcommand beside its description in columns, which is prose in a table.
       *'  '*) skip="help text, not an invocation" ;;
-      # a bare subcommand names the subcommand rather than invoking it.
+      # a bare subcommand is a name rather than an invocation, and the pass above has already
+      # checked that the name exists.
       'laxity '*' '*) ;;
-      *) skip="names a subcommand rather than invoking one" ;;
+      *) skip="a name, checked above" ;;
     esac
     if [ -z "$skip" ] && echo "$line" | grep -qE ' [A-Z][A-Z_]+( |$)'; then
       skip="a usage template"
@@ -84,8 +109,6 @@ if [ -n "$COMMAND_FILES" ] && [ -x "$LAXITY_BIN" ]; then
   done <<EOF
 $quoted
 EOF
-elif [ ! -x "$LAXITY_BIN" ]; then
-  echo "no $LAXITY_BIN, so the quoted commands are not checked; cargo build --release -p laxity"
 fi
 
 [ "$fail" -eq 0 ] && echo "style ok" || exit 1

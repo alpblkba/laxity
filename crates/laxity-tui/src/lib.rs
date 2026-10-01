@@ -2219,7 +2219,12 @@ fn truncate_middle(text: &str, width: usize) -> String {
 pub fn check_cli(args: Vec<String>) -> Result<String, String> {
     match parse_args(args)? {
         Args::Help => Ok("help".to_string()),
-        Args::Run(options) => Ok(format!("{:?}", options.source)),
+        Args::Run(options) => Ok(match options.source {
+            SourceSpec::Udp(port) => format!("reads UDP port {port}"),
+            SourceSpec::Serial(None) => "reads the board's serial port".to_string(),
+            SourceSpec::Serial(Some(path)) => format!("reads the serial port {}", path.display()),
+            SourceSpec::File(path) => format!("reads the capture {}", path.display()),
+        }),
     }
 }
 

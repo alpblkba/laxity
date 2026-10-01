@@ -37,6 +37,8 @@ fn every_subcommand_answers_without_reading_a_file_or_opening_a_port() {
         vec!["tui", "--file", "a-capture-that-does-not-exist.bin"],
         vec!["tui", "--serial"],
         vec!["audit", "no-such.elf", "no-such-profile.toml", "no-such-characterisation.toml"],
+        // the discovering form takes no arguments and the dry run answers for it without walking anything.
+        vec!["audit"],
         vec!["doctor"],
     ] {
         let (ok, text) = dry_run(&args);

@@ -295,6 +295,10 @@ pub fn report(
                     })
                     .unwrap_or_else(|| "unknown".into());
                 line!(out, "  {:<8} {:>10}   {}", name, charge, entry.basis.label());
+                // a coefficient row carries what would close its gap and a quiet row carried only the bare word, so an unmeasured charge said nothing about what it would take to measure one.
+                if let laxity_core::characterisation::Basis::Unmeasured { remediation } = &entry.basis {
+                    line!(out, "  {:<8} {:>10}   {}", "", "", remediation);
+                }
                 if entry.accesses.is_none() {
                     uncounted.push(name);
                 }

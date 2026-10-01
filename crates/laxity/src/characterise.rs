@@ -195,7 +195,31 @@ const CELLS: &[Cell] = &[
     },
 ];
 
-pub fn run(args: &[String]) -> Result<String, String> {
+/// everything the arguments decide, and nothing that touches the board, the build tree or the capture tree.
+///
+/// laxity characterise --dry-run runs exactly this and stops. a target this command has no cell for is not an argument error, since the audit prints that command as the next step and it answers by saying no measurement is implemented, so the dry run accepts it the way the binary does.
+pub fn check(args: &[String]) -> Result<String, String> {
+    let (object, requester, endpoint, name) = parse(args)?;
+    let matching: Vec<&Cell> = CELLS
+        .iter()
+        .filter(|cell| cell.object == object && cell.requester == requester && cell.endpoint == endpoint)
+        .collect();
+    match &name {
+        // a cell named on the command line either exists for this target or is a value this binary does not know, which is an argument error.
+        Some(want) => match matching.iter().find(|cell| cell.name == *want) {
+            Some(cell) => Ok(format!("cell {}", cell.name)),
+            None => Err(format!(
+                "no cell named {want} measures {object} x {requester}.{endpoint}; the cells for it are {}",
+                matching.iter().map(|c| c.name).collect::<Vec<_>>().join(", ")
+            )),
+        },
+        None => Ok(format!("{} cell{} for that target", matching.len(),
+                           if matching.len() == 1 { "" } else { "s" })),
+    }
+}
+
+/// the four values the command line carries.
+fn parse(args: &[String]) -> Result<(String, String, String, Option<String>), String> {
     let (mut object, mut requester, mut endpoint, mut name) = (None, None, None, None);
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -213,6 +237,11 @@ pub fn run(args: &[String]) -> Result<String, String> {
     let (Some(object), Some(requester), Some(endpoint)) = (object, requester, endpoint) else {
         return Err("usage: laxity characterise --object OBJECT --requester NAME --endpoint ENDPOINT [--cell NAME]".to_string());
     };
+    Ok((object, requester, endpoint, name))
+}
+
+pub fn run(args: &[String]) -> Result<String, String> {
+    let (object, requester, endpoint, name) = parse(args)?;
 
     let matching: Vec<&Cell> = CELLS
         .iter()

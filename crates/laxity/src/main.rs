@@ -22,7 +22,12 @@ const DELEGATED: [&str; 9] = [
 const SCRIPT_ENV: &str = "LAXITY_PYTHON";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    // a global flag rather than a per subcommand one, so that a quoted command is checked by prefixing it rather than by editing it.
+    let dry_run = args.first().is_some_and(|first| first == "--dry-run");
+    if dry_run {
+        args.remove(0);
+    }
     let (command, rest) = match args.split_first() {
         None => {
             print_help();
@@ -34,6 +39,19 @@ fn main() -> ExitCode {
         }
         Some((first, rest)) => (first.as_str(), rest.to_vec()),
     };
+
+    if dry_run {
+        return match check(command, &rest) {
+            Ok(note) => {
+                println!("laxity {command}: arguments accepted, {note}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("laxity {command}: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     match command {
         "audit" => match run_audit(&rest) {
@@ -73,6 +91,28 @@ fn main() -> ExitCode {
             print_help();
             ExitCode::from(2)
         }
+    }
+}
+
+/// whether the binary accepts these arguments, reaching neither the board nor the filesystem.
+///
+/// every subcommand answers through the code that parses its own arguments, because a second copy of what each one accepts is the thing this check exists to catch. the prose in this tree quotes commands, and a quoted command that the binary refuses is the apparatus advertising a fix that does not run.
+fn check(command: &str, rest: &[String]) -> Result<String, String> {
+    match command {
+        // the audit's arguments are paths and the dry run does not open them, so what it can answer for is how many were given.
+        "audit" if rest.len() < 3 => Err(
+            "usage: laxity audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]"
+                .to_string(),
+        ),
+        "audit" => Ok(format!("{} paths, unopened", rest.len())),
+        "console" => console::check(rest),
+        "characterise" => characterise::check(rest),
+        "tui" => laxity_tui::check_cli(rest.to_vec()),
+        // a delegated subcommand's flags belong to the Python script and cannot be parsed from here, so the name is checked and the flags are reported as unchecked rather than passed in silence.
+        other if DELEGATED.contains(&other) => {
+            Ok("delegated to the Python script, so its flags are not checked here".to_string())
+        }
+        other => Err(format!("unknown subcommand {other}")),
     }
 }
 
@@ -152,7 +192,9 @@ fn print_help() {
 the host command for placement audits, telemetry and the board
 
 usage:
-  laxity <subcommand> [arguments]
+  laxity [--dry-run] <subcommand> [arguments]
+
+--dry-run checks the arguments and exits without touching the board or a file.
 
 native, this binary:
   audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]

@@ -198,7 +198,8 @@ campaign = "closing-2026-09-19"
 label = "emw3080 traffic rate"
 text = [
   "no capture with the radio associated",
-  "laxity characterise --requester emw3080",
+  "laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'",
+
 ]
 
 [[unknown]]

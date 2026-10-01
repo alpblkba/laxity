@@ -177,7 +177,10 @@ fn a_symbol_taken_for_its_own_object_is_priced_at_the_size_the_elf_gives_it() {
     // the arena declares two symbol names and this ELF carries one of them, which the report says rather than resolving quietly.
     assert!(text.contains("laxity_arena_s1") && text.contains("laxity_arena_span"));
     assert!(text.contains("this ELF carries no"), "the unresolved symbol name is not reported");
-    assert!(text.contains("unmeasured, run: laxity characterise --requester emw3080"));
+    // the remediation names every argument the command requires and quotes the endpoint, which carries a space, so the printed line is one that runs.
+    assert!(text.contains(
+        "unmeasured, run: laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'"
+    ));
     // every size is the ELF's, and the arena's symbol is the reservation, so its size is the reservation's and the disagreement is said out loud rather than swallowed.
     assert!(text.contains("source: arena, size from the ELF symbol laxity_arena_span"));
     assert!(text.contains("source: stack, size from the ELF symbol tx_byte_pool_buffer"));

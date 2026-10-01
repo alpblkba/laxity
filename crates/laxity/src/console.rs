@@ -101,7 +101,17 @@ pub struct Armed {
     pub lines: Vec<String>,
 }
 
-pub fn run(args: &[String]) -> Result<Armed, String> {
+/// everything the arguments decide, and nothing that touches the board.
+///
+/// laxity console --dry-run runs exactly this and stops, so a command quoted in the documentation is checked by the code that would run it rather than by a second copy of what it accepts.
+pub fn check(args: &[String]) -> Result<String, String> {
+    let (keys, allow_reset) = split(args)?;
+    let chosen = resolve(&keys, allow_reset)?;
+    Ok(format!("{} key{}", chosen.len(), if chosen.len() == 1 { "" } else { "s" }))
+}
+
+/// the command line, before anything opens a port.
+fn split(args: &[String]) -> Result<(String, bool), String> {
     let mut keys: Option<String> = None;
     let mut allow_reset = false;
     for arg in args {
@@ -118,7 +128,11 @@ pub fn run(args: &[String]) -> Result<Armed, String> {
     if keys.is_empty() {
         return Err("no keys given".to_string());
     }
+    Ok((keys, allow_reset))
+}
 
+pub fn run(args: &[String]) -> Result<Armed, String> {
+    let (keys, allow_reset) = split(args)?;
     let written = resolve(&keys, allow_reset)?;
     // a reset key reboots the board, and everything the board was asked for that does not live in the word of SRAM4 comes back at its power on default. so the reboots go first whatever the caller wrote, and i7ck arms the cell it names instead of arming it and then throwing it away.
     let (resets, rest): (Vec<&Key>, Vec<&Key>) =

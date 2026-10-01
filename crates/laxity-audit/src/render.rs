@@ -221,10 +221,10 @@ pub fn report(
                 // a reader who takes the spread for noise will trust the number more than it can bear, so the line says which kind of spread it is.
                 line!(out, "    the spread is across configurations and not measurement uncertainty");
             }
-            Basis::Unmeasured { command } => {
+            Basis::Unmeasured { remediation } => {
                 line!(out, "  {:<28} {:<7} {:<14} {:>8} {:>14}",
                          truncate(&label, 28), region, "unknown", xacts, "unknown");
-                line!(out, "    unmeasured, run: {command}");
+                line!(out, "    unmeasured, {remediation}");
             }
         }
     }
@@ -295,6 +295,10 @@ pub fn report(
                     })
                     .unwrap_or_else(|| "unknown".into());
                 line!(out, "  {:<8} {:>10}   {}", name, charge, entry.basis.label());
+                // a coefficient row carries what would close its gap and a quiet row carried only the bare word, so an unmeasured charge said nothing about what it would take to measure one.
+                if let laxity_core::characterisation::Basis::Unmeasured { remediation } = &entry.basis {
+                    line!(out, "  {:<8} {:>10}   {}", "", "", remediation);
+                }
                 if entry.accesses.is_none() {
                     uncounted.push(name);
                 }

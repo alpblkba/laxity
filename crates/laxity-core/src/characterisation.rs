@@ -11,7 +11,8 @@ pub enum Basis {
     Bounded { minimum: f64, maximum: f64 },
     /// a mean over several cells of one campaign, which is a number about a set of configurations rather than a measurement of one of them. it carries the range those cells read and how many there were, and no point value, because the mean is the one figure a reader must not take as the value of any single configuration.
     Mean { minimum: f64, maximum: f64, cells: u32 },
-    Unmeasured { command: String },
+    /// what to do about the gap, carrying its own verb. a caller prints it as it stands and never puts run in front of it, because not every gap is closed by a command this binary accepts.
+    Unmeasured { remediation: String },
 }
 
 /// where one entry's number came from, resolved from the campaign the entry names.
@@ -166,16 +167,37 @@ pub struct Characterisation {
     pub campaigns: Vec<Source>,
 }
 
-/// the command that would turn an unmeasured coefficient into a measured one. it is derived from the requester rather than read out of the file, because the file carries it the same way under [[unknown]] and a second place to write it would be a second place to get it wrong.
+/// what closes the gap for an unmeasured coefficient, built from the whole entry rather than from the requester alone.
 ///
-/// public because a caller that finds a requester endpoint with no coefficient at all has no Basis to read the command out of, and building the string there would be that second place.
-pub fn characterise_command(requester: &str) -> String {
-    format!("laxity characterise --requester {requester}")
+/// the rule this exists to keep is that nothing prints a command the binary will not accept. laxity characterise takes an object, a requester and an endpoint and refuses a bare target, so naming only the requester printed something that fails on its arguments, which is the apparatus advertising a fix that does not run.
+///
+/// it stops at the target and names no cell, because one target is several configurations and the file carries no cell for an entry. running what is printed lists them and stops, so remediation is two steps and each one states what the next needs.
+///
+/// public because a caller that finds a requester endpoint with no coefficient at all has no Basis to read this out of, and building the string there would be a second place to get it wrong.
+pub fn characterise_command(object: &str, requester: &str, endpoint: &str) -> String {
+    format!(
+        "run: laxity characterise --object {} --requester {} --endpoint {}",
+        shell_word(object),
+        shell_word(requester),
+        shell_word(endpoint)
+    )
 }
 
-/// the same, for a quiet charge, which names the victim rather than a requester because a quiet charge is measured with every requester off.
+/// one argument as a shell would have to receive it.
+///
+/// endpoints in this file carry spaces, "spi dma" among them, and an unquoted one splits into two words and the command fails on the second. a printed command that cannot be pasted is the same defect as a printed command the binary does not accept.
+fn shell_word(value: &str) -> String {
+    if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c)) {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// what closes the gap for a quiet charge, which is not a command.
+///
+/// a quiet charge is what a victim pays for occupying a region with every requester off, and laxity characterise measures one cell against a running aggressor. there is no flag for it and no measurement behind one, so this says the measurement is missing rather than printing a command that would fail on an argument that does not exist.
 fn characterise_victim_command(victim: &str) -> String {
-    format!("laxity characterise --victim {victim}")
+    format!("no measurement implemented: a quiet charge for {victim} needs every requester off, which laxity characterise does not do")
 }
 
 /// the basis rules, which are the same three for a coefficient and for a quiet charge and are therefore written once.
@@ -243,7 +265,7 @@ fn basis_of(
             if value.is_some() || minimum.is_some() || maximum.is_some() {
                 return Err(format!("an unmeasured {kind} cannot carry a value"));
             }
-            Ok(Basis::Unmeasured { command })
+            Ok(Basis::Unmeasured { remediation: command })
         }
         _ => Err(format!("{kind} basis must be measured, borrowed, bounded, mean or unmeasured")),
     }
@@ -323,7 +345,7 @@ impl Characterisation {
 
         let mut coefficients = Vec::with_capacity(raw.coefficient.len());
         for item in raw.coefficient {
-            let command = characterise_command(&item.requester);
+            let command = characterise_command(&item.object, &item.requester, &item.endpoint);
             let basis = basis_of(
                 "coefficient",
                 &item.basis,
@@ -521,15 +543,35 @@ mod tests {
         assert!(err.contains("carries no access count"), "{err}");
     }
 
+    /// an unmeasured quiet charge says the measurement is missing rather than naming a command, because there is no flag for one and printing something that looks runnable is the defect this wording exists to prevent.
     #[test]
-    fn an_unmeasured_quiet_charge_carries_the_command_and_no_number() {
+    fn an_unmeasured_quiet_charge_says_no_measurement_is_implemented() {
         let loaded = with("\n[[quiet]]\nregion = \"sram2\"\nvictim = \"read_loop\"\nbasis = \"unmeasured\"\n").unwrap();
         let charge = loaded.quiet_charge("sram2", "read_loop").unwrap();
         assert_eq!(charge.cycles(), None);
         assert!(charge.cycles_at(8192).unwrap_err().contains("no number to scale"));
         match &charge.basis {
-            Basis::Unmeasured { command } => {
-                assert_eq!(command, "laxity characterise --victim read_loop")
+            Basis::Unmeasured { remediation } => {
+                assert!(remediation.starts_with("no measurement implemented"), "{remediation}");
+                assert!(remediation.contains("read_loop"), "{remediation}");
+                assert!(!remediation.contains("--victim"), "{remediation}");
+            }
+            other => panic!("expected an unmeasured basis, got {other:?}"),
+        }
+    }
+
+    /// nothing prints a command the binary will not accept, so the coefficient's remediation names the three arguments laxity characterise requires and no others.
+    #[test]
+    fn an_unmeasured_coefficient_names_every_argument_the_command_requires() {
+        let loaded = with("\n[[coefficient]]\nobject = \"stack\"\nrequester = \"emw3080\"\nendpoint = \"spi dma\"\nbasis = \"unmeasured\"\n").unwrap();
+        let entry = loaded.coefficient("stack", "emw3080", "spi dma").unwrap();
+        match &entry.basis {
+            Basis::Unmeasured { remediation } => {
+                // the endpoint carries a space, so it is quoted and the printed line is one a shell hands over as three values.
+                assert_eq!(
+                    remediation,
+                    "run: laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'"
+                );
             }
             other => panic!("expected an unmeasured basis, got {other:?}"),
         }

@@ -6,6 +6,7 @@ mod characterise;
 mod console;
 
 use laxity_audit::render::report;
+use laxity_core::application::{self, ApplicationDocument};
 use laxity_core::characterisation::Characterisation;
 use laxity_core::profile::Profile;
 use std::os::unix::process::CommandExt;
@@ -22,7 +23,12 @@ const DELEGATED: [&str; 9] = [
 const SCRIPT_ENV: &str = "LAXITY_PYTHON";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = env::args().skip(1).collect();
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    // a global flag rather than a per subcommand one, so that a quoted command is checked by prefixing it rather than by editing it.
+    let dry_run = args.first().is_some_and(|first| first == "--dry-run");
+    if dry_run {
+        args.remove(0);
+    }
     let (command, rest) = match args.split_first() {
         None => {
             print_help();
@@ -34,6 +40,19 @@ fn main() -> ExitCode {
         }
         Some((first, rest)) => (first.as_str(), rest.to_vec()),
     };
+
+    if dry_run {
+        return match check(command, &rest) {
+            Ok(note) => {
+                println!("laxity {command}: arguments accepted, {note}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("laxity {command}: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     match command {
         "audit" => match run_audit(&rest) {
@@ -76,10 +95,36 @@ fn main() -> ExitCode {
     }
 }
 
+/// whether the binary accepts these arguments, reaching neither the board nor the filesystem.
+///
+/// every subcommand answers through the code that parses its own arguments, because a second copy of what each one accepts is the thing this check exists to catch. the prose in this tree quotes commands, and a quoted command that the binary refuses is the apparatus advertising a fix that does not run.
+fn check(command: &str, rest: &[String]) -> Result<String, String> {
+    match command {
+        // the audit's arguments are paths and the dry run does not open them, so what it can answer for is how many were given.
+        "audit" if rest.is_empty() => Ok("none, so laxity.toml is found by walking up".to_string()),
+        "audit" if rest.len() < 3 => Err(
+            "usage: laxity audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]"
+                .to_string(),
+        ),
+        "audit" => Ok(format!("{} paths, unopened", rest.len())),
+        "console" => console::check(rest),
+        "characterise" => characterise::check(rest),
+        "tui" => laxity_tui::check_cli(rest.to_vec()),
+        // a delegated subcommand's flags belong to the Python script and cannot be parsed from here, so the name is checked and the flags are reported as unchecked rather than passed in silence.
+        other if DELEGATED.contains(&other) => {
+            Ok("delegated to the Python script, so its flags are not checked here".to_string())
+        }
+        other => Err(format!("unknown subcommand {other}")),
+    }
+}
+
 fn run_audit(args: &[String]) -> Result<String, String> {
+    if args.is_empty() {
+        return discovered_audit();
+    }
     if args.len() < 3 {
         return Err(
-            "usage: laxity audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]"
+            "usage: laxity audit, or laxity audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]"
                 .to_string(),
         );
     }
@@ -89,6 +134,42 @@ fn run_audit(args: &[String]) -> Result<String, String> {
     let profile = Profile::from_toml(&read(&args[1])?)?;
     let characterisation = Characterisation::from_toml(&read(&args[2])?)?;
     report(&PathBuf::from(&args[0]), &profile, &characterisation, config, audited)
+}
+
+/// the audit with nothing on the command line, which is what pointing the tool at a project means.
+///
+/// the four paths the explicit form takes are all derivable: the configuration says the platform and the ELF, and the profile and its characterisation follow by convention from the platform. what the caller supplies is the directory they are standing in, and the configuration that governs it is found by walking up the way cargo and git find theirs.
+fn discovered_audit() -> Result<String, String> {
+    let here = env::current_dir().map_err(|error| format!("cannot read the current directory: {error}"))?;
+    let config = application::discover(&here)?;
+    let document = ApplicationDocument::load(config.to_str().unwrap_or_default())?;
+
+    let elf = document
+        .elf_path(&config)
+        .ok_or_else(|| format!("{} declares no elf, so there is nothing to audit", config.display()))?;
+    if !elf.is_file() {
+        return Err(format!(
+            "{} declares elf = {:?}, which is {} from there and is not a file",
+            config.display(),
+            document.elf.as_deref().unwrap_or_default(),
+            elf.display()
+        ));
+    }
+    let profile_path = document.profile_path(&config)?;
+    let characterisation_path = document.characterisation_path(&config)?;
+
+    let profile = Profile::from_toml(&read(path_str(&profile_path))?)?;
+    let characterisation = Characterisation::from_toml(&read(path_str(&characterisation_path))?)?;
+    // what it found goes to stderr, not into the report. a tool that resolves four paths on its own and names none of them is a tool nobody can check, and a report that differs by how it was invoked is a report nobody can diff.
+    eprintln!("laxity audit: found {}", config.display());
+    eprintln!("             elf {}", elf.display());
+    eprintln!("             profile {}", profile_path.display());
+    eprintln!("             characterisation {}", characterisation_path.display());
+    report(&elf, &profile, &characterisation, Some(path_str(&config)), None)
+}
+
+fn path_str(path: &std::path::Path) -> &str {
+    path.to_str().unwrap_or_default()
 }
 
 /// hand the whole command line to the Python script.
@@ -152,11 +233,15 @@ fn print_help() {
 the host command for placement audits, telemetry and the board
 
 usage:
-  laxity <subcommand> [arguments]
+  laxity [--dry-run] <subcommand> [arguments]
+
+--dry-run checks the arguments and exits without touching the board or a file.
 
 native, this binary:
+  audit          price the placement laxity.toml declares, finding it by
+                 walking up from here
   audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]
-                 price a placement read out of an ELF, on stdout
+                 the same, with every path named
   tui [options]  the telemetry viewer, laxity tui --help for its options
   characterise --object OBJECT --requester NAME --endpoint ENDPOINT
                  measure one coefficient cell on the board and print it with

@@ -2,7 +2,7 @@
 //!
 //! it needs the reference ELF, the same way the Python test needed the reference linker map, so it says what is missing rather than failing on a path when the firmware has not been built.
 //!
-//! both configurations are carried here as complete text and neither is read from examples/stm32u585-reference/laxity.toml. these tests assert what each state of symbol_kind produces, so a state read out of a file that anybody may edit is a test that changes its own subject. that the shipped file still parses is checked where it belongs, in the schema's own tests in crates/laxity-core/src/application.rs.
+//! both configurations are carried here as complete text and neither is read from the laxity.toml at this repository's root. these tests assert what each state of symbol_kind produces, so a state read out of a file that anybody may edit is a test that changes its own subject. that the shipped file still parses is checked where it belongs, in the schema's own tests in crates/laxity-core/src/application.rs.
 
 use laxity_audit::render::report;
 use laxity_core::characterisation::Characterisation;

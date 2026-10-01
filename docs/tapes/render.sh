@@ -85,7 +85,7 @@ for tape in "$@"; do
         fi
     fi
     if [ "$tape" = audit ]; then
-        laxity audit build/target/laxity-u585.elf profiles/stm32u585.toml profiles/stm32u585.characterisation.toml examples/stm32u585-reference/laxity.toml > build/tapes/audit.txt
+        laxity audit > build/tapes/audit.txt
     fi
     vhs "docs/tapes/$tape.tape"
     output=$(awk '$1 == "Output" && $2 ~ /\.gif$/ { print $2 }' "docs/tapes/$tape.tape")

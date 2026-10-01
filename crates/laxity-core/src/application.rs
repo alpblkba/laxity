@@ -2,7 +2,7 @@
 //!
 //! this is the profile's sibling and follows its discipline: the file's whole schema is defined here, parsed once, strictly, with unknown fields denied at every level, so a field a user misspells is refused rather than dropped. what the audit and the viewer build out of the document are projections of it, the way Profile and the viewer's device model are projections of a profile.
 //!
-//! the schema follows the file rather than the other way round. every field examples/stm32u585-reference/laxity.toml carries is declared, including the ones nothing reads yet, because a field the schema does not know is a refusal and dropping one here would make the reference config unloadable.
+//! the schema follows the file rather than the other way round. every field this repository's own laxity.toml carries is declared, including the ones nothing reads yet, because a field the schema does not know is a refusal and dropping one here would make the reference config unloadable.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -221,8 +221,11 @@ fn directories_above(config: &Path) -> Vec<PathBuf> {
 
 /// the laxity.toml that governs a directory, found by walking up from it the way cargo and git find theirs.
 ///
-/// it answers with what it looked for and where when there is none, since a tool that cannot find its configuration and says only that it failed leaves the caller guessing which directory it was standing in.
+/// the walk stops where theirs stop, at the repository the directory belongs to and at the home directory, whichever is reached first. without a ceiling a stray laxity.toml in a home directory governs every directory below it and the stderr line naming what was found is the only thing that reveals it, which is a wrong report rather than a missing one.
+///
+/// it answers with what it looked for and where when there is none, since a tool that cannot find its configuration and says only that it failed leaves the caller guessing which directory it was standing in. the boundary needs nothing added to that message, because the last directory listed is where the walk stopped.
 pub fn discover(from: &Path) -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut at = from.to_path_buf();
     let mut looked = Vec::new();
     loop {
@@ -231,6 +234,10 @@ pub fn discover(from: &Path) -> Result<PathBuf, String> {
             return Ok(candidate);
         }
         looked.push(candidate.display().to_string());
+        // a .git is a directory in a checkout and a file in a worktree or a submodule, so the boundary is that the name is there at all.
+        if at.join(".git").exists() || home.as_deref() == Some(at.as_path()) {
+            break;
+        }
         match at.parent() {
             Some(up) if up != at => at = up.to_path_buf(),
             _ => break,
@@ -243,7 +250,7 @@ pub fn discover(from: &Path) -> Result<PathBuf, String> {
 mod tests {
     use super::*;
 
-    const REFERENCE: &str = include_str!("../../../examples/stm32u585-reference/laxity.toml");
+    const REFERENCE: &str = include_str!("../../../laxity.toml");
 
     #[test]
     fn the_reference_configuration_loads_with_every_field_it_carries() {
@@ -332,6 +339,24 @@ symbol_kind = "reservation"
         assert!(error.contains("no laxity.toml at or above"), "{error}");
         assert!(error.contains("laxity.toml"), "{error}");
         std::fs::remove_dir_all(&bare).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// the walk stops at the repository it is standing in, since a stray configuration above one would otherwise govern every directory below it, with the stderr line naming what was found as the only thing that would reveal it.
+    #[test]
+    fn the_walk_stops_at_the_repository_it_is_standing_in() {
+        let root = project("ceiling");
+        std::fs::create_dir_all(root.join("repo/sub")).unwrap();
+        // a .git can be a file in a worktree or a submodule, so what the boundary tests is that the name is there.
+        std::fs::create_dir(root.join("repo/.git")).unwrap();
+
+        let error = discover(&root.join("repo/sub")).unwrap_err();
+        assert!(error.contains("no laxity.toml at or above"), "{error}");
+        // the repository's own directory is looked at, and the directory above it, which project() put a configuration in, is not.
+        let inside = root.join("repo/laxity.toml").display().to_string();
+        let above = root.join("laxity.toml").display().to_string();
+        assert!(error.contains(&inside), "{error}");
+        assert!(!error.contains(&above), "{error}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

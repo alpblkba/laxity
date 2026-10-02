@@ -1,8 +1,8 @@
 Output build/tapes/laxity-audit.gif
-Set Height 1100
+Set Height 1480
 Source docs/tapes/common.tape
 
-Type "laxity audit build/target/laxity-u585.elf profiles/stm32u585.toml profiles/stm32u585.characterisation.toml examples/stm32u585-reference/laxity.toml"
+Type "laxity audit"
 Enter
 Wait+Screen /quiet charge/
 Wait+Screen /placement/

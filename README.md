@@ -47,7 +47,7 @@ laxity audit \
   build/target/laxity-u585.elf \
   profiles/stm32u585.toml \
   profiles/stm32u585.characterisation.toml \
-  examples/stm32u585-reference/laxity.toml
+  laxity.toml
 ```
 
 <details>
@@ -116,7 +116,7 @@ Use `laxity capture` and `laxity analyse` separately when the firmware is alread
 
 `include/qos` defines the telemetry contract and `runtime` implements its ring and framing. `platform/cortex-m33` supplies cycle counters, while `platform/stm32u5` holds the memory map and board services. The reference application and its placement loop live in `firmware/stm32u585`, with the generated model under `backend/stedgeai`. Hardware configuration belongs to the CubeMX project and is regenerated with `tools/stm32/generate.sh`.
 
-`crates/laxity-elf` reads allocated symbols and `crates/laxity-core` evaluates placement costs. `crates/laxity-audit` joins them, using the shared types in `crates/laxity-types`. `profiles` keeps platform topology separate from measured characterisation, and `examples/stm32u585-reference/laxity.toml` declares the reference application's timing and objects.
+`crates/laxity-elf` reads allocated symbols and `crates/laxity-core` evaluates placement costs. `crates/laxity-audit` joins them, using the shared types in `crates/laxity-types`. `profiles` keeps platform topology separate from measured characterisation, and the `laxity.toml` at the repository root declares the reference application's timing and objects.
 
 `bench` holds the controlled requester and measurement probes used by the campaigns. `tools` contains the board commands, analysis and terminal viewer, with simulator inputs under `scenarios`. The Mermaid sources and generated SVGs live in `docs/diagrams`, and the [experiment record](docs/experiments/README.md) carries the measurement narrative.
 

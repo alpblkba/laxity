@@ -2213,6 +2213,21 @@ fn truncate_middle(text: &str, width: usize) -> String {
 }
 
 /// the viewer's whole command line, given its arguments rather than reading them, so that the laxity binary can hand it a subcommand's arguments and this crate's own binary can hand it the process arguments.
+/// whether this viewer would accept these arguments, without opening a port, a file or a screen.
+///
+/// it is the same parse_args the viewer runs, so a command quoted in the documentation is checked against what would run it.
+pub fn check_cli(args: Vec<String>) -> Result<String, String> {
+    match parse_args(args)? {
+        Args::Help => Ok("help".to_string()),
+        Args::Run(options) => Ok(match options.source {
+            SourceSpec::Udp(port) => format!("reads UDP port {port}"),
+            SourceSpec::Serial(None) => "reads the board's serial port".to_string(),
+            SourceSpec::Serial(Some(path)) => format!("reads the serial port {}", path.display()),
+            SourceSpec::File(path) => format!("reads the capture {}", path.display()),
+        }),
+    }
+}
+
 pub fn run_cli(args: Vec<String>) -> ExitCode {
     match parse_args(args) {
         Ok(Args::Help) => {

@@ -95,12 +95,13 @@ fn what_if_rows(
 ) -> Vec<WhatIf> {
     laxity_audit::candidates(object, bytes, section, profile, characterisation, work)
         .into_iter()
-        .map(|candidate| candidate_row(candidate, work, with_quiet_charge))
+        .map(|candidate| candidate_row(object, candidate, work, with_quiet_charge))
         .collect()
 }
 
 /// one candidate region, laid out for the screen from the shared pricing in laxity_audit::candidates.
 fn candidate_row(
+    object: &str,
     candidate: laxity_audit::Candidate,
     work: &Workload,
     with_quiet_charge: bool,
@@ -140,7 +141,7 @@ fn candidate_row(
                 };
                 // an unmeasured entry is a gap somebody recorded, so its row carries the same command a gap nobody recorded carries. the label answers with the bare word, which is its job, and the command belongs here.
                 let fix = match &term.basis {
-                    Basis::Unmeasured { command } => format!(", run: {command}"),
+                    Basis::Unmeasured { remediation } => format!(", {remediation}"),
                     _ => String::new(),
                 };
                 terms.push(WhatIfTerm {
@@ -151,7 +152,10 @@ fn candidate_row(
             // an endpoint the characterisation carries no coefficient for at all produces no term, so the model can say nothing about it and the row counts it among the endpoints that are not priced.
             None => terms.push(WhatIfTerm {
                 endpoint,
-                detail: format!("no coefficient, run: {}", characterise_command(&requester.name)),
+                detail: format!(
+                    "no coefficient, {}",
+                    characterise_command(object, &requester.name, &requester.endpoint)
+                ),
             }),
         }
     }
@@ -405,7 +409,7 @@ mod tests {
         let unmeasured = row.terms.iter().find(|term| term.endpoint == "emw3080.spi dma").unwrap();
         assert_eq!(
             unmeasured.detail,
-            "unmeasured, run: laxity characterise --requester emw3080"
+            "unmeasured, run: laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'"
         );
     }
 
@@ -499,6 +503,10 @@ mod tests {
         let row = rows.iter().find(|row| row.region == "sram3").unwrap();
         assert_eq!(row.verdict, "+2716 cyc, 1 of 2 endpoints priced");
         let missing = row.terms.iter().find(|term| term.endpoint == "emw3080.spi dma").unwrap();
-        assert_eq!(missing.detail, "no coefficient, run: laxity characterise --requester emw3080");
+        // the object of the what if is the object of the command, so a row for an endpoint nobody measured names all three arguments rather than the requester alone.
+        assert_eq!(
+            missing.detail,
+            "no coefficient, run: laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'"
+        );
     }
 }

@@ -40,7 +40,7 @@ Only `run`, `capture`, `flash`, `tui` and `wifi` need a board. Everything else, 
 
 `laxity audit` reads the declared workloads, objects and requester endpoints from `laxity.toml`, resolves their addresses and sizes from the linker map, and evaluates them against the platform topology and its measured characterisation. Pass a config path when `laxity.toml` is not in the current directory.
 
-The command does not discover objects; it reads `laxity.toml`. It does not apply a plan; `laxity plan` does that. It does not measure the target; `laxity characterise` does that. It does not resolve placement below a region.
+The command does not discover objects; it reads `laxity.toml`. It does not apply a plan, and no command does that yet. It does not measure the target; `laxity characterise` does that. It does not resolve placement below a region.
 
 The characterisation is separate from the topology in `profiles/<platform>.characterisation.toml`. A measured coefficient is a point estimate for that platform. A borrowed coefficient must carry a range and is reported as order of magnitude only. A missing coefficient or transaction rate stays `unknown`.
 

@@ -268,6 +268,8 @@ pub struct Audit {
     pub size_from: Vec<ObjectSource>,
     /// places the declaration and the binary disagree about what a symbol is. neither is resolved here, because which one is wrong is not something an audit can know.
     pub contradictions: Vec<String>,
+    /// said when this ELF puts no object at all inside any region the profile declares, which is what auditing one platform's binary against another platform's profile looks like.
+    pub mismatch: Option<String>,
     pub cost: Cost,
     /// the quiet charge, when the characterisation carries one for every region this victim occupies.
     pub quiet: Result<QuietCost, String>,
@@ -283,6 +285,16 @@ pub fn audit(
 ) -> Result<Audit, String> {
     let found = laxity_elf::read_elf(elf, &profile.regions)
         .map_err(|err| format!("could not read {}: {err}", elf.display()))?;
+
+    // nothing checks that an ELF was built for the platform its configuration declares, and an ELF for another platform has almost every object outside every declared region. none at all inside one is the end of that range and the only unambiguous point on it, so that is what is reported and a partial mismatch is not, since a binary that genuinely places little in the declared regions looks the same. the signal is the start regions the reader above has already resolved.
+    let mismatch = (!found.is_empty() && found.iter().all(|entry| entry.start_region.is_none()))
+        .then(|| {
+            format!(
+                "the ELF and the profile may not belong together: no object in {} starts inside any region the {} profile declares",
+                elf.display(),
+                profile.platform
+            )
+        });
 
     let mut placements = Vec::new();
     let mut unplaced = Vec::new();
@@ -446,6 +458,7 @@ pub fn audit(
         runtime_placed,
         size_from,
         contradictions,
+        mismatch,
         cost,
         quiet,
     })
@@ -561,7 +574,7 @@ mod tests {
     }
 
     const REFERENCE_CONFIG: &str =
-        include_str!("../../../examples/stm32u585-reference/laxity.toml");
+        include_str!("../../../laxity.toml");
 
     fn reference_profile() -> Profile {
         Profile::from_toml(&std::fs::read_to_string(concat!(
@@ -621,6 +634,41 @@ mod tests {
         );
         // all three requesters resolve to a region, two of them through the object they are declared against.
         assert_eq!(declared.workload.requesters.len(), 3);
+    }
+
+    /// an ELF audited against another platform's profile has almost every object outside every declared region, and none at all inside one is the end of that range, so the report says the two may not belong together rather than leaving the stderr line naming what it resolved as the only hint.
+    #[test]
+    fn an_elf_in_no_declared_region_is_reported_as_possibly_not_this_profile_s() {
+        let elf = std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../build/target/laxity-u585.elf"
+        ));
+        if !elf.is_file() {
+            println!("no {} yet, so the mismatch is not exercised", elf.display());
+            return;
+        }
+        let characterisation = Characterisation::from_toml(&std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../profiles/stm32u585.characterisation.toml"
+        ))
+        .unwrap())
+        .unwrap();
+
+        // this ELF's own profile with every region moved to where the binary has nothing, which is what another platform's profile looks like to it. the region names are left alone so that nothing but the addresses differs.
+        let mut elsewhere = reference_profile();
+        elsewhere.platform = "another-platform".to_string();
+        for region in &mut elsewhere.regions {
+            region.base += 0x4000_0000;
+        }
+        let text = crate::render::report(&elf, &elsewhere, &characterisation, None, None).unwrap();
+        assert!(text.contains("may not belong together"), "{text}");
+        assert!(text.contains("another-platform"), "{text}");
+
+        // the shipped profile is this ELF's own, and a report on the pair that does belong together must not carry the warning.
+        let text =
+            crate::render::report(&elf, &reference_profile(), &characterisation, None, None)
+                .unwrap();
+        assert!(!text.contains("may not belong together"), "{text}");
     }
 
     #[test]

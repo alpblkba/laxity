@@ -2,10 +2,10 @@
 //!
 //! this is the profile's sibling and follows its discipline: the file's whole schema is defined here, parsed once, strictly, with unknown fields denied at every level, so a field a user misspells is refused rather than dropped. what the audit and the viewer build out of the document are projections of it, the way Profile and the viewer's device model are projections of a profile.
 //!
-//! the schema follows the file rather than the other way round. every field examples/stm32u585-reference/laxity.toml carries is declared, including the ones nothing reads yet, because a field the schema does not know is a refusal and dropping one here would make the reference config unloadable.
+//! the schema follows the file rather than the other way round. every field this repository's own laxity.toml carries is declared, including the ones nothing reads yet, because a field the schema does not know is a refusal and dropping one here would make the reference config unloadable.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::{fs, io};
 
 use serde::Deserialize;
@@ -21,6 +21,9 @@ pub struct ApplicationDocument {
     /// the linker map and the image the configuration was written against. nothing here reads either, since the audit is given its ELF on the command line, and they are declared because the file carries them.
     pub map: Option<String>,
     pub elf: Option<String>,
+    /// where the platform profile and its characterisation are, when they are not where the convention puts them. the convention is profiles/<platform>.toml beside this file or above it, so these exist to let a project say otherwise rather than to make every project say it.
+    pub profile: Option<String>,
+    pub characterisation: Option<String>,
     #[serde(default)]
     pub workload: BTreeMap<String, ApplicationWorkload>,
     #[serde(default)]
@@ -143,17 +146,111 @@ impl ApplicationDocument {
         self.object.iter().find(|object| object.qualified_name() == qualified)
     }
 
+    /// the ELF this configuration was written against, as a path from wherever the configuration is.
+    ///
+    /// every path in this file is relative to the directory holding it, which is the only rule that makes a configuration portable: a project moved or checked out elsewhere keeps working, and a path relative to the caller's current directory would not.
+    pub fn elf_path(&self, config: &Path) -> Option<PathBuf> {
+        self.elf.as_ref().map(|elf| beside(config, elf))
+    }
+
+    /// the platform profile, named by this configuration or found by convention.
+    ///
+    /// the convention is profiles/<platform>.toml, looked for beside the configuration and then in each directory above it, which is how a project with its own config at its root finds the profiles the repository ships. a configuration that names a path uses that path and the walk does not happen.
+    pub fn profile_path(&self, config: &Path) -> Result<PathBuf, String> {
+        self.found(config, self.profile.as_deref(), &format!("profiles/{}.toml", self.platform))
+    }
+
+    pub fn characterisation_path(&self, config: &Path) -> Result<PathBuf, String> {
+        self.found(
+            config,
+            self.characterisation.as_deref(),
+            &format!("profiles/{}.characterisation.toml", self.platform),
+        )
+    }
+
+    fn found(&self, config: &Path, named: Option<&str>, convention: &str) -> Result<PathBuf, String> {
+        if let Some(named) = named {
+            let path = beside(config, named);
+            return path
+                .is_file()
+                .then_some(path.clone())
+                .ok_or_else(|| format!("{} names {named}, which is not at {}", config.display(), path.display()));
+        }
+        let mut looked = Vec::new();
+        for dir in directories_above(config) {
+            let path = dir.join(convention);
+            if path.is_file() {
+                return Ok(path);
+            }
+            looked.push(path.display().to_string());
+        }
+        Err(format!(
+            "no {convention} for platform {}, looked at {}",
+            self.platform,
+            looked.join(", ")
+        ))
+    }
+
     /// the objects one workload declares, in declaration order.
     pub fn objects_of(&self, workload: &str) -> Vec<&ApplicationObject> {
         self.object.iter().filter(|object| object.workload == workload).collect()
     }
 }
 
+/// one path from the directory a configuration is in, which is what every path in a configuration is relative to.
+fn beside(config: &Path, path: &str) -> PathBuf {
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    config.parent().unwrap_or(Path::new(".")).join(path)
+}
+
+/// the configuration's own directory and then each one above it.
+fn directories_above(config: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut at = config.parent().unwrap_or(Path::new(".")).to_path_buf();
+    loop {
+        dirs.push(at.clone());
+        match at.parent() {
+            Some(up) if up != at => at = up.to_path_buf(),
+            _ => return dirs,
+        }
+    }
+}
+
+/// the laxity.toml that governs a directory, found by walking up from it the way cargo and git find theirs.
+///
+/// the walk stops where theirs stop, at the repository the directory belongs to and at the home directory, whichever is reached first. without a ceiling a stray laxity.toml in a home directory governs every directory below it and the stderr line naming what was found is the only thing that reveals it, which is a wrong report rather than a missing one.
+///
+/// it answers with what it looked for and where when there is none, since a tool that cannot find its configuration and says only that it failed leaves the caller guessing which directory it was standing in. the boundary needs nothing added to that message, because the last directory listed is where the walk stopped.
+pub fn discover(from: &Path) -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut at = from.to_path_buf();
+    let mut looked = Vec::new();
+    loop {
+        let candidate = at.join("laxity.toml");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+        looked.push(candidate.display().to_string());
+        // a .git is a directory in a checkout and a file in a worktree or a submodule, so the boundary is that the name is there at all.
+        if at.join(".git").exists() || home.as_deref() == Some(at.as_path()) {
+            break;
+        }
+        match at.parent() {
+            Some(up) if up != at => at = up.to_path_buf(),
+            _ => break,
+        }
+    }
+    Err(format!("no laxity.toml at or above {}, looked at {}", from.display(), looked.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const REFERENCE: &str = include_str!("../../../examples/stm32u585-reference/laxity.toml");
+    const REFERENCE: &str = include_str!("../../../laxity.toml");
 
     #[test]
     fn the_reference_configuration_loads_with_every_field_it_carries() {
@@ -214,6 +311,103 @@ symbol_kind = "reservation"
         let typo = PAIR.replace("\"reservation\"", "\"resevation\"");
         let error = ApplicationDocument::from_toml(&typo).unwrap_err();
         assert!(error.contains("resevation"), "{error}");
+    }
+
+    /// a scratch project: a configuration, the profiles the convention looks for, and a directory under it to stand in.
+    fn project(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("laxity-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("profiles")).unwrap();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::write(root.join("profiles/stm32u585.toml"), "").unwrap();
+        std::fs::write(root.join("profiles/stm32u585.characterisation.toml"), "").unwrap();
+        std::fs::write(root.join("laxity.toml"), REFERENCE).unwrap();
+        root
+    }
+
+    /// the configuration is found by walking up, the way cargo and git find theirs, so the directory the caller is standing in is the only thing they supply.
+    #[test]
+    fn the_configuration_is_found_by_walking_up_from_where_you_are() {
+        let root = project("walk");
+        assert_eq!(discover(&root).unwrap(), root.join("laxity.toml"));
+        assert_eq!(discover(&root.join("src/deep")).unwrap(), root.join("laxity.toml"));
+
+        // a directory with nothing above it says what it looked for and where, rather than only that it failed.
+        let bare = std::env::temp_dir().join(format!("laxity-bare-{}", std::process::id()));
+        std::fs::create_dir_all(&bare).unwrap();
+        let error = discover(&bare).unwrap_err();
+        assert!(error.contains("no laxity.toml at or above"), "{error}");
+        assert!(error.contains("laxity.toml"), "{error}");
+        std::fs::remove_dir_all(&bare).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// the walk stops at the repository it is standing in, since a stray configuration above one would otherwise govern every directory below it, with the stderr line naming what was found as the only thing that would reveal it.
+    #[test]
+    fn the_walk_stops_at_the_repository_it_is_standing_in() {
+        let root = project("ceiling");
+        std::fs::create_dir_all(root.join("repo/sub")).unwrap();
+        // a .git can be a file in a worktree or a submodule, so what the boundary tests is that the name is there.
+        std::fs::create_dir(root.join("repo/.git")).unwrap();
+
+        let error = discover(&root.join("repo/sub")).unwrap_err();
+        assert!(error.contains("no laxity.toml at or above"), "{error}");
+        // the repository's own directory is looked at, and the directory above it, which project() put a configuration in, is not.
+        let inside = root.join("repo/laxity.toml").display().to_string();
+        let above = root.join("laxity.toml").display().to_string();
+        assert!(error.contains(&inside), "{error}");
+        assert!(!error.contains(&above), "{error}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// every path in a configuration is relative to the directory holding it, which is the only rule that keeps a configuration portable.
+    #[test]
+    fn paths_are_relative_to_the_configuration_rather_than_to_the_caller() {
+        let root = project("paths");
+        let config = root.join("laxity.toml");
+        let document = ApplicationDocument::from_toml(REFERENCE).unwrap();
+        assert_eq!(
+            document.elf_path(&config).unwrap(),
+            root.join("build/target/laxity-u585.elf")
+        );
+        assert_eq!(document.profile_path(&config).unwrap(), root.join("profiles/stm32u585.toml"));
+        assert_eq!(
+            document.characterisation_path(&config).unwrap(),
+            root.join("profiles/stm32u585.characterisation.toml")
+        );
+        // the convention walks up as well, so a configuration in a subdirectory finds the profiles the project ships at its root.
+        let nested = root.join("src/deep/laxity.toml");
+        std::fs::write(&nested, REFERENCE).unwrap();
+        assert_eq!(document.profile_path(&nested).unwrap(), root.join("profiles/stm32u585.toml"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// convention is the default and not a cage, and a platform nobody ships a profile for says what it looked for.
+    #[test]
+    fn a_configuration_may_name_a_profile_and_says_what_it_looked_for_when_it_cannot_find_one() {
+        let root = project("named");
+        let config = root.join("laxity.toml");
+        std::fs::write(root.join("profiles/elsewhere.toml"), "").unwrap();
+        let named = REFERENCE.replace(
+            "platform = \"stm32u585\"",
+            "platform = \"stm32u585\"\nprofile = \"profiles/elsewhere.toml\"",
+        );
+        let document = ApplicationDocument::from_toml(&named).unwrap();
+        assert_eq!(document.profile_path(&config).unwrap(), root.join("profiles/elsewhere.toml"));
+
+        // a named path that is not there names itself rather than falling back to the convention.
+        let missing = REFERENCE.replace(
+            "platform = \"stm32u585\"",
+            "platform = \"stm32u585\"\nprofile = \"profiles/absent.toml\"",
+        );
+        let error = ApplicationDocument::from_toml(&missing).unwrap().profile_path(&config).unwrap_err();
+        assert!(error.contains("profiles/absent.toml"), "{error}");
+
+        let other = REFERENCE.replace("platform = \"stm32u585\"", "platform = \"nrf5340\"");
+        let error = ApplicationDocument::from_toml(&other).unwrap().profile_path(&config).unwrap_err();
+        assert!(error.contains("no profiles/nrf5340.toml for platform nrf5340"), "{error}");
+        assert!(error.contains("looked at"), "{error}");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

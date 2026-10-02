@@ -89,6 +89,12 @@ pub fn report(
                  placed.object.name, truncate(&symbols, 20), placed.object.addr,
                  placed.object.bytes, regions.join(", "));
     }
+    // the mismatch goes above the per object notes, since every one of them is a consequence of it whenever it is there.
+    if let Some(note) = &report.mismatch {
+        for line in wrap(note, 76) {
+            line!(out, "  {line}");
+        }
+    }
     for line in &report.unplaced {
         line!(out, "  not placed: {line}");
     }

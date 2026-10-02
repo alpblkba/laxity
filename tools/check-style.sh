@@ -11,11 +11,22 @@ report() { echo "$2"; echo "$1"; fail=1; }
 # cannot be scanned for them.
 DOCS=$(git ls-files -c -o --exclude-standard '*.md' | grep -v 'STYLE\.md' || true)
 
-if hits=$(grep -n $'\u2014\|\u2013' $DOCS 2>/dev/null); then
+# a file git lists but the worktree does not have, a deletion not yet committed for instance, makes grep print the hits it did find and then exit 2. the four rules below used to take that exit status as their condition, so one missing file silenced all four while the script still reported ok. the scope is narrowed to what can be read, what was dropped is named, and the rules test their own output instead of grep's exit status.
+SKIPPED=$(for f in $DOCS; do [ -r "$f" ] || echo "  $f"; done)
+DOCS=$(for f in $DOCS; do [ -r "$f" ] && echo "$f"; done)
+if [ -n "$SKIPPED" ]; then
+  echo "git lists these and the worktree does not have them, so nothing below scanned them:"
+  echo "$SKIPPED"
+fi
+
+# the two characters are written literally rather than as dollar quoted \u escapes. bash expands such an escape only when the locale can represent the character, and it leaves the escape text in place when it cannot, so this rule matched nothing in a POSIX locale. the arrow rule below has always been literal, which is why that one has been firing.
+hits=$(grep -n '—\|–' $DOCS 2>/dev/null || true)
+if [ -n "$hits" ]; then
   report "$hits" "em dash or en dash:"
 fi
 
-if hits=$(grep -n '→\|←\|⇒' $DOCS 2>/dev/null); then
+hits=$(grep -n '→\|←\|⇒' $DOCS 2>/dev/null || true)
+if [ -n "$hits" ]; then
   report "$hits" "arrow in prose:"
 fi
 
@@ -24,13 +35,16 @@ VOCAB="$VOCAB|groundbreaking|revolutioniz|realm|tapestry|deep dive|unveil|illumi
 VOCAB="$VOCAB|showcase|empower|streamline|holistic|comprehensive|crucial|vital|pivotal"
 VOCAB="$VOCAB|dramatically|effortlessly|simply put|in essence|ultimately|moreover"
 VOCAB="$VOCAB|furthermore|notably|importantly|that said|worth noting|should be noted"
-if hits=$(grep -niE "\b($VOCAB)\b" $DOCS 2>/dev/null); then
+hits=$(grep -niE "\b($VOCAB)\b" $DOCS 2>/dev/null || true)
+if [ -n "$hits" ]; then
   report "$hits" "forbidden vocabulary:"
 fi
 
 # headings must be sentence case: flag a second capitalised word in a heading.
-if hits=$(grep -nE '^#{1,6} +[A-Z][a-z]+ +[A-Z][a-z]+' $DOCS 2>/dev/null \
-          | grep -vE '(STM32|Laxity|Apache|ThreadX|NetX|Edge AI|Cortex|SRAM|DWT|CubeMX|TinyML|RTOS|Wi-Fi)'); then
+# the first grep's exit status would reach the pipeline under pipefail, and a hit the second grep keeps is still a hit, so the output is what decides.
+hits=$(grep -nE '^#{1,6} +[A-Z][a-z]+ +[A-Z][a-z]+' $DOCS 2>/dev/null \
+       | grep -vE '(STM32|Laxity|Apache|ThreadX|NetX|Edge AI|Cortex|SRAM|DWT|CubeMX|TinyML|RTOS|Wi-Fi)' || true)
+if [ -n "$hits" ]; then
   report "$hits" "possible title case heading:"
 fi
 

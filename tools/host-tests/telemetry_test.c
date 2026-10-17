@@ -78,6 +78,7 @@ static void test_record_layout(void)
     rec.region_id = 0x5Au;
     rec.flags = QOS_FLAG_CYCCNT_WRAP;
     rec.aggressor_idx = 0xCAFEu;
+    rec.audio_halves = 0x1357u;
     rec.reserved = 0xA5A5A5A5u;
 
     uint8_t wire[QOS_RECORD_SIZE];
@@ -92,6 +93,7 @@ static void test_record_layout(void)
     CHECK_EQ(wire[22], 0x5Au);
     CHECK_EQ(wire[23], QOS_FLAG_CYCCNT_WRAP);
     CHECK_EQ(rd16(wire + 24), 0xCAFEu);
+    CHECK_EQ(rd16(wire + 26), 0x1357u);
     CHECK_EQ(rd32(wire + 28), 0xA5A5A5A5u);
 }
 
@@ -249,6 +251,8 @@ static void write_streams(const char *dir)
     for (uint32_t i = 0u; i < 32u; ++i) {
         rec.exec_cyc = 300000u + i;
         rec.region_id = ids[i % 4u];
+        /* a value that climbs rather than a constant, so a parser reading the wrong two bytes cannot pass by accident. */
+        rec.audio_halves = (uint16_t)(7000u + i);
         /* half the records carry an aggressor in region 2 at footprint index 1 and a transfer
          * count that climbs, the other half carry none. the parser has to split them into
          * different cells and see the count advance only where an aggressor was running. */

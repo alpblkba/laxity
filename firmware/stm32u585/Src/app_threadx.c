@@ -62,6 +62,21 @@ extern UART_HandleTypeDef huart1;
 #define LAXITY_NET_STACK     2048
 #define LAXITY_NET_PRIO      12
 
+/* the two acquisition tenants, above the measurement thread at 15 and below the network at 12, so the existing order between the network, the measurement and the export threads is unchanged and the only thing that moved is that acquisition now preempts inference. a half buffer that is overwritten before it is read is gone, and an inference that runs late is only late, which is the whole reason these sit where they do.
+ *
+ * audio is above the IMU because its deadline is the one the hardware sets: the DMA overwrites a half every 31.541 ms whatever the software is doing, where the accelerometer's own output data rate decides when there is anything new to read.
+ *
+ * the stacks are small because neither entry calls snprintf. both come out of TX_APP_MEM_POOL_SIZE, which is 16384 and carries the export and network stacks and, on the pool arm, the measurement stack as well. */
+#define LAXITY_AUDIO_STACK   1024
+#define LAXITY_AUDIO_PRIO    13
+#define LAXITY_IMU_STACK     1024
+#define LAXITY_IMU_PRIO      14
+
+/* one tick is 10 ms and a half buffer fills in 31.541 ms, so this polls about three times per half. the flags the poll reads are sticky and both are honoured in one call, so loss begins only once two halves complete between polls, which at this period means the thread was kept off the core for more than 63 ms. */
+#define LAXITY_AUDIO_TICKS   1
+/* the accelerometer rate limits itself to LAXITY_ACC_PERIOD_MS in sensors.c and answers false when it is early, so this only has to offer often enough not to be the thing that sets the spacing. */
+#define LAXITY_IMU_TICKS     2
+
 /* the network stack is off by default. with no reachable access point the driver's own threads
  * sit above every thread here at priorities 8 and 9, and about forty seconds after start up they
  * stop yielding: the UART goes silent, the measurement loop stops advancing, and the board looks
@@ -186,6 +201,8 @@ _Static_assert(LAXITY_ARENA_BYTES <= LAXITY_ARENA_ALIGN,
 /* USER CODE BEGIN PV */
 static TX_THREAD    laxity_infer_thread;
 static TX_THREAD    laxity_export_thread;
+static TX_THREAD    laxity_audio_thread;
+static TX_THREAD    laxity_imu_thread;
 #if LAXITY_NET_ENABLE
 static TX_THREAD    laxity_net_thread;
 #endif
@@ -415,6 +432,8 @@ static volatile struct {
 /* USER CODE BEGIN PFP */
 static VOID laxity_infer_entry(ULONG argument);
 static VOID laxity_export_entry(ULONG argument);
+static VOID laxity_audio_entry(ULONG argument);
+static VOID laxity_imu_entry(ULONG argument);
 #if LAXITY_NET_ENABLE
 static VOID laxity_net_entry(ULONG argument);
 #endif
@@ -634,6 +653,35 @@ UINT App_ThreadX_Init(VOID *memory_ptr)
                        TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
   {
     return TX_THREAD_ERROR;
+  }
+
+  {
+    CHAR *audio_stack;
+    CHAR *imu_stack;
+    if (tx_byte_allocate(byte_pool, (VOID **)&audio_stack, LAXITY_AUDIO_STACK,
+                         TX_NO_WAIT) != TX_SUCCESS)
+    {
+      return TX_POOL_ERROR;
+    }
+    if (tx_thread_create(&laxity_audio_thread, "laxity_audio", laxity_audio_entry, 0,
+                         audio_stack, LAXITY_AUDIO_STACK,
+                         LAXITY_AUDIO_PRIO, LAXITY_AUDIO_PRIO,
+                         TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+    {
+      return TX_THREAD_ERROR;
+    }
+    if (tx_byte_allocate(byte_pool, (VOID **)&imu_stack, LAXITY_IMU_STACK,
+                         TX_NO_WAIT) != TX_SUCCESS)
+    {
+      return TX_POOL_ERROR;
+    }
+    if (tx_thread_create(&laxity_imu_thread, "laxity_imu", laxity_imu_entry, 0,
+                         imu_stack, LAXITY_IMU_STACK,
+                         LAXITY_IMU_PRIO, LAXITY_IMU_PRIO,
+                         TX_NO_TIME_SLICE, TX_AUTO_START) != TX_SUCCESS)
+    {
+      return TX_THREAD_ERROR;
+    }
   }
 
 #if LAXITY_NET_ENABLE
@@ -1073,6 +1121,8 @@ static VOID laxity_infer_entry(ULONG argument)
   laxity_live.rc = rc;
 
   /* only now may the exporter touch the ring, since the null probe pushes records into it and resets it. */
+  //
+  /* three threads wait on this one count and it is put once, so each of them puts it back after taking it and the gate releases all of them rather than whichever got there first. without that the audio tenant, created first and running above the exporter, would take the only count and the exporter would never start, which is a silent UART and a board that looks halted. */
   (void)tx_semaphore_put(&laxity_boot_done);
 
   if (rc != 0 || !laxity_placed_ok)
@@ -1168,11 +1218,7 @@ static VOID laxity_infer_entry(ULONG argument)
         laxity_set_aggressor(laxity_cells[cell].aggr_region, laxity_cells[cell].foot_idx);
       }
 
-      /* all three are outside the cycle counter window below. the sensor decides its own spacing
-         from its output data rate, so this only offers it the chance, and the microphone poll
-         does nothing unless a half buffer has completed since the last pass. */
-      (void)qos_sensors_sample();
-      (void)qos_audio_poll();
+      /* outside the cycle counter window below. the microphone and the accelerometer are polled by laxity_audio and laxity_imu now, and not from here: qos_audio_poll clears the sticky flags it reads, so a second caller can fold a half the first one already folded and qos_audio_buffers would count it twice. */
       laxity_poll_button();
 
       rec.release_cyc = qos_cyc_now();
@@ -1244,6 +1290,8 @@ static VOID laxity_infer_entry(ULONG argument)
       }
 
       rec.exec_cyc = cycles;
+      /* the count the audio tenant has folded so far, cumulative and wrapping at 16 bits. the firmware reports what it folded and says nothing about what it missed, because it cannot: the host compares this against the halves that fit in the elapsed cycles between two records. */
+      rec.audio_halves = (uint16_t)qos_audio_buffers();
 
       if (stress_sched)
       {
@@ -1459,6 +1507,40 @@ static void laxity_poll_console(void)
   }
 }
 
+/* the audio path's own tenant, which is the whole point of giving it a thread: the half buffers are folded on this thread's period rather than once per inference pass, so a pass that runs long no longer decides whether a half is read in time.
+ *
+ * the inline poll that used to do this from the measurement loop is gone rather than kept. the two flags it reads are sticky and the poll clears them, so two callers can both see one flag set and fold the same half twice, and qos_audio_buffers counts folds. one caller is what makes that count mean anything.
+ *
+ * there is still no interrupt on half completion, and none is added here. platform/stm32u5/audio.h records why: a handler firing every half buffer lands inside measured inference windows and adds cycles that have nothing to do with the bus. */
+static VOID laxity_audio_entry(ULONG argument)
+{
+  (void)argument;
+
+  (void)tx_semaphore_get(&laxity_boot_done, TX_WAIT_FOREVER);
+  (void)tx_semaphore_put(&laxity_boot_done);
+
+  while (1)
+  {
+    (void)qos_audio_poll();
+    tx_thread_sleep(LAXITY_AUDIO_TICKS);
+  }
+}
+
+/* the accelerometer's own tenant, for the same reason, though its deadline is softer: the part holds a sample until it is read and the next one replaces it, so a late read loses a sample rather than corrupting a window. */
+static VOID laxity_imu_entry(ULONG argument)
+{
+  (void)argument;
+
+  (void)tx_semaphore_get(&laxity_boot_done, TX_WAIT_FOREVER);
+  (void)tx_semaphore_put(&laxity_boot_done);
+
+  while (1)
+  {
+    (void)qos_sensors_sample();
+    tx_thread_sleep(LAXITY_IMU_TICKS);
+  }
+}
+
 static VOID laxity_export_entry(ULONG argument)
 {
   char line[288];
@@ -1469,6 +1551,7 @@ static VOID laxity_export_entry(ULONG argument)
   (void)argument;
 
   (void)tx_semaphore_get(&laxity_boot_done, TX_WAIT_FOREVER);
+  (void)tx_semaphore_put(&laxity_boot_done);
 
   while (1)
   {

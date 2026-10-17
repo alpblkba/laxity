@@ -21,14 +21,9 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent
 OUT = pathlib.Path(os.environ.get("LAXITY_RESULTS", ROOT / "RESULTS.md"))
 
-# the fields an entry must carry. the list lives here rather than in the results document,
-# because this script rewrites that document from scratch on every run and would erase any rule
-# stated there.
+# the fields an entry must carry. the list lives here rather than in the results document, because this script rewrites that document from scratch on every run and would erase any rule stated there.
 #
-# image_sha256 is required and elf_sha256 is not. a clean rebuild of identical sources reorders
-# .debug_str and shifts every section header after it, so the ELF hash names a file no rebuild
-# recreates while the image hash names the bytes that ran. elf_sha256 is still recorded and
-# reported, since it identifies the local build a run came from.
+# image_sha256 is required and elf_sha256 is not. a clean rebuild of identical sources reorders .debug_str and shifts every section header after it, so the ELF hash names a file no rebuild recreates while the image hash names the bytes that ran. elf_sha256 is still recorded and reported, since it identifies the local build a run came from.
 REQUIRED_BUILD = ("board", "opt", "sysclk_hz", "flash_latency", "voltage_scale", "image_sha256")
 
 
@@ -44,6 +39,43 @@ def read_kv(path):
                 key, _, value = line.partition("=")
                 out[key.strip()] = value.strip()
     return out
+
+
+# the audio half buffer, as the part actually fills it. the board support package is asked for 16 kHz and the MDF runs at 2857000/176 Hz, because the decimation ratio is an integer, and the fraction is kept rather than the rounded 16233 since rounding is fourteen cycles out at 160 MHz.
+AUDIO_HALF_SAMPLES = 512
+AUDIO_CLOCK_HZ = 2857000
+AUDIO_DECIMATION = 176
+
+
+def audio_loss(meta, records):
+    """halves that should have completed over a capture against the halves the firmware folded.
+
+    the firmware reports what it folded and nothing about what it missed, so the comparison is made
+    here: between two consecutive records the elapsed cycles come from release_cyc and the halves
+    that fit in them come from the period above, and the difference against the folded count is the
+    loss. the first record of a capture has no predecessor and contributes nothing to either total.
+    """
+    if meta.get("version", 0) < 3:
+        return None
+    folded_total = 0
+    expected_total = 0.0
+    hz = meta.get("cyccnt_hz") or meta.get("clock_hz")
+    if not hz:
+        return None
+    for before, after in zip(records, records[1:]):
+        # both counters are unsigned and wrap, the cycle counter at 32 bits and the half count at 16.
+        elapsed = (after["release_cyc"] - before["release_cyc"]) & 0xFFFFFFFF
+        folded = (after["audio_halves"] - before["audio_halves"]) & 0xFFFF
+        expected_total += elapsed * AUDIO_CLOCK_HZ / (hz * AUDIO_HALF_SAMPLES * AUDIO_DECIMATION)
+        folded_total += folded
+    if folded_total == 0:
+        # a field nobody writes reads as every half lost, which is a statement about the firmware and not about the acquisition path, so it is named rather than reported as a loss.
+        return {"folded": 0, "expected": expected_total, "lost": None}
+    return {
+        "folded": folded_total,
+        "expected": expected_total,
+        "lost": max(0.0, expected_total - folded_total),
+    }
 
 
 def entry(run_dir, allow_simulated=False):
@@ -68,9 +100,7 @@ def entry(run_dir, allow_simulated=False):
     stats = telemetry_parse.region_stats(placements, quiet)
     cells = telemetry_parse.cell_stats(placements, records)
 
-    # a channel that failed to start is indistinguishable from a channel that caused no
-    # contention, so a cell that names an aggressor whose transfer count never moved is a broken
-    # run and is refused rather than reported as a null result.
+    # a channel that failed to start is indistinguishable from a channel that caused no contention, so a cell that names an aggressor whose transfer count never moved is a broken run and is refused rather than reported as a null result.
     dead = ["%s under %s" % (a, g) for (a, g), st in cells.items()
             if g != "off" and not st["xfer_advanced"]]
     if dead:
@@ -88,8 +118,7 @@ def entry(run_dir, allow_simulated=False):
                      "Commit, capture again, and regenerate to clear this." % (len(dirty), commit[:12]))
         lines.append("")
 
-    # the image hash goes first because it is the one a rebuild reproduces. the ELF hash follows
-    # when the capture recorded one, since it still identifies the local build behind the run.
+    # the image hash goes first because it is the one a rebuild reproduces. the ELF hash follows when the capture recorded one, since it still identifies the local build behind the run.
     ident = "image `%s`" % build["image_sha256"][:12]
     if build.get("elf_sha256"):
         ident += ", ELF `%s`" % build["elf_sha256"][:12]
@@ -145,8 +174,7 @@ def entry(run_dir, allow_simulated=False):
             st["p99"], st["max"], st["median"] - base))
     lines.append("")
 
-    # a label name is the region name plus a suffix for a second identity of it, so grouping on the
-    # leading region name is what pairs a control with the label it shadows.
+    # a label name is the region name plus a suffix for a second identity of it, so grouping on the leading region name is what pairs a control with the label it shadows.
     def group(label):
         return label.rstrip("abcdefghijklmnopqrstuvwxyz'")
 
@@ -206,6 +234,25 @@ def entry(run_dir, allow_simulated=False):
                             "downward" if trend[-1] < trend[0] else "upward",
                             ", ".join("%s %d" % (k, v) for k, v in zip(order, trend))))
             lines.append("")
+
+    audio = audio_loss(meta, records)
+    if audio is None:
+        pass
+    elif audio["lost"] is None:
+        lines.append("Audio half buffers: the folded count never advanced over this capture, so no "
+                     "loss figure is formed. The record carries the count from telemetry version 3 "
+                     "onward and a firmware that does not write it reads the same as one that lost "
+                     "every half.")
+        lines.append("")
+    else:
+        lines.append("Audio half buffers: %d folded against %.0f that fit in the elapsed cycles, so "
+                     "%.0f were lost. The two completion flags are sticky and both are honoured in "
+                     "one poll, so two halves completing between polls are both counted while a "
+                     "third inside the same buffer period sets a bit that is already set, which "
+                     "makes this a lower bound on loss. The first record of the capture has no "
+                     "predecessor and is outside both totals."
+                     % (audio["folded"], audio["expected"], audio["lost"]))
+        lines.append("")
 
     floor = max((abs(d) for _, _, d, _ in controls), default=0)
     primaries = {l: st for l, st in stats.items() if not st["control"] and not st["alt_addr"]}

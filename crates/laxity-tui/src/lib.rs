@@ -777,7 +777,11 @@ impl App {
 
     /// move the cursor over the object list, wrapping the way the memory view's region cursor does.
     fn select_object(&mut self, step: isize) {
-        let count = self.audit.as_ref().map(|model| model.objects.len()).unwrap_or(0);
+        let count = self
+            .audit
+            .as_ref()
+            .map(|model| model.objects.len())
+            .unwrap_or(0);
         if count == 0 {
             return;
         }
@@ -818,7 +822,11 @@ impl App {
 
         let mut rows: Vec<Line> = Vec::new();
         for (index, object) in model.objects.iter().enumerate() {
-            let marker = if index == self.selected_object { ">" } else { " " };
+            let marker = if index == self.selected_object {
+                ">"
+            } else {
+                " "
+            };
             rows.push(Line::from(format!(
                 "{marker} {:<16} {:>9} B  {}",
                 truncate_middle(&object.name, 16),
@@ -839,16 +847,19 @@ impl App {
                 // the basis and the image sit behind the provenance key here for the reason they do in the overlaps pane: one row per region stays readable and the evidence is one keypress away.
                 if self.audit_provenance {
                     for term in &line.terms {
-                        lower.push(Line::from(format!("    {:<22} {}", term.endpoint, term.detail)));
+                        lower.push(Line::from(format!(
+                            "    {:<22} {}",
+                            term.endpoint, term.detail
+                        )));
                     }
                 }
             }
             " what if it were placed elsewhere, Tab to go back "
         } else {
             match selected {
-                Some(object) if object.overlaps.is_empty() => {
-                    lower.push(Line::from("  no requester touches a region this object is in"))
-                }
+                Some(object) if object.overlaps.is_empty() => lower.push(Line::from(
+                    "  no requester touches a region this object is in",
+                )),
                 Some(object) => {
                     lower.push(Line::from(format!(
                         "  {:<20} {:<6} {:<13} {:>8} {:>12} {}",
@@ -888,7 +899,10 @@ impl App {
         );
 
         let total = if model.unpriced == 0 {
-            format!("total {:+.0} cyc, every overlap carries a number", model.total_low)
+            format!(
+                "total {:+.0} cyc, every overlap carries a number",
+                model.total_low
+            )
         } else {
             format!(
                 "total at least {:+.0} cyc, {} overlap{} unmeasured, so no upper bound",
@@ -2171,7 +2185,8 @@ impl Health {
 ///
 /// it needs three files the telemetry stream does not carry: the ELF for the objects, the platform profile as TOML because laxity-core parses its own, and the characterisation for what a region costs. a missing one is reported on the screen rather than refused at startup, since the viewer's job is the telemetry and the audit is a second screen.
 fn load_audit(options: &Options) -> (Option<AuditModel>, Option<String>) {
-    let (Some(elf), Some(characterisation)) = (options.elf.as_deref(), options.characterisation.as_deref())
+    let (Some(elf), Some(characterisation)) =
+        (options.elf.as_deref(), options.characterisation.as_deref())
     else {
         return (None, None);
     };
@@ -2182,17 +2197,19 @@ fn load_audit(options: &Options) -> (Option<AuditModel>, Option<String>) {
         );
     };
     let load = |path: &std::path::Path| {
-        std::fs::read_to_string(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
+        std::fs::read_to_string(path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))
     };
     let built = load(profile_path)
         .and_then(|text| laxity_core::profile::Profile::from_toml(&text))
         .and_then(|profile| {
             load(characterisation)
-                .and_then(|text| {
-                    laxity_core::characterisation::Characterisation::from_toml(&text)
-                })
+                .and_then(|text| laxity_core::characterisation::Characterisation::from_toml(&text))
                 .and_then(|characterisation| {
-                    let app = options.app_config.as_deref().map(|path| path.display().to_string());
+                    let app = options
+                        .app_config
+                        .as_deref()
+                        .map(|path| path.display().to_string());
                     AuditModel::load(elf, &profile, &characterisation, app.as_deref())
                 })
         });
@@ -2428,8 +2445,10 @@ fn parse_args(argv: Vec<String>) -> Result<Args, String> {
             "--profile" => profile = Some(PathBuf::from(required_value(&mut args, "--profile")?)),
             "--elf" => elf = Some(PathBuf::from(required_value(&mut args, "--elf")?)),
             "--characterisation" => {
-                characterisation =
-                    Some(PathBuf::from(required_value(&mut args, "--characterisation")?))
+                characterisation = Some(PathBuf::from(required_value(
+                    &mut args,
+                    "--characterisation",
+                )?))
             }
             "--app" => app_config = Some(PathBuf::from(required_value(&mut args, "--app")?)),
             "--duration" => {
@@ -2521,7 +2540,11 @@ pub fn records(bytes: &[u8]) -> Result<Capture, String> {
         "the capture carries no header frame, so the clock its cycles are counted on is unknown"
             .to_string()
     })?;
-    Ok(Capture { metadata, records, stats: state.stats })
+    Ok(Capture {
+        metadata,
+        records,
+        stats: state.stats,
+    })
 }
 
 /// the board's virtual COM port, resolved the one way this tree resolves it.
@@ -2884,7 +2907,7 @@ mod tests {
             placement_id,
             flags: 0,
             aggressor_idx,
-            padding: 0,
+            audio_halves: 0,
             reserved: seq,
         }
     }

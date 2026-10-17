@@ -72,7 +72,7 @@ pub struct LxRecord {
     pub placement_id: u8,
     pub flags: u8,
     pub aggressor_idx: u16,
-    pub padding: u16,
+    pub audio_halves: u16,
     pub reserved: u32,
 }
 
@@ -273,7 +273,7 @@ impl TelemetryState {
                 placement_id: chunk[22],
                 flags: chunk[23],
                 aggressor_idx: u16_at(chunk, 24),
-                padding: u16_at(chunk, 26),
+                audio_halves: u16_at(chunk, 26),
                 reserved: u32_at(chunk, 28),
             };
 
@@ -387,6 +387,28 @@ mod tests {
         events.extend(delta.events);
         ascii.extend(delta.ascii);
         (events, ascii)
+    }
+
+    /// the two bytes at offset 26 were a pad and now carry the count of audio halves the firmware folded, so the decoder has to read them as a number rather than skip them.
+    #[test]
+    fn the_folded_audio_half_count_is_decoded_from_offset_twenty_six() {
+        let mut payload = vec![0; RECORD_SIZE];
+        payload[0..4].copy_from_slice(&7u32.to_le_bytes());
+        payload[22] = 3;
+        payload[26..28].copy_from_slice(&4321u16.to_le_bytes());
+        let mut state = TelemetryState::default();
+        let (events, _) = consume(
+            &mut state,
+            &[header(0x2004_0000), frame(1, &payload)].concat(),
+        );
+        let record = events
+            .iter()
+            .find_map(|event| match event {
+                LxEvent::Record(record) => Some(record),
+                _ => None,
+            })
+            .expect("no record decoded");
+        assert_eq!(record.audio_halves, 4321);
     }
 
     #[test]

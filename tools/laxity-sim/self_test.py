@@ -109,7 +109,7 @@ def check_scenarios(temp):
         path = temp / (scenario + ".bin")
         run(scenario, path)
         stats, meta, _, _ = parsed(path)
-        assert meta["version"] == 2
+        assert meta["version"] == 3
         assert meta["origin"] == "simulated"
         assert stats["records"] > 0
 

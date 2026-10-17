@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define QOS_TELEMETRY_VERSION  2u
+#define QOS_TELEMETRY_VERSION  3u
 
 /* records are streamed verbatim, so the struct layout is the wire layout and a big endian target would emit a different format under the same version number. both the STM32U585 and the macOS arm64 host are little endian, so this is a contract rather than a portability gap to close now. */
 #if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__)
@@ -83,7 +83,10 @@ typedef struct {
     uint8_t  region_id;
     uint8_t  flags;
     uint16_t aggressor_idx;
-    uint16_t padding;
+    /* halves of the audio double buffer the firmware has folded since boot, cumulative and wrapping at 16 bits, which is about 35 minutes at this rate and well past any capture.
+     *
+     * it is a count and not a loss. the host subtracts consecutive counts and compares the difference with the halves that should have completed over the same interval, because the firmware knows how many it folded and not how many went by. the two flags it folds from are sticky and both are honoured in one poll, so two halves completing between polls are both counted and a third inside the same buffer period sets a bit that is already set and is lost without trace. */
+    uint16_t audio_halves;
     uint32_t reserved;
 } qos_infer_record_t;
 
@@ -96,6 +99,7 @@ _Static_assert(offsetof(qos_infer_record_t, model_id) == 20, "record layout move
 _Static_assert(offsetof(qos_infer_record_t, region_id) == 22, "record layout moved");
 _Static_assert(offsetof(qos_infer_record_t, flags) == 23, "record layout moved");
 _Static_assert(offsetof(qos_infer_record_t, aggressor_idx) == 24, "record layout moved");
+_Static_assert(offsetof(qos_infer_record_t, audio_halves) == 26, "record layout moved");
 _Static_assert(offsetof(qos_infer_record_t, reserved) == 28, "record layout moved");
 
 /* record the run metadata the target knows. clock_hz is what the clock tree is configured for and cyccnt_hz is what qos_dwt_measure_hz() observed, and keeping both lets a capture show a configuration that did not take. header_flags is the QOS_HDR_ set that goes into every header frame. */

@@ -186,7 +186,7 @@ mod tests {
             placement_id,
             flags: 0,
             aggressor_idx,
-            padding: 0,
+            audio_halves: 0,
             reserved: 4,
         }
     }

@@ -14,11 +14,9 @@ import struct
 import sys
 
 MAGIC = b"LX"
-# version 1 carried a 20 byte fixed header and no placement entries. version 2 added the null
-# probe overhead and the placement table. both are accepted, since results/raw is append only
-# and a capture has to stay readable after the format moves.
-VERSIONS = (1, 2)
-HEADER_FIXED = {1: 20, 2: 40}
+# version 1 carried a 20 byte fixed header and no placement entries. version 2 added the null probe overhead and the placement table. version 3 gave the record's spare two bytes a meaning, the folded audio half count, and changed no size or offset. all three are accepted, since results/raw is append only and a capture has to stay readable after the format moves.
+VERSIONS = (1, 2, 3)
+HEADER_FIXED = {1: 20, 2: 40, 3: 40}
 FRAME_OVERHEAD = 8
 PLACEMENT_SIZE = 20
 RECORD_SIZE = 32
@@ -26,9 +24,7 @@ HEADER_ORIGIN_SIMULATED = 1 << 2
 
 FLAG_CYCCNT_WRAP = 1 << 0
 
-# aggressor_idx packs the competing master's region in the low byte and a footprint index in the
-# high byte. the footprint table is a property of the run rather than of the format, so it is
-# named here and has to move with the firmware if the levels change.
+# aggressor_idx packs the competing master's region in the low byte and a footprint index in the high byte. the footprint table is a property of the run rather than of the format, so it is named here and has to move with the firmware if the levels change.
 FOOTPRINT_BYTES = (1024, 4096, 8192, 16384)
 
 
@@ -42,7 +38,7 @@ def aggressor_of(rec):
 
 RECORD_FIELDS = (
     "seq", "release_cyc", "exec_cyc", "cpu_cyc", "stall_cyc",
-    "model_id", "region_id", "flags", "aggressor_idx", "padding", "reserved",
+    "model_id", "region_id", "flags", "aggressor_idx", "audio_halves", "reserved",
 )
 RECORD_STRUCT = struct.Struct("<5I H B B H H I")
 PLACEMENT_STRUCT = struct.Struct("<B B H I I 8s")
@@ -96,9 +92,7 @@ def parse(data, on_batch=None):
         plen, want = struct.unpack_from("<HH", data, pos + 4)
         body = pos + FRAME_OVERHEAD
 
-        # a candidate is rejected on the byte after its magic rather than on the length it
-        # claims, since "LX" occurs in ordinary text and a claimed length can walk the reader
-        # straight over a real frame that starts inside the bytes it would have skipped.
+        # a candidate is rejected on the byte after its magic rather than on the length it claims, since "LX" occurs in ordinary text and a claimed length can walk the reader straight over a real frame that starts inside the bytes it would have skipped.
         ok = (version in VERSIONS and ftype in (0, 1) and body + plen <= end
               and crc16(data[body:body + plen]) == want)
         if not ok:
@@ -162,9 +156,7 @@ def parse(data, on_batch=None):
                 continue
             out["batch_frames"] += 1
             if not seen_header:
-                # the document says a header frame opens every capture, so a batch that
-                # arrives before one is reported and discarded rather than parsed against
-                # metadata this stream never carried.
+                # the document says a header frame opens every capture, so a batch that arrives before one is reported and discarded rather than parsed against metadata this stream never carried.
                 out["records_before_header"] += count
             else:
                 for i in range(count):
@@ -178,8 +170,7 @@ def parse(data, on_batch=None):
                     records.append(rec)
                 out["records"] += count
                 if on_batch is not None and count:
-                    # the replay utility needs accepted batch boundaries, so it observes this
-                    # parser rather than implementing the framing and resynchronisation again.
+                    # the replay utility needs accepted batch boundaries, so it observes this parser rather than implementing the framing and resynchronisation again.
                     on_batch(body + plen, meta["cyccnt_hz"], tuple(records[-count:]))
 
         pos = body + plen

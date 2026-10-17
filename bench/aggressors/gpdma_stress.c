@@ -76,8 +76,7 @@ static bool trigger_start(uint32_t hz)
     master.MasterSlaveMode     = TIM_MASTERSLAVEMODE_DISABLE;
     if (HAL_TIMEx_MasterConfigSynchronization(&s_tim, &master) != HAL_OK) { return false; }
 
-    // no interrupt is enabled on the timer. it exists to raise TRGO into the DMA trigger input,
-    // and a handler would put the core back inside the measured window.
+    // no interrupt is enabled on the timer. it exists to raise TRGO into the DMA trigger input, and a handler would put the core back inside the measured window.
     return HAL_TIM_Base_Start(&s_tim) == HAL_OK;
 }
 
@@ -280,8 +279,7 @@ void qos_stress_stop(void)
             (void)HAL_DMA_Abort(&s_ch[i]);
             (void)HAL_DMAEx_List_UnLinkQ(&s_ch[i]);
         }
-        // the queue is reset rather than reused, since a second start would otherwise append a
-        // node to a list that already loops back on itself.
+        // the queue is reset rather than reused, since a second start would otherwise append a node to a list that already loops back on itself.
         (void)HAL_DMAEx_List_ResetQ(&s_queue[i]);
     }
     s_active = 0u;

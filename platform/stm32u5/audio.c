@@ -40,9 +40,7 @@ bool qos_audio_init(void)
         return false;
     }
 
-    // the line is enabled inside the MSP that the init above runs, and the startup file's default
-    // handler for it is an endless loop. it is disabled here rather than after the record below,
-    // because between these two calls the channel is idle and cannot raise it.
+    // the line is enabled inside the MSP that the init above runs, and the startup file's default handler for it is an endless loop. it is disabled here rather than after the record below, because between these two calls the channel is idle and cannot raise it.
     HAL_NVIC_DisableIRQ(GPDMA1_Channel0_IRQn);
 
     if (BSP_AUDIO_IN_Record(0u, (uint8_t *)s_pcm, LAXITY_AUDIO_BYTES) != BSP_ERROR_NONE) {
@@ -61,9 +59,7 @@ bool qos_audio_poll(void)
         return false;
     }
 
-    // the flags are read straight from the channel rather than through a callback, so a half that
-    // completed while the core was inside a measured window is picked up afterwards instead of
-    // interrupting it. both can be set on one call when polling was late, and both are honoured.
+    // the flags are read straight from the channel rather than through a callback, so a half that completed while the core was inside a measured window is picked up afterwards instead of interrupting it. both can be set on one call when polling was late, and both are honoured.
     if (__HAL_DMA_GET_FLAG(&haudio_mdf[1], DMA_FLAG_HT) != 0u) {
         __HAL_DMA_CLEAR_FLAG(&haudio_mdf[1], DMA_FLAG_HT);
         laxity_audio_level(&s_pcm[0]);

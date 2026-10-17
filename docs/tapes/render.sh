@@ -26,24 +26,16 @@ board_tape() {
 
 # The console keys that select the cell a tape records, or nothing to record whatever the schedule is on.
 #
-# The board's arena cross shuffles, so an unarmed recording catches a cell rather than choosing one, which is
-# why cross-region.tape could not keep the promise its name makes. i puts the victim on the stress schedule,
-# where the arena is the slot rather than the cross, 7 puts that arena in SRAM1 and c puts the aggressor in
-# SRAM3, so the arena and the requester are in different regions for the whole recording.
+# The board's arena cross shuffles, so an unarmed recording catches a cell rather than choosing one, which is why cross-region.tape could not keep the promise its name makes. i puts the victim on the stress schedule, where the arena is the slot rather than the cross, 7 puts that arena in SRAM1 and c puts the aggressor in SRAM3, so the arena and the requester are in different regions for the whole recording.
 tape_keys() {
     case "$1" in cross-region) echo "i7c" ;; *) echo "" ;; esac
 }
 
 # Whether the board is attached, flashed and streaming cleanly, decided once and by the same reader the tapes record.
 #
-# The headless reader fails outright when no ST-LINK port is there and when the stream carries no header
-# frame, which is what an unflashed or halted board looks like. It does not fail when a second process is
-# also reading the port, because macOS opens the device twice and the two readers split the bytes. That
-# case exits zero and records a starved screen, so the stream's own counters decide as well.
+# The headless reader fails outright when no ST-LINK port is there and when the stream carries no header frame, which is what an unflashed or halted board looks like. It does not fail when a second process is also reading the port, because macOS opens the device twice and the two readers split the bytes. That case exits zero and records a starved screen, so the stream's own counters decide as well.
 #
-# The test is that more frames were accepted than were thrown away. Opening a port mid frame costs one
-# rejection and one false sync whatever else is true, so zero is the wrong bar: a healthy five seconds here
-# reads 504 frames against 2 discards, and a port shared with one other reader read 16 against 78.
+# The test is that more frames were accepted than were thrown away. Opening a port mid frame costs one rejection and one false sync whatever else is true, so zero is the wrong bar: a healthy five seconds here reads 504 frames against 2 discards, and a port shared with one other reader read 16 against 78.
 board_state=unknown
 board_ready() {
     if [ "$board_state" = unknown ]; then
@@ -78,8 +70,7 @@ for tape in "$@"; do
         fi
         keys=$(tape_keys "$tape")
         if [ -n "$keys" ]; then
-            # The console writer confirms the board reports what the keys ask for and exits non zero when it
-            # does not, so a tape never records a cell nobody selected while the caption says one was.
+            # The console writer confirms the board reports what the keys ask for and exits non zero when it does not, so a tape never records a cell nobody selected while the caption says one was.
             laxity console "$keys" | sed 's/^/  /'
             sleep 1
         fi

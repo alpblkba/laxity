@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # build the laxity binary and put it on PATH.
 #
-# the binary owns audit and tui and hands every board subcommand to tools/laxity, so the script stays
-# where it is and is not installed: the binary finds it next to itself, at tools/laxity under the
-# current directory, or at $LAXITY_PYTHON. installing a copy of the script would give the binary two
-# scripts to choose between, which is the one thing it must not have to guess about.
+# the binary owns audit and tui and hands every board subcommand to tools/laxity, so the script stays where it is and is not installed: the binary finds it next to itself, at tools/laxity under the current directory, or at $LAXITY_PYTHON. installing a copy of the script would give the binary two scripts to choose between, which is the one thing it must not have to guess about.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -42,8 +39,7 @@ case ":$PATH:" in
     ;;
 esac
 
-# the binary looks for the script next to itself first, so a checkout that moves keeps working only
-# when the repository is the one the current directory is in, or when LAXITY_PYTHON names it.
+# the binary looks for the script next to itself first, so a checkout that moves keeps working only when the repository is the one the current directory is in, or when LAXITY_PYTHON names it.
 echo
 echo "if you run laxity from outside this checkout, set:"
 echo

@@ -23,8 +23,7 @@ import re
 import subprocess
 import sys
 
-# a memory referencing instruction, with its base register. the read loop is compiled at -O0 and
-# uses only these forms, and anything else is reported rather than silently dropped.
+# a memory referencing instruction, with its base register. the read loop is compiled at -O0 and uses only these forms, and anything else is reported rather than silently dropped.
 MEM = re.compile(r"^\s*(?P<addr>[0-9a-f]+):\s+(?:[0-9a-f]{4}\s)+\s*"
                  r"(?P<op>ldr|str|ldrb|strb|ldrh|strh|ldrd|strd|ldr\.w|str\.w|push|pop)"
                  r"(?:\.[wn])?\s+(?P<rest>.*)$")

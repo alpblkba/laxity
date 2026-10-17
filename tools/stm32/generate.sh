@@ -42,8 +42,7 @@ if grep -q '^KO' "$LOG"; then
   exit 1
 fi
 
-# the CMake toolchain emits Src/ and Inc/ at the project root, not Core/. an mtime test does not work here since CubeMX regenerates into a temporary file and leaves the original untouched when the content is identical, 
-# so an unchanged main.c stays older than the .ioc after a run that did everything right. the log naming each file is the evidence that generation actually reached it
+# the CMake toolchain emits Src/ and Inc/ at the project root, not Core/. an mtime test does not work here since CubeMX regenerates into a temporary file and leaves the original untouched when the content is identical, so an unchanged main.c stays older than the .ioc after a run that did everything right. the log naming each file is the evidence that generation actually reached it
 for f in firmware/stm32u585/Src/main.c firmware/stm32u585/Inc/main.h; do
   [ -f "$f" ] || { echo "missing $f, log kept at $LOG" >&2; exit 1; }
   grep -Fq "Generated code: $PWD/$f" "$LOG" \

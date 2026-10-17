@@ -21,30 +21,22 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
 import telemetry_parse
 
-# both rounds are read by one script, since the second one re-measures cells the first one
-# reported and the two tables only mean something side by side.
+# both rounds are read by one script, since the second one re-measures cells the first one reported and the two tables only mean something side by side.
 CAMPAIGNS = ("interference-2026-09-15", "mechanism-2026-09-16", "arena-or-stack-2026-09-16",
              "closing-2026-09-19", "wifi-2026-09-19", "paired-2026-09-19",
              "final-2026-09-19",
-             # the descriptor free round, which ran after this list was written and was never added
-             # to it, so its twelve captures were on disk and unreadable here.
+             # the descriptor free round, which ran after this list was written and was never added to it, so its twelve captures were on disk and unreadable here.
              "descriptor-free-2026-09-26",
-             # captures taken by laxity characterise, which measures one cell rather than running a
-             # campaign. they are here so that this fit can be read against the command's own over
-             # the same bytes, and they belong to no campaign until somebody files them under one.
+             # captures taken by laxity characterise, which measures one cell rather than running a campaign. they are here so that this fit can be read against the command's own over the same bytes, and they belong to no campaign until somebody files them under one.
              "laxity-characterise")
 
-# the cells every capture of the closing campaign is read against, measured at the start and again
-# at the end. the expected values are the decomposition's, and the gate is 0.010 cycles per
-# aggressor transaction, which is one and a third of that campaign's worst fit residual expressed
-# in the same unit.
+# the cells every capture of the closing campaign is read against, measured at the start and again at the end. the expected values are the decomposition's, and the gate is 0.010 cycles per aggressor transaction, which is one and a third of that campaign's worst fit residual expressed in the same unit.
 GATE = {
     1: ("arena SRAM1, stack SRAM1, aggressor SRAM1", 0.238),
     2: ("arena SRAM1, stack SRAM2, aggressor SRAM1", 0.139),
     3: ("arena SRAM1, stack SRAM2, aggressor SRAM2", 0.108),
 }
-# the expected values belong to an image, so a campaign that runs on a different one carries its
-# own. comparing a gate cell against a value measured on another binary is not a drift check.
+# the expected values belong to an image, so a campaign that runs on a different one carries its own. comparing a gate cell against a value measured on another binary is not a drift check.
 GATE_BY_CAMPAIGN = {
     "final-2026-09-19": {
         1: ("arena SRAM1, stack SRAM1, aggressor SRAM1", 0.249),
@@ -63,8 +55,7 @@ GATE_TOL = 0.010
 CAMPAIGN_FOCUS = "final-2026-09-19"
 
 # the knob values each point index stands for, in the same order as laxity_sweeps in the firmware.
-# point 0 is the aggressor off in every sweep. this is a second copy of what the firmware holds,
-# and the status line stored in stress.txt is what checks the two against each other.
+# point 0 is the aggressor off in every sweep. this is a second copy of what the firmware holds, and the status line stored in stress.txt is what checks the two against each other.
 SWEEPS = {
     "bw":     ["off", "50kHz", "100kHz", "200kHz", "400kHz", "800kHz"],
     "xact":   ["off", "w4", "w2", "w1"],
@@ -72,8 +63,7 @@ SWEEPS = {
     "stride": ["off", "s0", "s4", "s12", "s28", "s60", "s124"],
     "sat":    ["off", "w2 800kHz", "w1 800kHz", "ungated w4", "ungated w1", "armed, no trigger"],
     "low":    ["off", "6.25kHz", "12.5kHz", "25kHz", "50kHz"],
-    # not a victim sweep. each point is one block moved once and timed on the DMA side, and the
-    # label is the transaction count that block contains.
+    # not a victim sweep. each point is one block moved once and timed on the DMA side, and the label is the transaction count that block contains.
     "dmat":   ["-", "1024 xact", "2048 xact", "4096 xact", "512 xact"],
     "none":   ["no aggressor"],
 }
@@ -81,16 +71,14 @@ SWEEPS = {
 # transactions in one timed block, by point, for the dmat sweep.
 DMAT_XACTS = {1: 1024, 2: 2048, 3: 4096, 4: 512}
 
-# requested bytes and transactions per second at each point. requested is the word that matters on
-# the saturation sweep, where the hardware is not expected to deliver what the configuration asks.
+# requested bytes and transactions per second at each point. requested is the word that matters on the saturation sweep, where the hardware is not expected to deliver what the configuration asks.
 RATES = {
     "bw":     [(0, 0), (12800000, 3200000), (25600000, 6400000), (51200000, 12800000),
                (102400000, 25600000), (204800000, 51200000)],
     "xact":   [(0, 0), (51200000, 12800000), (51200000, 25600000), (51200000, 51200000)],
     "chan":   [(0, 0), (102400000, 25600000), (102400000, 25600000), (102400000, 25600000)],
     "stride": [(0, 0)] + [(51200000, 12800000)] * 6,
-    # the two ungated points and the armed point carry no requested rate. ungated means the rate is
-    # whatever the matrix allows, and armed means there is no traffic at all.
+    # the two ungated points and the armed point carry no requested rate. ungated means the rate is whatever the matrix allows, and armed means there is no traffic at all.
     "sat":    [(0, 0), (204800000, 102400000), (204800000, 204800000), (0, 0), (0, 0), (0, 0)],
     "low":    [(0, 0), (1600000, 400000), (3200000, 800000), (6400000, 1600000), (12800000, 3200000)],
     "dmat":   [(0, 0)] * 5,
@@ -118,18 +106,14 @@ def load(run_dir):
     meta_kv = read_kv(run_dir / "stress.txt")
     if meta_kv.get("campaign") not in CAMPAIGNS:
         return None
-    # a capture whose stress.txt was voided by hand is kept on disk, since results/raw is append
-    # only, and is excluded from every table here. the reason is in the key.
+    # a capture whose stress.txt was voided by hand is kept on disk, since results/raw is append only, and is excluded from every table here. the reason is in the key.
     if "void" in meta_kv:
         return None
     stats, meta, _, records = telemetry_parse.parse((run_dir / "telemetry.bin").read_bytes())
     if not records:
         return None
 
-    # the sequence number restarts at zero when the board resets, and a capture that spans a reset
-    # holds records from two different configurations, since the firmware comes back running the
-    # arena cross rather than whatever the console had selected. it is detected rather than
-    # averaged, because the second half looks like a plausible measurement.
+    # the sequence number restarts at zero when the board resets, and a capture that spans a reset holds records from two different configurations, since the firmware comes back running the arena cross rather than whatever the console had selected. it is detected rather than averaged, because the second half looks like a plausible measurement.
     restarts = sum(1 for a, b in zip(records, records[1:]) if b["seq"] < a["seq"])
 
     groups, xfer, wrong_region = {}, {}, 0
@@ -137,9 +121,7 @@ def load(run_dir):
     for rec in records:
         point = (rec["aggressor_idx"] >> 8) & 0xFF
         region = rec["aggressor_idx"] & 0xFF
-        # the record carries the aggressor region and stress.txt carries the name the capture was
-        # filed under, so a capture whose records disagree with its own filing is caught here
-        # rather than reported as a result.
+        # the record carries the aggressor region and stress.txt carries the name the capture was filed under, so a capture whose records disagree with its own filing is caught here rather than reported as a result.
         if point > 0 and region != want_aggr:
             wrong_region += 1
         groups.setdefault(point, []).append(rec["exec_cyc"])
@@ -147,12 +129,9 @@ def load(run_dir):
 
     rows = []
     base = statistics.median(groups[0]) if groups.get(0) else None
-    # the aggressor off records in stream order, which the contention free table needs whole rather
-    # than summarised, since 31 cycles in 329150 is 94 parts per million and a median alone cannot
-    # carry that.
+    # the aggressor off records in stream order, which the contention free table needs whole rather than summarised, since 31 cycles in 329150 is 94 parts per million and a median alone cannot carry that.
     seq0 = list(groups.get(0, []))
-    # every point's records in stream order, which the paired comparison needs because it reads one
-    # point of a sweep rather than a summary of all of them.
+    # every point's records in stream order, which the paired comparison needs because it reads one point of a sweep rather than a summary of all of them.
     seq_by_point = {p: list(v) for p, v in groups.items()}
     sweep = meta_kv["sweep"]
     for point in sorted(groups):
@@ -284,8 +263,7 @@ def main():
               and c["kv"].get("experiment", "") in
               ("default-off", "default-on", "placed-off", "placed-on")]
     if paired:
-        # the standard point of the bandwidth sweep and the two above it. the on captures run the
-        # whole sweep, so all three come out of the same captures.
+        # the standard point of the bandwidth sweep and the two above it. the on captures run the whole sweep, so all three come out of the same captures.
         ON_POINTS = (3, 4, 5)
         ON_POINT = 3
         hz = paired[0]["cyccnt_hz"]
@@ -379,8 +357,7 @@ def main():
         for b in (1, 2, 3, 4):
             cells = []
             for cfg in ("default", "placed"):
-                # the block name carries the campaign prefix, which differs between campaigns, so
-                # the match is on the block and configuration rather than on a fixed name.
+                # the block name carries the campaign prefix, which differs between campaigns, so the match is on the block and configuration rather than on a fixed name.
                 m = [c for c in paired
                      if c["dir"].endswith("b%d-%s-on" % (b, cfg))]
                 if not m:
@@ -391,8 +368,7 @@ def main():
             print("    %-10s %s" % ("block %d" % b, " ".join(cells)))
         print()
 
-    # gate cells are grouped by campaign, since the expected values belong to an image and pairing
-    # an opening cell with a closing cell from another campaign would compare two runs.
+    # gate cells are grouped by campaign, since the expected values belong to an image and pairing an opening cell with a closing cell from another campaign would compare two runs.
     jb = [c for c in caps if c["kv"].get("experiment") == "b-descriptor"]
     if jb:
         print("\n# job B, the residual of the placed configuration against the descriptor page\n")
@@ -678,8 +654,7 @@ def main():
                 if f.startswith("desc="):
                     page = f[5:]
             k, _, _ = coefficient(c)
-            # the channel sweep runs above the rate the per transaction fit is allowed to use, so
-            # the coefficient is absent there by design and the per block figure is the one to read.
+            # the channel sweep runs above the rate the per transaction fit is allowed to use, so the coefficient is absent there by design and the per block figure is the one to read.
             print("  %-16s %-22s %10d %12.3f %12s" %
                   (name, page, c["base"], per_block(c) or 0.0,
                    "%.3f" % k if k is not None else "n/a"))

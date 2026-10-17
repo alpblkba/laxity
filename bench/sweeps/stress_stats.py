@@ -18,9 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "tools"))
 import telemetry_parse
 
 # the knob values each point index stands for, in the same order as laxity_sweeps in the firmware.
-# point 0 is the aggressor off in every sweep. this table is a second copy of what the firmware
-# holds and it is written out on the status line every second, which is how the two are checked
-# against each other rather than assumed to agree.
+# point 0 is the aggressor off in every sweep. this table is a second copy of what the firmware holds and it is written out on the status line every second, which is how the two are checked against each other rather than assumed to agree.
 SWEEPS = {
     "bw":     ["off", "50kHz 12.8MB/s", "100kHz 25.6MB/s", "200kHz 51.2MB/s",
                "400kHz 102MB/s", "800kHz 205MB/s"],
@@ -29,8 +27,7 @@ SWEEPS = {
     "stride": ["off", "stride 0", "stride 4", "stride 12", "stride 28", "stride 60", "stride 124"],
 }
 
-# bytes per second and transactions per second the firmware asks for at each point, so the report
-# can say which of the two the cost follows instead of only that it moved.
+# bytes per second and transactions per second the firmware asks for at each point, so the report can say which of the two the cost follows instead of only that it moved.
 RATES = {
     "bw":     [(0, 0), (12800000, 3200000), (25600000, 6400000), (51200000, 12800000),
                (102400000, 25600000), (204800000, 51200000)],
@@ -58,8 +55,7 @@ def entry(run_dir):
 
     _, _, _, records = telemetry_parse.parse((run_dir / "telemetry.bin").read_bytes())
 
-    # the point index is the high byte of aggressor_idx and the aggressor region is the low byte,
-    # which is the layout the firmware writes and the header documents.
+    # the point index is the high byte of aggressor_idx and the aggressor region is the low byte, which is the layout the firmware writes and the header documents.
     groups, xfer = {}, {}
     for rec in records:
         point = (rec["aggressor_idx"] >> 8) & 0xFF
@@ -74,8 +70,7 @@ def entry(run_dir):
         if not cycles:
             continue
         counts = xfer[point]
-        # a channel that failed to start is indistinguishable from one that cost nothing, so a
-        # point whose transfer count never moved is marked rather than reported as a null result.
+        # a channel that failed to start is indistinguishable from one that cost nothing, so a point whose transfer count never moved is marked rather than reported as a null result.
         advanced = (point == 0) or (max(counts) > min(counts))
         rows.append({
             "point": point,

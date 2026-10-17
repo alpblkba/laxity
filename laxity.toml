@@ -2,10 +2,15 @@ schema_version = 1
 platform = "stm32u585"
 map = "build/target/laxity-u585.map"
 elf = "build/target/laxity-u585.elf"
+# the same placement written down, for a tree with no binary. a clone cannot build this firmware, since the ST Edge AI sources it needs are licensed and ignored, so without this the audit refuses to run on the project it was written for. the elf is preferred when both are present and the audit says on stderr which one it read.
+# the key is object_table and not objects, because objects and the [[object]] blocks below would sit one letter apart in this file. the schema catches the confusion loudly and a reader does not.
+object_table = "profiles/stm32u585.objects.toml"
 
 [workload.inference]
 window_cycles = 320320
-deadline_cycles = 5119994
+# the half buffer the inference pass has to finish inside, at the rate the part really runs rather than the rate it is asked for. LAXITY_AUDIO_RATE_HZ in platform/stm32u5/audio.h declares 16000, and the part runs at 2.857 MHz over 176, which is 16233 Hz, because the decimation ratio is an integer and the board support package picks the nearest one. 512 samples at the real rate is 5046524 cycles at 160 MHz, where the nominal rate gives 5119994.
+# the direction is the reason to care. the nominal figure hands the audit 73470 cycles the hardware does not give, so a pass that really missed its window would be reported as having met it, and a deadline is only worth declaring if it errs the other way.
+deadline_cycles = 5046524
 
 [[object]]
 workload = "inference"
@@ -15,17 +20,20 @@ symbol_kind = "reservation"
 map_symbol = "laxity_arena_span"
 size = 2944
 movable = true
-regions = ["sram1", "sram2", "sram3", "sram4"]
+# sram4 is not a candidate. the arena is carved out of laxity_arena_span, one contiguous array that starts in SRAM1, and SRAM4 is at 0x28000000, which that array cannot reach, so pricing sram4 would offer a placement this firmware cannot carry out. it comes back with the change that gives the firmware a second reservation there.
+regions = ["sram1", "sram2", "sram3"]
 
 [[object]]
 workload = "inference"
 name = "stack"
 symbol = "tx_byte_pool_buffer"
-size = 3072
-region = "sram3"
+symbol_kind = "reservation"
+# the symbol above is the RTOS byte pool, which is in SRAM3 alone, and the page the thread gets is carved out of laxity_arena_span, which spans three banks. the three candidates below are therefore reachable and the symbol is simply not the extent, and this is the field that lets the audit tell those apart instead of reporting a disagreement it cannot resolve.
+extent_symbol = "laxity_arena_span"
+size = 4096
 movable = true
 regions = ["sram1", "sram2", "sram3"]
-note = "allocated from an RTOS pool at run time, so the region comes from the declaration in laxity.toml and not from the symbol"
+note = "carved out of laxity_arena_span the way the arena is: laxity_stack_src starts at QOS_REGION_SRAM1 in app_threadx.c, console keys move it between three regions, and the placement check refuses a page that does not lie inside the span, so the region is chosen at run time and no declaration can name it. the size is LAXITY_STACK_BYTES, which is the page the thread gets, and not LAXITY_INFER_STACK, which is the 3072 bytes of it the inference pass uses."
 
 [[object]]
 workload = "wifi"

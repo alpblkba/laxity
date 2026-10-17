@@ -30,13 +30,36 @@ fn dry_run(args: &[&str]) -> (bool, String) {
 #[test]
 fn every_subcommand_answers_without_reading_a_file_or_opening_a_port() {
     for args in [
-        vec!["characterise", "--object", "arena", "--requester", "gpdma1", "--endpoint", "data"],
-        vec!["characterise", "--object", "arena", "--requester", "gpdma1", "--endpoint", "data", "--cell", "df-a1-s2-ag1"],
+        vec![
+            "characterise",
+            "--object",
+            "arena",
+            "--requester",
+            "gpdma1",
+            "--endpoint",
+            "data",
+        ],
+        vec![
+            "characterise",
+            "--object",
+            "arena",
+            "--requester",
+            "gpdma1",
+            "--endpoint",
+            "data",
+            "--cell",
+            "df-a1-s2-ag1",
+        ],
         vec!["console", "i7c"],
         vec!["console", "j", "--allow-reset"],
         vec!["tui", "--file", "a-capture-that-does-not-exist.bin"],
         vec!["tui", "--serial"],
-        vec!["audit", "no-such.elf", "no-such-profile.toml", "no-such-characterisation.toml"],
+        vec![
+            "audit",
+            "no-such.elf",
+            "no-such-profile.toml",
+            "no-such-characterisation.toml",
+        ],
         // the discovering form takes no arguments and the dry run answers for it without walking anything.
         vec!["audit"],
         vec!["doctor"],
@@ -55,8 +78,15 @@ fn an_argument_the_binary_does_not_accept_is_refused_by_the_dry_run() {
     assert!(text.contains("u is not a console key"), "{text}");
 
     let (ok, text) = dry_run(&[
-        "characterise", "--object", "arena", "--requester", "gpdma1", "--endpoint", "data",
-        "--cell", "df-nothing",
+        "characterise",
+        "--object",
+        "arena",
+        "--requester",
+        "gpdma1",
+        "--endpoint",
+        "data",
+        "--cell",
+        "df-nothing",
     ]);
     assert!(!ok);
     assert!(text.contains("no cell named df-nothing"), "{text}");
@@ -75,7 +105,13 @@ fn an_argument_the_binary_does_not_accept_is_refused_by_the_dry_run() {
 #[test]
 fn a_target_with_no_cell_is_accepted_because_the_audit_prints_it() {
     let (ok, text) = dry_run(&[
-        "characterise", "--object", "stack", "--requester", "emw3080", "--endpoint", "spi dma",
+        "characterise",
+        "--object",
+        "stack",
+        "--requester",
+        "emw3080",
+        "--endpoint",
+        "spi dma",
     ]);
     assert!(ok, "{text}");
     assert!(text.contains("0 cells for that target"), "{text}");
@@ -87,12 +123,29 @@ fn the_dry_run_writes_nothing() {
     let scratch = std::env::temp_dir().join(format!("laxity-dry-run-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).unwrap();
     let out = Command::new(binary())
-        .args(["--dry-run", "characterise", "--object", "arena", "--requester", "gpdma1", "--endpoint", "data"])
+        .args([
+            "--dry-run",
+            "characterise",
+            "--object",
+            "arena",
+            "--requester",
+            "gpdma1",
+            "--endpoint",
+            "data",
+        ])
         .current_dir(&scratch)
         .output()
         .expect("the laxity binary runs");
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let left: Vec<_> = std::fs::read_dir(&scratch).unwrap().collect();
-    assert!(left.is_empty(), "the dry run left {} entries behind", left.len());
+    assert!(
+        left.is_empty(),
+        "the dry run left {} entries behind",
+        left.len()
+    );
     std::fs::remove_dir(&scratch).unwrap();
 }

@@ -5,14 +5,29 @@ use serde::Deserialize;
 /// where a coefficient's number came from, carried in the type so that a borrowed coefficient has no point value to read and an unmeasured one has no number at all.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Basis {
-    Measured { value: f64 },
-    Borrowed { from: String, minimum: f64, maximum: f64 },
+    Measured {
+        value: f64,
+    },
+    Borrowed {
+        from: String,
+        minimum: f64,
+        maximum: f64,
+    },
     /// an upper bound taken on this platform, for a quantity that was bounded from the outside rather than isolated. it carries a range for the reason a borrowed coefficient does: there is no single number to read, and a label that could be mistaken for one would put a measurement's authority behind a bound.
-    Bounded { minimum: f64, maximum: f64 },
+    Bounded {
+        minimum: f64,
+        maximum: f64,
+    },
     /// a mean over several cells of one campaign, which is a number about a set of configurations rather than a measurement of one of them. it carries the range those cells read and how many there were, and no point value, because the mean is the one figure a reader must not take as the value of any single configuration.
-    Mean { minimum: f64, maximum: f64, cells: u32 },
+    Mean {
+        minimum: f64,
+        maximum: f64,
+        cells: u32,
+    },
     /// what to do about the gap, carrying its own verb. a caller prints it as it stands and never puts run in front of it, because not every gap is closed by a command this binary accepts.
-    Unmeasured { remediation: String },
+    Unmeasured {
+        remediation: String,
+    },
 }
 
 /// where one entry's number came from, resolved from the campaign the entry names.
@@ -187,7 +202,11 @@ pub fn characterise_command(object: &str, requester: &str, endpoint: &str) -> St
 ///
 /// endpoints in this file carry spaces, "spi dma" among them, and an unquoted one splits into two words and the command fails on the second. a printed command that cannot be pasted is the same defect as a printed command the binary does not accept.
 fn shell_word(value: &str) -> String {
-    if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c)) {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-/".contains(c))
+    {
         return value.to_string();
     }
     format!("'{}'", value.replace('\'', r"'\''"))
@@ -218,7 +237,9 @@ fn basis_of(
             if value.is_none() || minimum.is_some() || maximum.is_some() {
                 return Err(format!("a measured {kind} needs one value and no range"));
             }
-            Ok(Basis::Measured { value: value.unwrap() })
+            Ok(Basis::Measured {
+                value: value.unwrap(),
+            })
         }
         // a borrowed number is an order of magnitude from another part, so it carries a range and never a point value, and borrowing from the platform being characterised would mean it was not borrowed at all.
         "borrowed" => {
@@ -231,7 +252,11 @@ fn basis_of(
             if value.is_some() {
                 return Err(format!("a borrowed {kind} cannot carry a point value"));
             }
-            Ok(Basis::Borrowed { from, minimum: minimum.unwrap(), maximum: maximum.unwrap() })
+            Ok(Basis::Borrowed {
+                from,
+                minimum: minimum.unwrap(),
+                maximum: maximum.unwrap(),
+            })
         }
         // an upper bound taken here rather than borrowed, so it names no other platform and still carries a range rather than a value.
         "bounded" => {
@@ -242,9 +267,14 @@ fn basis_of(
                 return Err(format!("a bounded {kind} cannot carry a point value"));
             }
             if borrowed_from.is_some() {
-                return Err(format!("a bounded {kind} is measured here and names no other platform"));
+                return Err(format!(
+                    "a bounded {kind} is measured here and names no other platform"
+                ));
             }
-            Ok(Basis::Bounded { minimum: minimum.unwrap(), maximum: maximum.unwrap() })
+            Ok(Basis::Bounded {
+                minimum: minimum.unwrap(),
+                maximum: maximum.unwrap(),
+            })
         }
         // a mean over several cells, which carries the range they read and their count and never a point value, since the point value is what would be mistaken for a measurement of one configuration.
         "mean" => {
@@ -256,18 +286,28 @@ fn basis_of(
             }
             let count = cells.unwrap_or(0);
             if count < 2 {
-                return Err(format!("a mean {kind} needs the count of cells it averages, which is at least two"));
+                return Err(format!(
+                    "a mean {kind} needs the count of cells it averages, which is at least two"
+                ));
             }
-            Ok(Basis::Mean { minimum: minimum.unwrap(), maximum: maximum.unwrap(), cells: count })
+            Ok(Basis::Mean {
+                minimum: minimum.unwrap(),
+                maximum: maximum.unwrap(),
+                cells: count,
+            })
         }
         // an unmeasured entry carries the command that would fix it, since a number there would be a guess wearing a measurement's clothes.
         "unmeasured" => {
             if value.is_some() || minimum.is_some() || maximum.is_some() {
                 return Err(format!("an unmeasured {kind} cannot carry a value"));
             }
-            Ok(Basis::Unmeasured { remediation: command })
+            Ok(Basis::Unmeasured {
+                remediation: command,
+            })
         }
-        _ => Err(format!("{kind} basis must be measured, borrowed, bounded, mean or unmeasured")),
+        _ => Err(format!(
+            "{kind} basis must be measured, borrowed, bounded, mean or unmeasured"
+        )),
     }
 }
 
@@ -285,7 +325,10 @@ fn campaigns_of(raw: Vec<RawCampaign>) -> Result<Vec<Source>, String> {
             None => return missing("image_sha256"),
         };
         if image.len() != 64 || !image.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(format!("the campaign {} needs a 64 digit image_sha256", item.name));
+            return Err(format!(
+                "the campaign {} needs a 64 digit image_sha256",
+                item.name
+            ));
         }
         let date = match item.date.filter(|value| !value.is_empty()) {
             Some(value) => value,
@@ -298,7 +341,13 @@ fn campaigns_of(raw: Vec<RawCampaign>) -> Result<Vec<Source>, String> {
         if out.iter().any(|other| other.campaign == item.name) {
             return Err(format!("the campaign {} is declared twice", item.name));
         }
-        out.push(Source { campaign: item.name, note, image_sha256: image, date, captures });
+        out.push(Source {
+            campaign: item.name,
+            note,
+            image_sha256: image,
+            date,
+            captures,
+        });
     }
     Ok(out)
 }
@@ -417,10 +466,17 @@ impl Characterisation {
 
     /// the quiet charge one victim pays for occupying one region, by the profile's own region name.
     pub fn quiet_charge(&self, region: &str, victim: &str) -> Option<&Quiet> {
-        self.quiet.iter().find(|item| item.region == region && item.victim == victim)
+        self.quiet
+            .iter()
+            .find(|item| item.region == region && item.victim == victim)
     }
 
-    pub fn coefficient(&self, object: &str, requester: &str, endpoint: &str) -> Option<&Coefficient> {
+    pub fn coefficient(
+        &self,
+        object: &str,
+        requester: &str,
+        endpoint: &str,
+    ) -> Option<&Coefficient> {
         self.coefficients.iter().find(|item| {
             item.object == object && item.requester == requester && item.endpoint == endpoint
         })
@@ -444,7 +500,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(loaded.coefficients.len(), 3);
-        assert_eq!(loaded.coefficients[0].basis.label(), "measured, this platform");
+        assert_eq!(
+            loaded.coefficients[0].basis.label(),
+            "measured, this platform"
+        );
         assert_eq!(
             loaded.coefficients[1].basis.label(),
             "borrowed from other-mcu, order of magnitude only"
@@ -476,7 +535,8 @@ mod tests {
     fn a_campaign_declared_twice_is_refused() {
         const ONE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
         let block = format!("\n[[campaign]]\nname = \"c\"\nnote = \"n.md\"\nimage_sha256 = \"{ONE}\"\ndate = \"2026-09-20\"\ncaptures = [\"one\"]\n");
-        let err = Characterisation::from_toml(&format!("platform = \"x\"\n{block}{block}")).unwrap_err();
+        let err =
+            Characterisation::from_toml(&format!("platform = \"x\"\n{block}{block}")).unwrap_err();
         assert_eq!(err, "the campaign c is declared twice");
     }
 
@@ -506,7 +566,10 @@ mod tests {
     #[test]
     fn a_bounded_entry_loads_as_a_range_and_never_as_a_point() {
         let loaded = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"bounded\"\nminimum = 0.0\nmaximum = 0.001\ncampaign = \"fixture\"\n").unwrap();
-        assert_eq!(loaded.coefficients[0].basis.label(), "bounded at 0.001 on this platform, never isolated");
+        assert_eq!(
+            loaded.coefficients[0].basis.label(),
+            "bounded at 0.001 on this platform, never isolated"
+        );
         let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"bounded\"\nvalue = 0.001\n").unwrap_err();
         assert_eq!(err, "a bounded coefficient needs a minimum..maximum range");
     }
@@ -546,13 +609,22 @@ mod tests {
     /// an unmeasured quiet charge says the measurement is missing rather than naming a command, because there is no flag for one and printing something that looks runnable is the defect this wording exists to prevent.
     #[test]
     fn an_unmeasured_quiet_charge_says_no_measurement_is_implemented() {
-        let loaded = with("\n[[quiet]]\nregion = \"sram2\"\nvictim = \"read_loop\"\nbasis = \"unmeasured\"\n").unwrap();
+        let loaded = with(
+            "\n[[quiet]]\nregion = \"sram2\"\nvictim = \"read_loop\"\nbasis = \"unmeasured\"\n",
+        )
+        .unwrap();
         let charge = loaded.quiet_charge("sram2", "read_loop").unwrap();
         assert_eq!(charge.cycles(), None);
-        assert!(charge.cycles_at(8192).unwrap_err().contains("no number to scale"));
+        assert!(charge
+            .cycles_at(8192)
+            .unwrap_err()
+            .contains("no number to scale"));
         match &charge.basis {
             Basis::Unmeasured { remediation } => {
-                assert!(remediation.starts_with("no measurement implemented"), "{remediation}");
+                assert!(
+                    remediation.starts_with("no measurement implemented"),
+                    "{remediation}"
+                );
                 assert!(remediation.contains("read_loop"), "{remediation}");
                 assert!(!remediation.contains("--victim"), "{remediation}");
             }
@@ -586,15 +658,25 @@ mod tests {
     #[test]
     fn one_region_and_victim_may_not_carry_two_quiet_charges() {
         let body = "\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 31\ncampaign = \"fixture\"\n\n[[quiet]]\nregion = \"sram3\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 32\ncampaign = \"fixture\"\n";
-        assert_eq!(with(body).unwrap_err(), "two quiet charges for inference in sram3");
+        assert_eq!(
+            with(body).unwrap_err(),
+            "two quiet charges for inference in sram3"
+        );
     }
 
     #[test]
     fn a_mean_loads_as_a_range_with_its_cell_count_and_never_as_a_point() {
         let loaded = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"mean\"\nminimum = 0.108\nmaximum = 0.126\ncells = 6\ncampaign = \"fixture\"\n").unwrap();
-        assert_eq!(loaded.coefficients[0].basis.label(), "a mean over 6 configurations, not a measurement of one");
+        assert_eq!(
+            loaded.coefficients[0].basis.label(),
+            "a mean over 6 configurations, not a measurement of one"
+        );
         match &loaded.coefficients[0].basis {
-            Basis::Mean { minimum, maximum, cells } => {
+            Basis::Mean {
+                minimum,
+                maximum,
+                cells,
+            } => {
                 assert_eq!((*minimum, *maximum, *cells), (0.108, 0.126, 6))
             }
             other => panic!("expected a mean, got {other:?}"),
@@ -606,12 +688,18 @@ mod tests {
         let with_value = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"mean\"\nminimum = 0.1\nmaximum = 0.2\nvalue = 0.15\ncells = 6\n").unwrap_err();
         assert_eq!(with_value, "a mean coefficient cannot carry a point value");
         let no_cells = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"mean\"\nminimum = 0.1\nmaximum = 0.2\n").unwrap_err();
-        assert_eq!(no_cells, "a mean coefficient needs the count of cells it averages, which is at least two");
+        assert_eq!(
+            no_cells,
+            "a mean coefficient needs the count of cells it averages, which is at least two"
+        );
     }
 
     #[test]
     fn an_unknown_basis_is_refused() {
         let err = with("\n[[coefficient]]\nobject = \"s\"\nrequester = \"d\"\nendpoint = \"e\"\nbasis = \"guessed\"\nvalue = 1.0\ncampaign = \"fixture\"\n").unwrap_err();
-        assert_eq!(err, "coefficient basis must be measured, borrowed, bounded, mean or unmeasured");
+        assert_eq!(
+            err,
+            "coefficient basis must be measured, borrowed, bounded, mean or unmeasured"
+        );
     }
 }

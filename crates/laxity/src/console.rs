@@ -34,59 +34,304 @@ const fn on(line: &'static str, field: &'static str, value: &'static str) -> Opt
 }
 
 const ALPHABET: &[Key] = &[
-    Key { key: 'v', selects: "victim is the inference path", resets: false, confirms: on("stress ", "victim", "infer") },
-    Key { key: 'r', selects: "victim is the read loop", resets: false, confirms: on("stress ", "victim", "read") },
-    Key { key: 'i', selects: "victim is inference on the stress schedule", resets: false, confirms: on("stress ", "victim", "infer-stress") },
-    Key { key: 't', selects: "no victim, the DMA transfer is timed", resets: false, confirms: on("stress ", "victim", "dma") },
-    Key { key: '0', selects: "bandwidth sweep", resets: false, confirms: on("stress ", "sweep", "bw") },
-    Key { key: '1', selects: "transactions at fixed bandwidth", resets: false, confirms: on("stress ", "sweep", "xact") },
-    Key { key: '2', selects: "channel count at fixed bandwidth", resets: false, confirms: on("stress ", "sweep", "chan") },
-    Key { key: '3', selects: "address stride", resets: false, confirms: on("stress ", "sweep", "stride") },
-    Key { key: '4', selects: "past the top of the bandwidth sweep", resets: false, confirms: on("stress ", "sweep", "sat") },
-    Key { key: '5', selects: "below the bandwidth sweep", resets: false, confirms: on("stress ", "sweep", "low") },
-    Key { key: '6', selects: "one block moved once and timed", resets: false, confirms: on("stress ", "sweep", "dmat") },
-    Key { key: 'o', selects: "no aggressor at all", resets: false, confirms: on("stress ", "sweep", "none") },
-    Key { key: 'a', selects: "aggressor in SRAM1", resets: false, confirms: on("stress ", "region", "1") },
-    Key { key: 'b', selects: "aggressor in SRAM2", resets: false, confirms: on("stress ", "region", "2") },
-    Key { key: 'c', selects: "aggressor in SRAM3", resets: false, confirms: on("stress ", "region", "3") },
-    Key { key: 'd', selects: "aggressor in SRAM4", resets: false, confirms: on("stress ", "region", "4") },
-    Key { key: 'P', selects: "descriptors in SRAM1", resets: false, confirms: on("stress ", "desc", "1") },
-    Key { key: 'Q', selects: "descriptors in SRAM2", resets: false, confirms: on("stress ", "desc", "2") },
-    Key { key: 'R', selects: "descriptors in SRAM3", resets: false, confirms: on("stress ", "desc", "3") },
-    Key { key: 'S', selects: "descriptors in SRAM4", resets: false, confirms: on("stress ", "desc", "4") },
-    Key { key: '7', selects: "inference arena in SRAM1", resets: false, confirms: on("stress ", "arena", "1") },
-    Key { key: '8', selects: "inference arena in SRAM2", resets: false, confirms: on("stress ", "arena", "2") },
-    Key { key: '9', selects: "inference arena in SRAM3", resets: false, confirms: on("stress ", "arena", "3") },
-    Key { key: 'X', selects: "read loop victim in SRAM1", resets: false, confirms: on("stress ", "vregion", "1") },
-    Key { key: 'Y', selects: "read loop victim in SRAM2", resets: false, confirms: on("stress ", "vregion", "2") },
-    Key { key: 'Z', selects: "read loop victim in SRAM3", resets: false, confirms: on("stress ", "vregion", "3") },
-    Key { key: 'M', selects: "run the mem2mem aggressor through a stress pass", resets: false, confirms: on("stress ", "m2m", "1") },
-    Key { key: 'N', selects: "stop the mem2mem aggressor again", resets: false, confirms: on("stress ", "m2m", "0") },
+    Key {
+        key: 'v',
+        selects: "victim is the inference path",
+        resets: false,
+        confirms: on("stress ", "victim", "infer"),
+    },
+    Key {
+        key: 'r',
+        selects: "victim is the read loop",
+        resets: false,
+        confirms: on("stress ", "victim", "read"),
+    },
+    Key {
+        key: 'i',
+        selects: "victim is inference on the stress schedule",
+        resets: false,
+        confirms: on("stress ", "victim", "infer-stress"),
+    },
+    Key {
+        key: 't',
+        selects: "no victim, the DMA transfer is timed",
+        resets: false,
+        confirms: on("stress ", "victim", "dma"),
+    },
+    Key {
+        key: '0',
+        selects: "bandwidth sweep",
+        resets: false,
+        confirms: on("stress ", "sweep", "bw"),
+    },
+    Key {
+        key: '1',
+        selects: "transactions at fixed bandwidth",
+        resets: false,
+        confirms: on("stress ", "sweep", "xact"),
+    },
+    Key {
+        key: '2',
+        selects: "channel count at fixed bandwidth",
+        resets: false,
+        confirms: on("stress ", "sweep", "chan"),
+    },
+    Key {
+        key: '3',
+        selects: "address stride",
+        resets: false,
+        confirms: on("stress ", "sweep", "stride"),
+    },
+    Key {
+        key: '4',
+        selects: "past the top of the bandwidth sweep",
+        resets: false,
+        confirms: on("stress ", "sweep", "sat"),
+    },
+    Key {
+        key: '5',
+        selects: "below the bandwidth sweep",
+        resets: false,
+        confirms: on("stress ", "sweep", "low"),
+    },
+    Key {
+        key: '6',
+        selects: "one block moved once and timed",
+        resets: false,
+        confirms: on("stress ", "sweep", "dmat"),
+    },
+    Key {
+        key: 'o',
+        selects: "no aggressor at all",
+        resets: false,
+        confirms: on("stress ", "sweep", "none"),
+    },
+    Key {
+        key: 'a',
+        selects: "aggressor in SRAM1",
+        resets: false,
+        confirms: on("stress ", "region", "1"),
+    },
+    Key {
+        key: 'b',
+        selects: "aggressor in SRAM2",
+        resets: false,
+        confirms: on("stress ", "region", "2"),
+    },
+    Key {
+        key: 'c',
+        selects: "aggressor in SRAM3",
+        resets: false,
+        confirms: on("stress ", "region", "3"),
+    },
+    Key {
+        key: 'd',
+        selects: "aggressor in SRAM4",
+        resets: false,
+        confirms: on("stress ", "region", "4"),
+    },
+    Key {
+        key: 'P',
+        selects: "descriptors in SRAM1",
+        resets: false,
+        confirms: on("stress ", "desc", "1"),
+    },
+    Key {
+        key: 'Q',
+        selects: "descriptors in SRAM2",
+        resets: false,
+        confirms: on("stress ", "desc", "2"),
+    },
+    Key {
+        key: 'R',
+        selects: "descriptors in SRAM3",
+        resets: false,
+        confirms: on("stress ", "desc", "3"),
+    },
+    Key {
+        key: 'S',
+        selects: "descriptors in SRAM4",
+        resets: false,
+        confirms: on("stress ", "desc", "4"),
+    },
+    Key {
+        key: '7',
+        selects: "inference arena in SRAM1",
+        resets: false,
+        confirms: on("stress ", "arena", "1"),
+    },
+    Key {
+        key: '8',
+        selects: "inference arena in SRAM2",
+        resets: false,
+        confirms: on("stress ", "arena", "2"),
+    },
+    Key {
+        key: '9',
+        selects: "inference arena in SRAM3",
+        resets: false,
+        confirms: on("stress ", "arena", "3"),
+    },
+    Key {
+        key: 'X',
+        selects: "read loop victim in SRAM1",
+        resets: false,
+        confirms: on("stress ", "vregion", "1"),
+    },
+    Key {
+        key: 'Y',
+        selects: "read loop victim in SRAM2",
+        resets: false,
+        confirms: on("stress ", "vregion", "2"),
+    },
+    Key {
+        key: 'Z',
+        selects: "read loop victim in SRAM3",
+        resets: false,
+        confirms: on("stress ", "vregion", "3"),
+    },
+    Key {
+        key: 'M',
+        selects: "run the mem2mem aggressor through a stress pass",
+        resets: false,
+        confirms: on("stress ", "m2m", "1"),
+    },
+    Key {
+        key: 'N',
+        selects: "stop the mem2mem aggressor again",
+        resets: false,
+        confirms: on("stress ", "m2m", "0"),
+    },
     // the stack is fixed when the thread is created, so these are requests for a reboot onto the page asked for. the placement line reports the source rather than the region, which is what tells the byte pool from the SRAM3 page, since the pool is in SRAM3.
-    Key { key: 'j', selects: "stack in SRAM1, by reset", resets: true, confirms: on("placement ", "stack_src", "1") },
-    Key { key: 'k', selects: "stack in SRAM2, by reset", resets: true, confirms: on("placement ", "stack_src", "2") },
-    Key { key: 'n', selects: "stack in SRAM3, by reset", resets: true, confirms: on("placement ", "stack_src", "3") },
-    Key { key: 'p', selects: "stack from the ThreadX byte pool, by reset", resets: true, confirms: on("placement ", "stack_src", "15") },
+    Key {
+        key: 'j',
+        selects: "stack in SRAM1, by reset",
+        resets: true,
+        confirms: on("placement ", "stack_src", "1"),
+    },
+    Key {
+        key: 'k',
+        selects: "stack in SRAM2, by reset",
+        resets: true,
+        confirms: on("placement ", "stack_src", "2"),
+    },
+    Key {
+        key: 'n',
+        selects: "stack in SRAM3, by reset",
+        resets: true,
+        confirms: on("placement ", "stack_src", "3"),
+    },
+    Key {
+        key: 'p',
+        selects: "stack from the ThreadX byte pool, by reset",
+        resets: true,
+        confirms: on("placement ", "stack_src", "15"),
+    },
     // the ballast is taken before the measurement thread exists, so these reboot for the same reason, and the placement line reports the size the board came back with.
-    Key { key: 'f', selects: "ballast 0 bytes, by reset", resets: true, confirms: on("placement ", "ballast", "0") },
-    Key { key: 'g', selects: "ballast 64 bytes, by reset", resets: true, confirms: on("placement ", "ballast", "64") },
-    Key { key: 'h', selects: "ballast 256 bytes, by reset", resets: true, confirms: on("placement ", "ballast", "256") },
-    Key { key: 'm', selects: "ballast 1024 bytes, by reset", resets: true, confirms: on("placement ", "ballast", "1024") },
-    Key { key: 'q', selects: "ballast 4096 bytes, by reset", resets: true, confirms: on("placement ", "ballast", "4096") },
+    Key {
+        key: 'f',
+        selects: "ballast 0 bytes, by reset",
+        resets: true,
+        confirms: on("placement ", "ballast", "0"),
+    },
+    Key {
+        key: 'g',
+        selects: "ballast 64 bytes, by reset",
+        resets: true,
+        confirms: on("placement ", "ballast", "64"),
+    },
+    Key {
+        key: 'h',
+        selects: "ballast 256 bytes, by reset",
+        resets: true,
+        confirms: on("placement ", "ballast", "256"),
+    },
+    Key {
+        key: 'm',
+        selects: "ballast 1024 bytes, by reset",
+        resets: true,
+        confirms: on("placement ", "ballast", "1024"),
+    },
+    Key {
+        key: 'q',
+        selects: "ballast 4096 bytes, by reset",
+        resets: true,
+        confirms: on("placement ", "ballast", "4096"),
+    },
     // the footprint moves vwords, which the board clamps to the window the region has, so what the line carries depends on the region and is not one value to check against.
-    Key { key: 'A', selects: "victim footprint 1 KiB", resets: false, confirms: None },
-    Key { key: 'B', selects: "victim footprint 2 KiB", resets: false, confirms: None },
-    Key { key: 'C', selects: "victim footprint 4 KiB", resets: false, confirms: None },
-    Key { key: 'D', selects: "victim footprint 8 KiB", resets: false, confirms: None },
-    Key { key: 'E', selects: "victim footprint 16 KiB", resets: false, confirms: None },
-    Key { key: 'F', selects: "victim footprint 32 KiB", resets: false, confirms: None },
-    Key { key: 'G', selects: "victim footprint 64 KiB", resets: false, confirms: None },
-    Key { key: 'H', selects: "victim footprint 128 KiB", resets: false, confirms: None },
+    Key {
+        key: 'A',
+        selects: "victim footprint 1 KiB",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'B',
+        selects: "victim footprint 2 KiB",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'C',
+        selects: "victim footprint 4 KiB",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'D',
+        selects: "victim footprint 8 KiB",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'E',
+        selects: "victim footprint 16 KiB",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'F',
+        selects: "victim footprint 32 KiB",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'G',
+        selects: "victim footprint 64 KiB",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'H',
+        selects: "victim footprint 128 KiB",
+        resets: false,
+        confirms: None,
+    },
     // vloads is vwords times vpasses, and vpasses is the requested count divided by vwords, so the line carries the request only when vwords divides it.
-    Key { key: 'l', selects: "4096 loads per window", resets: false, confirms: None },
-    Key { key: 'L', selects: "8192 loads per window", resets: false, confirms: None },
-    Key { key: 'W', selects: "start the network stack", resets: false, confirms: on("net ", "started", "1") },
-    Key { key: 'e', selects: "also send telemetry over UDP", resets: false, confirms: on("net ", "export", "1") },
+    Key {
+        key: 'l',
+        selects: "4096 loads per window",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'L',
+        selects: "8192 loads per window",
+        resets: false,
+        confirms: None,
+    },
+    Key {
+        key: 'W',
+        selects: "start the network stack",
+        resets: false,
+        confirms: on("net ", "started", "1"),
+    },
+    Key {
+        key: 'e',
+        selects: "also send telemetry over UDP",
+        resets: false,
+        confirms: on("net ", "export", "1"),
+    },
 ];
 
 /// the board polls the console once per exporter tick, which is one ThreadX tick, and reads one byte when it does. a burst would arrive faster than it is collected, so the keys are paced well clear of that.
@@ -107,7 +352,11 @@ pub struct Armed {
 pub fn check(args: &[String]) -> Result<String, String> {
     let (keys, allow_reset) = split(args)?;
     let chosen = resolve(&keys, allow_reset)?;
-    Ok(format!("{} key{}", chosen.len(), if chosen.len() == 1 { "" } else { "s" }))
+    Ok(format!(
+        "{} key{}",
+        chosen.len(),
+        if chosen.len() == 1 { "" } else { "s" }
+    ))
 }
 
 /// the command line, before anything opens a port.
@@ -135,8 +384,7 @@ pub fn run(args: &[String]) -> Result<Armed, String> {
     let (keys, allow_reset) = split(args)?;
     let written = resolve(&keys, allow_reset)?;
     // a reset key reboots the board, and everything the board was asked for that does not live in the word of SRAM4 comes back at its power on default. so the reboots go first whatever the caller wrote, and i7ck arms the cell it names instead of arming it and then throwing it away.
-    let (resets, rest): (Vec<&Key>, Vec<&Key>) =
-        written.iter().partition(|key| key.resets);
+    let (resets, rest): (Vec<&Key>, Vec<&Key>) = written.iter().partition(|key| key.resets);
     let reordered = written
         .iter()
         .zip(resets.iter().chain(rest.iter()))
@@ -155,7 +403,11 @@ pub fn run(args: &[String]) -> Result<Armed, String> {
     let mut out = String::new();
     out.push_str(&format!("port {}\n", path.display()));
     if reordered {
-        let order: String = resets.iter().chain(rest.iter()).map(|key| key.key).collect();
+        let order: String = resets
+            .iter()
+            .chain(rest.iter())
+            .map(|key| key.key)
+            .collect();
         out.push_str(&format!(
             "sending {order} rather than {keys}, because a reset key returns everything not held in SRAM4 to its default and would discard the keys before it\n"
         ));
@@ -167,7 +419,9 @@ pub fn run(args: &[String]) -> Result<Armed, String> {
         let (lines, matched) = confirm(&mut *port, &wanted(&resets))?;
         report(&mut out, &lines, &resets);
         if !matched {
-            return Err(format!("{out}the board did not come back on the page these keys ask for"));
+            return Err(format!(
+                "{out}the board did not come back on the page these keys ask for"
+            ));
         }
     }
     if !rest.is_empty() {
@@ -221,9 +475,13 @@ pub fn await_golden(seconds: u64) -> Result<String, String> {
         }
     }
     if last.is_empty() {
-        return Err(format!("the board printed no inference line in {seconds}s, so the golden check cannot be read"));
+        return Err(format!(
+            "the board printed no inference line in {seconds}s, so the golden check cannot be read"
+        ));
     }
-    Err(format!("the board is not classifying the golden window: {last}"))
+    Err(format!(
+        "the board is not classifying the golden window: {last}"
+    ))
 }
 
 /// the fields the board has to report for a set of keys to have arrived.
@@ -251,10 +509,7 @@ fn report(out: &mut String, lines: &[String], keys: &[&Key]) {
         match key.confirms {
             Some(want) => out.push_str(&format!(
                 "  {} selects {}={} on the {}line\n",
-                key.key,
-                want.field,
-                want.value,
-                want.line
+                key.key, want.field, want.value, want.line
             )),
             None => out.push_str(&format!(
                 "  {} sent and not confirmable, because no status line reports it\n",
@@ -310,14 +565,18 @@ fn confirm(port: &mut dyn Read, wanted: &[Confirm]) -> Result<(Vec<String>, bool
     }
     let lines = seen(&latest);
     if lines.is_empty() {
-        return Err("the board sent no status line, so there is nothing to confirm against".to_string());
+        return Err(
+            "the board sent no status line, so there is nothing to confirm against".to_string(),
+        );
     }
     Ok((lines, false))
 }
 
 /// whether the line that answers for one key carries the value it asks for.
 fn held(latest: &[Option<String>], want: &Confirm) -> bool {
-    let Some(index) = LINES.iter().position(|line| *line == want.line) else { return false };
+    let Some(index) = LINES.iter().position(|line| *line == want.line) else {
+        return false;
+    };
     latest[index]
         .as_deref()
         .and_then(|line| field_of(line, want.field))
@@ -340,11 +599,16 @@ fn take_status(buffer: &mut Vec<u8>) -> Option<(usize, String)> {
                 .map(|at| (index, at))
         })
         .min_by_key(|(_, at)| *at)?;
-    let end = buffer[start..].iter().position(|byte| *byte == b'\r' || *byte == b'\n')?;
+    let end = buffer[start..]
+        .iter()
+        .position(|byte| *byte == b'\r' || *byte == b'\n')?;
     let line = buffer[start..start + end].to_vec();
     buffer.drain(..start + end);
     // a frame that happened to carry a marker gives bytes that are not text. they are drained either way, so the next read makes progress rather than finding the same junk.
-    if line.iter().all(|byte| byte.is_ascii_graphic() || *byte == b' ') {
+    if line
+        .iter()
+        .all(|byte| byte.is_ascii_graphic() || *byte == b' ')
+    {
         return Some((index, String::from_utf8_lossy(&line).into_owned()));
     }
     None
@@ -377,12 +641,20 @@ mod tests {
     fn the_keys_that_reboot_go_first_whatever_order_they_were_written_in() {
         let written = resolve("i7ck", true).unwrap();
         let (resets, rest): (Vec<&Key>, Vec<&Key>) = written.iter().partition(|key| key.resets);
-        let order: String = resets.iter().chain(rest.iter()).map(|key| key.key).collect();
+        let order: String = resets
+            .iter()
+            .chain(rest.iter())
+            .map(|key| key.key)
+            .collect();
         assert_eq!(order, "ki7c");
         // the order within each half is the caller's, so two reset keys or two selections keep the sequence they were written in.
         let written = resolve("7kic", true).unwrap();
         let (resets, rest): (Vec<&Key>, Vec<&Key>) = written.iter().partition(|key| key.resets);
-        let order: String = resets.iter().chain(rest.iter()).map(|key| key.key).collect();
+        let order: String = resets
+            .iter()
+            .chain(rest.iter())
+            .map(|key| key.key)
+            .collect();
         assert_eq!(order, "k7ic");
     }
 
@@ -404,8 +676,11 @@ mod tests {
     /// ten keys are answered by none of the three lines, and each has a reason rather than an omission.
     #[test]
     fn the_unconfirmable_keys_are_the_footprints_and_the_load_counts() {
-        let silent: String =
-            ALPHABET.iter().filter(|key| key.confirms.is_none()).map(|key| key.key).collect();
+        let silent: String = ALPHABET
+            .iter()
+            .filter(|key| key.confirms.is_none())
+            .map(|key| key.key)
+            .collect();
         assert_eq!(silent, "ABCDEFGHlL");
     }
 
@@ -415,8 +690,11 @@ mod tests {
         assert!(error.contains("reboots the board"), "{error}");
         assert_eq!(resolve("j", true).unwrap().len(), 1);
         // nine keys reboot, across the stack source and the ballast.
-        let resetting: String =
-            ALPHABET.iter().filter(|key| key.resets).map(|key| key.key).collect();
+        let resetting: String = ALPHABET
+            .iter()
+            .filter(|key| key.resets)
+            .map(|key| key.key)
+            .collect();
         assert_eq!(resetting, "jknpfghmq");
     }
 
@@ -434,7 +712,9 @@ mod tests {
             want.iter().map(|c| (c.field, c.value)).collect::<Vec<_>>(),
             [("victim", "infer-stress"), ("arena", "1"), ("region", "3")]
         );
-        assert!(want.iter().all(|c| field_of(LINE, c.field).as_deref() == Some(c.value)));
+        assert!(want
+            .iter()
+            .all(|c| field_of(LINE, c.field).as_deref() == Some(c.value)));
     }
 
     #[test]
@@ -451,8 +731,7 @@ mod tests {
     /// the table above is a copy of a switch in another language, and this tree has paid twice for two copies of one thing drifting apart. this reads the switch.
     #[test]
     fn the_table_is_exactly_the_switch_the_firmware_implements() {
-        const FIRMWARE: &str =
-            include_str!("../../../firmware/stm32u585/Src/app_threadx.c");
+        const FIRMWARE: &str = include_str!("../../../firmware/stm32u585/Src/app_threadx.c");
         let body = FIRMWARE
             .split_once("static void laxity_poll_console(void)")
             .expect("the console poller moved")
@@ -470,6 +749,9 @@ mod tests {
         table.sort_unstable();
         table.dedup();
         assert_eq!(table.len(), listed, "a key is listed twice");
-        assert_eq!(table, firmware, "the table and the firmware switch disagree");
+        assert_eq!(
+            table, firmware,
+            "the table and the firmware switch disagree"
+        );
     }
 }

@@ -21,6 +21,10 @@ pub struct ApplicationDocument {
     /// the linker map and the image the configuration was written against. nothing here reads either, since the audit is given its ELF on the command line, and they are declared because the file carries them.
     pub map: Option<String>,
     pub elf: Option<String>,
+    /// a committed table of placed objects, which is what a tree carrying no binary audits from. a clone cannot build this firmware, since the sources it needs are licensed and ignored, so without this key the audit refuses to run on the project it was written for.
+    ///
+    /// it sits beside elf rather than replacing it because the binary on a machine that has one is what that machine actually links. the key is object_table rather than objects because objects and the [[object]] blocks would sit one letter apart in the same file, and although a wrong one of the two is refused loudly by the type check, a reader gets no such warning.
+    pub object_table: Option<String>,
     /// where the platform profile and its characterisation are, when they are not where the convention puts them. the convention is profiles/<platform>.toml beside this file or above it, so these exist to let a project say otherwise rather than to make every project say it.
     pub profile: Option<String>,
     pub characterisation: Option<String>,
@@ -63,6 +67,12 @@ pub struct ApplicationObject {
     pub symbol_kind: SymbolKind,
     /// the name the same object has in the linker map, which is not always the name it has in the ELF's symbol table.
     pub map_symbol: Option<String>,
+    /// the symbol whose extent this object moves within, which is the thing it is carved out of rather than the thing it is.
+    ///
+    /// it is not map_symbol beside it, which is another name for this same object and is resolved as one of its own names. this one names a different object entirely, and the audit never resolves it as the object: the size and the address still come from the symbols above, and the only thing that reads this is the check on the declared candidate regions, which has no other way to know how far the object can actually move.
+    ///
+    /// the stack is why it exists. its symbol is the RTOS byte pool in one bank, the firmware carves its page out of a reservation that spans three, and without this the audit can only say that the declared candidates and the resolved symbol disagree, not which of the two is wrong.
+    pub extent_symbol: Option<String>,
     #[serde(default)]
     pub symbols: Vec<String>,
     /// the declared size and address. the audit reads both out of the ELF instead, since a declaration goes stale and a binary cannot.
@@ -88,7 +98,10 @@ impl ApplicationObject {
             return self.symbols.clone();
         }
         let mut names = Vec::new();
-        for candidate in [self.symbol.as_deref(), self.map_symbol.as_deref()].into_iter().flatten() {
+        for candidate in [self.symbol.as_deref(), self.map_symbol.as_deref()]
+            .into_iter()
+            .flatten()
+        {
             if !names.iter().any(|name| name == candidate) {
                 names.push(candidate.to_string());
             }
@@ -143,7 +156,9 @@ impl ApplicationDocument {
 
     /// the object one requester's `object` field names, found by its qualified workload.name form.
     pub fn object_named(&self, qualified: &str) -> Option<&ApplicationObject> {
-        self.object.iter().find(|object| object.qualified_name() == qualified)
+        self.object
+            .iter()
+            .find(|object| object.qualified_name() == qualified)
     }
 
     /// the ELF this configuration was written against, as a path from wherever the configuration is.
@@ -153,11 +168,22 @@ impl ApplicationDocument {
         self.elf.as_ref().map(|elf| beside(config, elf))
     }
 
+    /// the object table this configuration declares, as a path from wherever the configuration is.
+    pub fn object_table_path(&self, config: &Path) -> Option<PathBuf> {
+        self.object_table
+            .as_ref()
+            .map(|table| beside(config, table))
+    }
+
     /// the platform profile, named by this configuration or found by convention.
     ///
     /// the convention is profiles/<platform>.toml, looked for beside the configuration and then in each directory above it, which is how a project with its own config at its root finds the profiles the repository ships. a configuration that names a path uses that path and the walk does not happen.
     pub fn profile_path(&self, config: &Path) -> Result<PathBuf, String> {
-        self.found(config, self.profile.as_deref(), &format!("profiles/{}.toml", self.platform))
+        self.found(
+            config,
+            self.profile.as_deref(),
+            &format!("profiles/{}.toml", self.platform),
+        )
     }
 
     pub fn characterisation_path(&self, config: &Path) -> Result<PathBuf, String> {
@@ -168,13 +194,21 @@ impl ApplicationDocument {
         )
     }
 
-    fn found(&self, config: &Path, named: Option<&str>, convention: &str) -> Result<PathBuf, String> {
+    fn found(
+        &self,
+        config: &Path,
+        named: Option<&str>,
+        convention: &str,
+    ) -> Result<PathBuf, String> {
         if let Some(named) = named {
             let path = beside(config, named);
-            return path
-                .is_file()
-                .then_some(path.clone())
-                .ok_or_else(|| format!("{} names {named}, which is not at {}", config.display(), path.display()));
+            return path.is_file().then_some(path.clone()).ok_or_else(|| {
+                format!(
+                    "{} names {named}, which is not at {}",
+                    config.display(),
+                    path.display()
+                )
+            });
         }
         let mut looked = Vec::new();
         for dir in directories_above(config) {
@@ -193,7 +227,10 @@ impl ApplicationDocument {
 
     /// the objects one workload declares, in declaration order.
     pub fn objects_of(&self, workload: &str) -> Vec<&ApplicationObject> {
-        self.object.iter().filter(|object| object.workload == workload).collect()
+        self.object
+            .iter()
+            .filter(|object| object.workload == workload)
+            .collect()
     }
 }
 
@@ -243,7 +280,11 @@ pub fn discover(from: &Path) -> Result<PathBuf, String> {
             _ => break,
         }
     }
-    Err(format!("no laxity.toml at or above {}, looked at {}", from.display(), looked.join(", ")))
+    Err(format!(
+        "no laxity.toml at or above {}, looked at {}",
+        from.display(),
+        looked.join(", ")
+    ))
 }
 
 #[cfg(test)]
@@ -256,18 +297,38 @@ mod tests {
     fn the_reference_configuration_loads_with_every_field_it_carries() {
         let document = ApplicationDocument::from_toml(REFERENCE).unwrap();
         assert_eq!(document.platform, "stm32u585");
-        assert_eq!(document.map.as_deref(), Some("build/target/laxity-u585.map"));
+        assert_eq!(
+            document.map.as_deref(),
+            Some("build/target/laxity-u585.map")
+        );
+        assert_eq!(
+            document.object_table.as_deref(),
+            Some("profiles/stm32u585.objects.toml")
+        );
         assert_eq!(document.object.len(), 6);
         assert_eq!(document.requester.len(), 3);
         assert_eq!(document.workload["inference"].window_cycles, Some(320_320));
-        assert_eq!(document.workload["inference"].deadline_cycles, Some(5_119_994));
+        assert_eq!(
+            document.workload["inference"].deadline_cycles,
+            Some(5_046_524)
+        );
         // only one of the four workload names the objects use declares a window.
         assert_eq!(document.workload.len(), 1);
         assert_eq!(document.objects_of("inference").len(), 2);
-        assert_eq!(document.object_named("laxity.desc").unwrap().region.as_deref(), Some("sram3"));
+        assert_eq!(
+            document
+                .object_named("laxity.desc")
+                .unwrap()
+                .region
+                .as_deref(),
+            Some("sram3")
+        );
         // the arena's symbol is the reservation the arena is carved out of, which the shipped file now says outright.
         assert_eq!(
-            document.object_named("inference.arena").unwrap().symbol_kind,
+            document
+                .object_named("inference.arena")
+                .unwrap()
+                .symbol_kind,
             SymbolKind::Reservation
         );
     }
@@ -276,7 +337,10 @@ mod tests {
     fn an_object_naming_two_symbols_keeps_both_candidates() {
         let document = ApplicationDocument::from_toml(REFERENCE).unwrap();
         let arena = document.object_named("inference.arena").unwrap();
-        assert_eq!(arena.symbol_names(), ["laxity_arena_s1", "laxity_arena_span"]);
+        assert_eq!(
+            arena.symbol_names(),
+            ["laxity_arena_s1", "laxity_arena_span"]
+        );
         // a symbols list is the whole object and replaces the single name rather than adding to it.
         let state = document.object_named("runtime.state").unwrap();
         assert_eq!(state.symbol_names().len(), 4);
@@ -301,7 +365,10 @@ symbol = "b"
 symbol_kind = "reservation"
 "#;
         let document = ApplicationDocument::from_toml(PAIR).unwrap();
-        assert_eq!(document.object_named("w.silent").unwrap().symbol_kind, SymbolKind::Object);
+        assert_eq!(
+            document.object_named("w.silent").unwrap().symbol_kind,
+            SymbolKind::Object
+        );
         assert_eq!(
             document.object_named("w.declared").unwrap().symbol_kind,
             SymbolKind::Reservation
@@ -330,7 +397,10 @@ symbol_kind = "reservation"
     fn the_configuration_is_found_by_walking_up_from_where_you_are() {
         let root = project("walk");
         assert_eq!(discover(&root).unwrap(), root.join("laxity.toml"));
-        assert_eq!(discover(&root.join("src/deep")).unwrap(), root.join("laxity.toml"));
+        assert_eq!(
+            discover(&root.join("src/deep")).unwrap(),
+            root.join("laxity.toml")
+        );
 
         // a directory with nothing above it says what it looked for and where, rather than only that it failed.
         let bare = std::env::temp_dir().join(format!("laxity-bare-{}", std::process::id()));
@@ -370,7 +440,10 @@ symbol_kind = "reservation"
             document.elf_path(&config).unwrap(),
             root.join("build/target/laxity-u585.elf")
         );
-        assert_eq!(document.profile_path(&config).unwrap(), root.join("profiles/stm32u585.toml"));
+        assert_eq!(
+            document.profile_path(&config).unwrap(),
+            root.join("profiles/stm32u585.toml")
+        );
         assert_eq!(
             document.characterisation_path(&config).unwrap(),
             root.join("profiles/stm32u585.characterisation.toml")
@@ -378,7 +451,10 @@ symbol_kind = "reservation"
         // the convention walks up as well, so a configuration in a subdirectory finds the profiles the project ships at its root.
         let nested = root.join("src/deep/laxity.toml");
         std::fs::write(&nested, REFERENCE).unwrap();
-        assert_eq!(document.profile_path(&nested).unwrap(), root.join("profiles/stm32u585.toml"));
+        assert_eq!(
+            document.profile_path(&nested).unwrap(),
+            root.join("profiles/stm32u585.toml")
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -393,26 +469,41 @@ symbol_kind = "reservation"
             "platform = \"stm32u585\"\nprofile = \"profiles/elsewhere.toml\"",
         );
         let document = ApplicationDocument::from_toml(&named).unwrap();
-        assert_eq!(document.profile_path(&config).unwrap(), root.join("profiles/elsewhere.toml"));
+        assert_eq!(
+            document.profile_path(&config).unwrap(),
+            root.join("profiles/elsewhere.toml")
+        );
 
         // a named path that is not there names itself rather than falling back to the convention.
         let missing = REFERENCE.replace(
             "platform = \"stm32u585\"",
             "platform = \"stm32u585\"\nprofile = \"profiles/absent.toml\"",
         );
-        let error = ApplicationDocument::from_toml(&missing).unwrap().profile_path(&config).unwrap_err();
+        let error = ApplicationDocument::from_toml(&missing)
+            .unwrap()
+            .profile_path(&config)
+            .unwrap_err();
         assert!(error.contains("profiles/absent.toml"), "{error}");
 
         let other = REFERENCE.replace("platform = \"stm32u585\"", "platform = \"nrf5340\"");
-        let error = ApplicationDocument::from_toml(&other).unwrap().profile_path(&config).unwrap_err();
-        assert!(error.contains("no profiles/nrf5340.toml for platform nrf5340"), "{error}");
+        let error = ApplicationDocument::from_toml(&other)
+            .unwrap()
+            .profile_path(&config)
+            .unwrap_err();
+        assert!(
+            error.contains("no profiles/nrf5340.toml for platform nrf5340"),
+            "{error}"
+        );
         assert!(error.contains("looked at"), "{error}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn a_field_the_schema_does_not_know_is_refused_rather_than_dropped() {
-        let typo = REFERENCE.replace("transactions_per_second = 200000", "transactions_per_sec = 200000");
+        let typo = REFERENCE.replace(
+            "transactions_per_second = 200000",
+            "transactions_per_sec = 200000",
+        );
         let error = ApplicationDocument::from_toml(&typo).unwrap_err();
         assert!(error.contains("transactions_per_sec"), "{error}");
     }

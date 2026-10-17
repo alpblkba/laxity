@@ -1,6 +1,7 @@
-use laxity_core::profile::ProfileDocument;
+use laxity_core::profile::{Profile, ProfileDocument};
+use laxity_elf::table::{parse_table, write_table, ObjectTable};
 use laxity_elf::{
-    parse_elf, read_elf, region_of, regions_spanned, summarize, AllocatedObject, Region,
+    parse_elf, read_elf, region_of, regions_spanned, summarize, AllocatedObject, Object, Region,
 };
 use std::{fs, io, path::Path};
 
@@ -316,4 +317,120 @@ fn fixture() -> Vec<u8> {
     put32(&mut bytes, 32, section_offset);
     bytes.extend_from_slice(&sections);
     bytes
+}
+
+/// the regions as the cost model names them, which is by the profile's string id rather than by its label, since that is the projection the audit passes to the table reader and therefore the spelling a hand written table carries.
+fn model_regions() -> Vec<Region> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../profiles/stm32u585.toml");
+    Profile::from_toml(&fs::read_to_string(path).unwrap())
+        .unwrap()
+        .regions
+}
+
+/// written by hand against profiles/stm32u585.toml before the writer existed, to find out whether the format can be produced without the struct open beside it. the answer is what this test pins.
+const HAND_WRITTEN: &str = r#"
+schema_version = 1
+platform = "stm32u585"
+
+[[object]]
+name = "tx_byte_pool_buffer"
+addr = 0x2005764c
+bytes = 16384
+section = ".bss"
+region_ids = ["sram3"]
+start_region = "sram3"
+
+[[object]]
+name = "laxity_arena_span"
+addr = 0x20002000
+bytes = 348160
+section = ".bss"
+region_ids = ["sram1", "sram2", "sram3"]
+start_region = "sram1"
+"#;
+
+#[test]
+fn a_table_written_by_hand_parses_into_what_its_author_predicted() {
+    let table = parse_table(HAND_WRITTEN, "stm32u585", &model_regions()).unwrap();
+    assert_eq!(table.platform, "stm32u585");
+    assert_eq!(table.image_sha256, None);
+    assert_eq!(
+        table.objects,
+        [
+            AllocatedObject {
+                object: Object {
+                    name: "tx_byte_pool_buffer".into(),
+                    addr: 0x2005_764c,
+                    bytes: 16_384,
+                    section: ".bss".into(),
+                },
+                region_ids: vec![3],
+                start_region: Some(3),
+            },
+            AllocatedObject {
+                object: Object {
+                    name: "laxity_arena_span".into(),
+                    addr: 0x2000_2000,
+                    bytes: 348_160,
+                    section: ".bss".into(),
+                },
+                region_ids: vec![1, 2, 3],
+                start_region: Some(1),
+            },
+        ]
+    );
+}
+
+/// the writer and the reader are each other's only check, so the test takes what the ELF reader produced, writes it, reads it back and compares, and then writes the parsed value again to find out whether the order is stable rather than merely plausible.
+#[test]
+fn a_table_round_trips_and_writes_the_same_bytes_twice() {
+    let regions = model_regions();
+    let objects = parse_elf(&fixture(), &regions).unwrap();
+    assert!(!objects.is_empty());
+    let table = ObjectTable {
+        objects,
+        platform: "stm32u585".into(),
+        image_sha256: Some("653627b466c79d56".into()),
+    };
+    let once = write_table(&table, &regions, &["a fixture, not an image"]);
+    let read_back = parse_table(&once, "stm32u585", &regions).unwrap();
+    assert_eq!(read_back.image_sha256.as_deref(), Some("653627b466c79d56"));
+    // the writer sorts, so the value that comes back is the same set in the order the file imposes rather than in the ELF's symbol table order.
+    let mut expected = table.objects.clone();
+    expected.sort_by(|a, b| (a.object.addr, &a.object.name).cmp(&(b.object.addr, &b.object.name)));
+    assert_eq!(read_back.objects, expected);
+    let twice = write_table(&read_back, &regions, &["a fixture, not an image"]);
+    assert_eq!(once, twice);
+}
+
+/// every refusal names the thing it refused, since a table is meant to be hand written and a reader that only says no leaves the author guessing which line is wrong.
+#[test]
+fn a_table_refuses_an_unknown_key_a_foreign_platform_and_a_placement_the_profile_contradicts() {
+    let regions = model_regions();
+    let unknown = HAND_WRITTEN.replace("bytes = 16384", "bytes = 16384\nsize = 16384");
+    let error = parse_table(&unknown, "stm32u585", &regions).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("size"), "{error}");
+
+    let error = parse_table(HAND_WRITTEN, "nrf5340", &regions).unwrap_err();
+    assert!(error.to_string().contains("stm32u585"), "{error}");
+    assert!(error.to_string().contains("nrf5340"), "{error}");
+
+    let label = HAND_WRITTEN.replace(r#"start_region = "sram3""#, r#"start_region = "sram9""#);
+    let error = parse_table(&label, "stm32u585", &regions).unwrap_err();
+    assert!(error.to_string().contains("sram9"), "{error}");
+
+    // a start_region the address contradicts would price the wrong region and read as a clean audit, which is the one failure a committed table can introduce that an ELF cannot.
+    let moved = HAND_WRITTEN.replace(r#"start_region = "sram3""#, r#"start_region = "sram1""#);
+    let error = parse_table(&moved, "stm32u585", &regions).unwrap_err();
+    assert!(error.to_string().contains("tx_byte_pool_buffer"), "{error}");
+    assert!(error.to_string().contains("sram3"), "{error}");
+
+    let spans = HAND_WRITTEN.replace(r#"region_ids = ["sram3"]"#, r#"region_ids = ["sram2"]"#);
+    let error = parse_table(&spans, "stm32u585", &regions).unwrap_err();
+    assert!(error.to_string().contains("sram2"), "{error}");
+
+    let version = HAND_WRITTEN.replace("schema_version = 1", "schema_version = 2");
+    let error = parse_table(&version, "stm32u585", &regions).unwrap_err();
+    assert!(error.to_string().contains("schema version: 2"), "{error}");
 }

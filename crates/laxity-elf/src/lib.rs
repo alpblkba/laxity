@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 
+pub mod table;
+
 pub use laxity_types::{overlap_bytes, region_of, regions_spanned, Object, Region};
+pub use table::{parse_table, read_table, ObjectTable};
 
 use object::read::elf::ElfFile32;
 use object::{
@@ -8,6 +11,7 @@ use object::{
 };
 use std::{fs, io, path::Path};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllocatedObject {
     pub object: Object,
     pub region_ids: Vec<u8>,

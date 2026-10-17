@@ -27,7 +27,15 @@ The coefficients belong to the workload and the conditions under which it was me
 
 ## Audit without a board
 
-The ELF audit combines a binary with a platform profile and a characterisation. The profile supplies the memory map and clock, while the characterisation carries coefficients and their origins. The application supplies its own timing window and deadline, since neither can be recovered from an ELF symbol table.
+The audit combines a placement with a platform profile and a characterisation. The profile supplies the memory map and clock, while the characterisation carries coefficients and their origins. The application supplies its own timing window and deadline, since neither can be recovered from an ELF symbol table.
+
+The placement comes from a linked binary or from a committed table of placed objects, and `laxity.toml` declares both, as `elf` and `object_table`. A clone has the table, at `profiles/stm32u585.objects.toml`, and no binary, since the firmware needs ST Edge AI sources that are licensed and cannot be committed. The binary is preferred when it is there, and the audit names on stderr which of the two it read. A table is a transcription rather than the linker's own answer, so the checks that hold the declared sizes, addresses and candidate regions against the binary report that they could not run instead of reporting a clean result.
+
+Run the audit with no arguments to price whatever `laxity.toml` declares, found by walking up from the current directory, which is the form that works in a clone.
+
+```sh
+laxity audit
+```
 
 <img src="docs/diagrams/generated/audit-flow.svg" width="1040" alt="ELF objects mapped to every bank they touch, then priced by overlap with coefficient provenance and an explicit lower bound for unmeasured terms">
 

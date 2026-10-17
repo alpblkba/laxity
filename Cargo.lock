@@ -381,6 +381,8 @@ dependencies = [
  "laxity-core",
  "laxity-types",
  "object",
+ "serde",
+ "toml",
 ]
 
 [[package]]

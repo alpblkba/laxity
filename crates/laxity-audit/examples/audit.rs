@@ -13,15 +13,26 @@ fn main() {
         eprintln!("usage: audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]");
         process::exit(2);
     }
-    let config = args.get(3).filter(|value| value.ends_with(".toml")).map(String::as_str);
-    let audited = args.get(if config.is_some() { 4 } else { 3 }).map(String::as_str);
+    let config = args
+        .get(3)
+        .filter(|value| value.ends_with(".toml"))
+        .map(String::as_str);
+    let audited = args
+        .get(if config.is_some() { 4 } else { 3 })
+        .map(String::as_str);
     let text = read(&args[1])
         .and_then(|profile| Profile::from_toml(&profile))
         .and_then(|profile| {
             read(&args[2])
                 .and_then(|text| Characterisation::from_toml(&text))
                 .and_then(|characterisation| {
-                    report(&PathBuf::from(&args[0]), &profile, &characterisation, config, audited)
+                    report(
+                        &PathBuf::from(&args[0]),
+                        &profile,
+                        &characterisation,
+                        config,
+                        audited,
+                    )
                 })
         });
     match text {

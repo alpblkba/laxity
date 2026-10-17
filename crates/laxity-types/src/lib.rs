@@ -51,10 +51,30 @@ mod tests {
     /// the stm32u585 map as profiles/stm32u585.toml declares it, with the qos_id each region carries.
     fn regions() -> Vec<Region> {
         vec![
-            Region { id: 1, name: "sram1".into(), base: 0x2000_0000, bytes: 0x0003_0000 },
-            Region { id: 2, name: "sram2".into(), base: 0x2003_0000, bytes: 0x0001_0000 },
-            Region { id: 3, name: "sram3".into(), base: 0x2004_0000, bytes: 0x0008_0000 },
-            Region { id: 4, name: "sram4".into(), base: 0x2800_0000, bytes: 0x0000_4000 },
+            Region {
+                id: 1,
+                name: "sram1".into(),
+                base: 0x2000_0000,
+                bytes: 0x0003_0000,
+            },
+            Region {
+                id: 2,
+                name: "sram2".into(),
+                base: 0x2003_0000,
+                bytes: 0x0001_0000,
+            },
+            Region {
+                id: 3,
+                name: "sram3".into(),
+                base: 0x2004_0000,
+                bytes: 0x0008_0000,
+            },
+            Region {
+                id: 4,
+                name: "sram4".into(),
+                base: 0x2800_0000,
+                bytes: 0x0000_4000,
+            },
         ]
     }
 
@@ -65,7 +85,12 @@ mod tests {
         assert_eq!(region_of(0x2003_ffff, &regions()), Some(2));
         assert_eq!(region_of(0x2400_0000, &regions()), None);
         // a region that reaches the top of the address space must not wrap back to zero.
-        let top = vec![Region { id: 9, name: "top".into(), base: u64::MAX - 1, bytes: 2 }];
+        let top = vec![Region {
+            id: 9,
+            name: "top".into(),
+            base: u64::MAX - 1,
+            bytes: 2,
+        }];
         assert_eq!(region_of(u64::MAX, &top), Some(9));
     }
 

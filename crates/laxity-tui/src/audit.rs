@@ -2,7 +2,7 @@
 //!
 //! the printed report shows everything at once, which is what a pipe wants and what a reader of a real firmware cannot use: the reference image carries 1277 allocated symbols. this screen is the same audit walked one object at a time.
 
-use laxity_audit::{audit, region_label, Audit, DeclaredWorkload, Workload};
+use laxity_audit::{audit, region_label, Audit, DeclaredWorkload, Objects, Workload};
 use laxity_core::characterisation::{characterise_command, Basis, Characterisation};
 use laxity_core::cost::Requester;
 use laxity_core::profile::Profile;
@@ -66,9 +66,13 @@ fn basis_word(basis: &Basis) -> &'static str {
 fn coefficient_text(basis: &Basis) -> String {
     match basis {
         Basis::Measured { value } => format!("{value:.3}"),
-        Basis::Borrowed { minimum, maximum, .. }
+        Basis::Borrowed {
+            minimum, maximum, ..
+        }
         | Basis::Bounded { minimum, maximum }
-        | Basis::Mean { minimum, maximum, .. } => format!("{minimum:.3}..{maximum:.3}"),
+        | Basis::Mean {
+            minimum, maximum, ..
+        } => format!("{minimum:.3}..{maximum:.3}"),
         Basis::Unmeasured { .. } => "unknown".to_string(),
     }
 }
@@ -111,12 +115,18 @@ fn candidate_row(
         (false, _, _) => String::new(),
         (true, Some(cycles), Some(basis)) => format!(", quiet {cycles:+.0} cyc, {basis}"),
         (true, None, Some(basis)) => format!(", quiet unknown, {basis}"),
-        (true, _, _) => format!(", quiet unknown, no charge for {} in this region", work.name),
+        (true, _, _) => format!(
+            ", quiet unknown, no charge for {} in this region",
+            work.name
+        ),
     };
     let Some(priced) = candidate.cost else {
         return WhatIf {
             region: candidate.region.clone(),
-            verdict: format!("{}{quiet}", candidate.note.unwrap_or_else(|| "unknown".to_string())),
+            verdict: format!(
+                "{}{quiet}",
+                candidate.note.unwrap_or_else(|| "unknown".to_string())
+            ),
             terms: Vec::new(),
         };
     };
@@ -184,7 +194,7 @@ impl AuditModel {
         app_config: Option<&str>,
     ) -> Result<AuditModel, String> {
         let declared = match app_config {
-            Some(path) => DeclaredWorkload::load(path, "inference", profile, elf)?,
+            Some(path) => DeclaredWorkload::load(path, "inference", profile, Objects::Elf(elf))?,
             None => DeclaredWorkload::undeclared("inference"),
         };
         let work = &declared.workload;
@@ -244,7 +254,13 @@ impl AuditModel {
         let placed_sizes = report
             .placements
             .iter()
-            .map(|placed| (placed.object.name.clone(), placed.object.bytes, placed.object.section.clone()))
+            .map(|placed| {
+                (
+                    placed.object.name.clone(),
+                    placed.object.bytes,
+                    placed.object.section.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         let candidates = objects
             .iter()
@@ -296,10 +312,12 @@ impl AuditModel {
 
     /// the candidate rows for the object under the cursor, computed at load time.
     pub fn what_if(&self, selected: usize) -> &[WhatIf] {
-        self.candidates.get(selected).map(Vec::as_slice).unwrap_or(&[])
+        self.candidates
+            .get(selected)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -359,7 +377,11 @@ mod tests {
             if row.region == "sram3" {
                 continue;
             }
-            assert_eq!(row.verdict, "no requester in this region, nothing to load", "{}", row.region);
+            assert_eq!(
+                row.verdict, "no requester in this region, nothing to load",
+                "{}",
+                row.region
+            );
             assert!(row.terms.is_empty(), "{}", row.region);
         }
     }
@@ -406,7 +428,11 @@ mod tests {
         assert_eq!(row.verdict, "+3229 cyc, 2 of 3 endpoints priced");
         assert!(!row.verdict.contains("measured"), "{}", row.verdict);
         assert_eq!(row.terms.len(), 3);
-        let unmeasured = row.terms.iter().find(|term| term.endpoint == "emw3080.spi dma").unwrap();
+        let unmeasured = row
+            .terms
+            .iter()
+            .find(|term| term.endpoint == "emw3080.spi dma")
+            .unwrap();
         assert_eq!(
             unmeasured.detail,
             "unmeasured, run: laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'"
@@ -480,9 +506,17 @@ mod tests {
         let row = rows.iter().find(|row| row.region == "sram3").unwrap();
         assert_eq!(row.verdict, "+0..+26 cyc, 1 of 1 endpoint priced");
         let term = &row.terms[0];
-        assert!(term.detail.starts_with("bounded at 0.001"), "{}", term.detail);
+        assert!(
+            term.detail.starts_with("bounded at 0.001"),
+            "{}",
+            term.detail
+        );
         assert!(term.detail.contains("never isolated"), "{}", term.detail);
-        assert!(!term.detail.contains("measured, this platform"), "{}", term.detail);
+        assert!(
+            !term.detail.contains("measured, this platform"),
+            "{}",
+            term.detail
+        );
     }
 
     /// an endpoint the characterisation has no entry for at all produces no term, so the row names the command rather than leaving it out of the count.
@@ -502,7 +536,11 @@ mod tests {
         );
         let row = rows.iter().find(|row| row.region == "sram3").unwrap();
         assert_eq!(row.verdict, "+2716 cyc, 1 of 2 endpoints priced");
-        let missing = row.terms.iter().find(|term| term.endpoint == "emw3080.spi dma").unwrap();
+        let missing = row
+            .terms
+            .iter()
+            .find(|term| term.endpoint == "emw3080.spi dma")
+            .unwrap();
         // the object of the what if is the object of the command, so a row for an endpoint nobody measured names all three arguments rather than the requester alone.
         assert_eq!(
             missing.detail,

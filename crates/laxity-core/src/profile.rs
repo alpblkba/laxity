@@ -162,7 +162,10 @@ impl ProfileDocument {
     /// the one per region validation both projections run, so that a profile cannot be valid for the report and invalid for the model. the projections differ in the name they give a region and in nothing else.
     ///
     /// the numeric id comes from qos_id and never from the declaration order or from the spelling of the name, because an id derived from either parts company with the firmware's QOS_REGION_SRAM1 and with the region_id every telemetry record carries the moment a profile is reordered or a region is named something other than sram followed by its number.
-    fn regions(&self, name: impl Fn(&ProfileMemoryRegion) -> String) -> Result<Vec<Region>, String> {
+    fn regions(
+        &self,
+        name: impl Fn(&ProfileMemoryRegion) -> String,
+    ) -> Result<Vec<Region>, String> {
         let mut regions: Vec<Region> = Vec::with_capacity(self.memory_regions.len());
         for region in &self.memory_regions {
             if region.size == 0 {
@@ -227,7 +230,11 @@ impl Profile {
             _ => return Err("the platform profile needs a positive device.clock_hz".to_string()),
         };
         let regions = document.regions(|region| region.id.clone())?;
-        Ok(Profile { platform: document.device.id.clone(), clock_hz, regions })
+        Ok(Profile {
+            platform: document.device.id.clone(),
+            clock_hz,
+            regions,
+        })
     }
 
     pub fn region_named(&self, name: &str) -> Option<&Region> {
@@ -283,24 +290,35 @@ size = 0x00080000
     #[test]
     fn a_region_without_a_qos_id_is_refused() {
         let text = format!("{HEADER}\n[[memory_regions]]\nid = \"sram1\"\nlabel = \"SRAM1\"\nstart = 0\nsize = 16\n");
-        assert_eq!(Profile::from_toml(&text).unwrap_err(), "region sram1 has no qos_id");
+        assert_eq!(
+            Profile::from_toml(&text).unwrap_err(),
+            "region sram1 has no qos_id"
+        );
     }
 
     #[test]
     fn a_region_with_a_qos_id_of_zero_is_refused() {
         let text = format!("{HEADER}\n[[memory_regions]]\nid = \"sram1\"\nqos_id = 0\nlabel = \"SRAM1\"\nstart = 0\nsize = 16\n");
-        assert_eq!(Profile::from_toml(&text).unwrap_err(), "region sram1 has a qos_id of zero");
+        assert_eq!(
+            Profile::from_toml(&text).unwrap_err(),
+            "region sram1 has a qos_id of zero"
+        );
     }
 
     #[test]
     fn two_regions_may_not_share_a_qos_id() {
         let text = format!("{HEADER}\n[[memory_regions]]\nid = \"a\"\nqos_id = 2\nlabel = \"A\"\nstart = 0\nsize = 16\n\n[[memory_regions]]\nid = \"b\"\nqos_id = 2\nlabel = \"B\"\nstart = 16\nsize = 16\n");
-        assert_eq!(Profile::from_toml(&text).unwrap_err(), "regions a and b share the qos_id 2");
+        assert_eq!(
+            Profile::from_toml(&text).unwrap_err(),
+            "regions a and b share the qos_id 2"
+        );
     }
 
     #[test]
     fn a_profile_without_regions_is_refused() {
-        assert!(Profile::from_toml(HEADER).unwrap_err().contains("no [[memory_regions]]"));
+        assert!(Profile::from_toml(HEADER)
+            .unwrap_err()
+            .contains("no [[memory_regions]]"));
     }
 
     #[test]
@@ -310,8 +328,15 @@ size = 0x00080000
         assert_eq!(stm32.requesters.len(), 2);
         assert!(stm32.capabilities.stall_cycles);
         // sram4 is the region the model never saw, because the field that says so was on the side of the parser that dropped it.
-        let sram4 = stm32.memory_regions.iter().find(|region| region.id == "sram4").unwrap();
-        assert_eq!(sram4.metadata.get("activation_target").map(String::as_str), Some("false"));
+        let sram4 = stm32
+            .memory_regions
+            .iter()
+            .find(|region| region.id == "sram4")
+            .unwrap();
+        assert_eq!(
+            sram4.metadata.get("activation_target").map(String::as_str),
+            Some("false")
+        );
 
         let generic = ProfileDocument::from_toml(VIRTUAL_GENERIC).unwrap();
         assert_eq!(generic.memory_regions.len(), 3);
@@ -332,19 +357,31 @@ size = 0x00080000
 
     #[test]
     fn the_display_projection_names_by_label_and_numbers_by_qos_id() {
-        let regions = ProfileDocument::from_toml(STM32U585).unwrap().labelled_regions().unwrap();
+        let regions = ProfileDocument::from_toml(STM32U585)
+            .unwrap()
+            .labelled_regions()
+            .unwrap();
         assert_eq!(regions[3].name, "SRAM4");
         assert_eq!(regions[3].id, 4);
         // the model projection names the same region by its string id, which is the key the characterisation references it by.
-        assert_eq!(Profile::from_toml(STM32U585).unwrap().regions[3].name, "sram4");
+        assert_eq!(
+            Profile::from_toml(STM32U585).unwrap().regions[3].name,
+            "sram4"
+        );
 
         // qos_id is the only source of the number. a profile declaring its regions in another order still numbers them the way the firmware and the wire format do.
         let text = format!("{HEADER}\n[[memory_regions]]\nid = \"late\"\nqos_id = 4\nlabel = \"LATE\"\nstart = 0\nsize = 16\n");
-        let reordered = ProfileDocument::from_toml(&text).unwrap().labelled_regions().unwrap();
+        let reordered = ProfileDocument::from_toml(&text)
+            .unwrap()
+            .labelled_regions()
+            .unwrap();
         assert_eq!(reordered[0].id, 4);
 
         let missing = text.replace("qos_id = 4\n", "");
-        let refused = ProfileDocument::from_toml(&missing).unwrap().labelled_regions().unwrap_err();
+        let refused = ProfileDocument::from_toml(&missing)
+            .unwrap()
+            .labelled_regions()
+            .unwrap_err();
         assert_eq!(refused, "region late has no qos_id");
     }
 
@@ -362,8 +399,14 @@ size = 0x00080000
         let shared = format!("{HEADER}\n[[memory_regions]]\nid = \"a\"\nqos_id = 2\nlabel = \"A\"\nstart = 0\nsize = 16\n\n[[memory_regions]]\nid = \"b\"\nqos_id = 2\nlabel = \"B\"\nstart = 16\nsize = 16\n");
         let document = ProfileDocument::from_toml(&shared).unwrap();
         // each projection names the clash the way it names a region, which is the only difference between them.
-        assert_eq!(document.labelled_regions().unwrap_err(), "regions A and b share the qos_id 2");
-        assert_eq!(Profile::from_document(&document).unwrap_err(), "regions a and b share the qos_id 2");
+        assert_eq!(
+            document.labelled_regions().unwrap_err(),
+            "regions A and b share the qos_id 2"
+        );
+        assert_eq!(
+            Profile::from_document(&document).unwrap_err(),
+            "regions a and b share the qos_id 2"
+        );
     }
 
     #[test]

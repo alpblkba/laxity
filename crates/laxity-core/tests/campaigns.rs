@@ -8,10 +8,30 @@ const HEADER: &str = "schema_version = 1\nplatform = \"stm32u585\"\ndate = \"202
 
 fn regions() -> Vec<Region> {
     vec![
-        Region { id: 1, name: "sram1".into(), base: 0x2000_0000, bytes: 0x0003_0000 },
-        Region { id: 2, name: "sram2".into(), base: 0x2003_0000, bytes: 0x0001_0000 },
-        Region { id: 3, name: "sram3".into(), base: 0x2004_0000, bytes: 0x0008_0000 },
-        Region { id: 4, name: "sram4".into(), base: 0x2800_0000, bytes: 0x0000_4000 },
+        Region {
+            id: 1,
+            name: "sram1".into(),
+            base: 0x2000_0000,
+            bytes: 0x0003_0000,
+        },
+        Region {
+            id: 2,
+            name: "sram2".into(),
+            base: 0x2003_0000,
+            bytes: 0x0001_0000,
+        },
+        Region {
+            id: 3,
+            name: "sram3".into(),
+            base: 0x2004_0000,
+            bytes: 0x0008_0000,
+        },
+        Region {
+            id: 4,
+            name: "sram4".into(),
+            base: 0x2800_0000,
+            bytes: 0x0000_4000,
+        },
     ]
 }
 
@@ -39,19 +59,33 @@ fn placed(name: &str, region: u8) -> Placement {
 }
 
 fn quiet_charge(placements: &[Placement]) -> f64 {
-    quiet_cost(placements, &inference_quiet(), &regions(), "inference").unwrap().high
+    quiet_cost(placements, &inference_quiet(), &regions(), "inference")
+        .unwrap()
+        .high
 }
 
 /// self-docs/CLOSING-2026-09-19.md, experiment 2: the quiet charge is a sum over the distinct regions the victim occupies, each region counted once however many of the victim's parts are in it.
 #[test]
 fn the_quiet_charge_is_idempotent_inside_a_region_and_adds_across_them() {
     assert_eq!(quiet_charge(&[placed("arena", 1), placed("stack", 1)]), 0.0);
-    assert_eq!(quiet_charge(&[placed("arena", 1), placed("stack", 3)]), 31.0);
-    assert_eq!(quiet_charge(&[placed("arena", 3), placed("stack", 1)]), 31.0);
+    assert_eq!(
+        quiet_charge(&[placed("arena", 1), placed("stack", 3)]),
+        31.0
+    );
+    assert_eq!(
+        quiet_charge(&[placed("arena", 3), placed("stack", 1)]),
+        31.0
+    );
     // both parts in SRAM3 cost what one part there costs, which is the cell that ruled the additive shape out at 32 measured against 62 predicted.
-    assert_eq!(quiet_charge(&[placed("arena", 3), placed("stack", 3)]), 31.0);
+    assert_eq!(
+        quiet_charge(&[placed("arena", 3), placed("stack", 3)]),
+        31.0
+    );
     // and the small SRAM2 term adds to the SRAM3 term instead of disappearing under it, which is the cell that ruled the maximum shape out.
-    assert_eq!(quiet_charge(&[placed("arena", 2), placed("stack", 3)]), 33.0);
+    assert_eq!(
+        quiet_charge(&[placed("arena", 2), placed("stack", 3)]),
+        33.0
+    );
 }
 
 /// the inference victim's access count was never counted, so its quiet charge stays with the victim it was measured on rather than becoming a number about another one.
@@ -86,10 +120,21 @@ fn the_descriptor_term_is_an_order_above_the_runtime_state_floor() {
             transactions_per_second: Some(12_800_000.0),
         },
     ];
-    let answer =
-        cost(&placements, &requesters, &characterisation, &regions(), 320_000, 160_000_000).unwrap();
+    let answer = cost(
+        &placements,
+        &requesters,
+        &characterisation,
+        &regions(),
+        320_000,
+        160_000_000,
+    )
+    .unwrap();
     assert_eq!(answer.terms.len(), 2);
-    let descriptors = answer.terms.iter().find(|t| t.endpoint == "descriptors").unwrap();
+    let descriptors = answer
+        .terms
+        .iter()
+        .find(|t| t.endpoint == "descriptors")
+        .unwrap();
     let data = answer.terms.iter().find(|t| t.endpoint == "data").unwrap();
     assert!((descriptors.high.unwrap() - 0.029 * 25_600.0).abs() < 1e-6);
     assert!((data.high.unwrap() - 0.003 * 25_600.0).abs() < 1e-6);
@@ -198,8 +243,13 @@ fn an_unmeasured_coefficient_produces_the_command_rather_than_a_number() {
     assert!(answer.terms[0].high.is_none());
     assert_eq!(answer.high, 0.0);
     match &answer.bases()[0] {
-        Basis::Unmeasured { remediation: command } => {
-            assert_eq!(command, "run: laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'")
+        Basis::Unmeasured {
+            remediation: command,
+        } => {
+            assert_eq!(
+                command,
+                "run: laxity characterise --object stack --requester emw3080 --endpoint 'spi dma'"
+            )
         }
         other => panic!("expected an unmeasured basis, got {other:?}"),
     }

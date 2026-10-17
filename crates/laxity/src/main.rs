@@ -5,7 +5,8 @@
 mod characterise;
 mod console;
 
-use laxity_audit::render::report;
+use laxity_audit::render::{report, report_from};
+use laxity_audit::Objects;
 use laxity_core::application::{self, ApplicationDocument};
 use laxity_core::characterisation::Characterisation;
 use laxity_core::profile::Profile;
@@ -129,32 +130,43 @@ fn run_audit(args: &[String]) -> Result<String, String> {
         );
     }
     // a fourth argument ending in .toml is the application config that declares the window and the deadline, and anything else in that position is the audited image's hash.
-    let config = args.get(3).filter(|value| value.ends_with(".toml")).map(String::as_str);
-    let audited = args.get(if config.is_some() { 4 } else { 3 }).map(String::as_str);
+    let config = args
+        .get(3)
+        .filter(|value| value.ends_with(".toml"))
+        .map(String::as_str);
+    let audited = args
+        .get(if config.is_some() { 4 } else { 3 })
+        .map(String::as_str);
     let profile = Profile::from_toml(&read(&args[1])?)?;
     let characterisation = Characterisation::from_toml(&read(&args[2])?)?;
-    report(&PathBuf::from(&args[0]), &profile, &characterisation, config, audited)
+    report(
+        &PathBuf::from(&args[0]),
+        &profile,
+        &characterisation,
+        config,
+        audited,
+    )
 }
 
 /// the audit with nothing on the command line, which is what pointing the tool at a project means.
 ///
 /// the four paths the explicit form takes are all derivable: the configuration says the platform and the ELF, and the profile and its characterisation follow by convention from the platform. what the caller supplies is the directory they are standing in, and the configuration that governs it is found by walking up the way cargo and git find theirs.
 fn discovered_audit() -> Result<String, String> {
-    let here = env::current_dir().map_err(|error| format!("cannot read the current directory: {error}"))?;
+    let here = env::current_dir()
+        .map_err(|error| format!("cannot read the current directory: {error}"))?;
     let config = application::discover(&here)?;
     let document = ApplicationDocument::load(config.to_str().unwrap_or_default())?;
 
-    let elf = document
-        .elf_path(&config)
-        .ok_or_else(|| format!("{} declares no elf, so there is nothing to audit", config.display()))?;
-    if !elf.is_file() {
-        return Err(format!(
-            "{} declares elf = {:?}, which is {} from there and is not a file",
-            config.display(),
-            document.elf.as_deref().unwrap_or_default(),
-            elf.display()
-        ));
-    }
+    // the binary is preferred when both are declared and present, since what a machine links is the ground truth for that machine, and the table is what a clone that cannot build the firmware audits from instead. which one was taken is on stderr below, because a silent choice between two sources is the thing that wastes an afternoon.
+    let elf = document.elf_path(&config).filter(|path| path.is_file());
+    let table = document
+        .object_table_path(&config)
+        .filter(|path| path.is_file());
+    let source = match (&elf, &table) {
+        (Some(path), _) => Objects::Elf(path),
+        (None, Some(path)) => Objects::Table(path),
+        (None, None) => return Err(no_source(&config, &document)),
+    };
     let profile_path = document.profile_path(&config)?;
     let characterisation_path = document.characterisation_path(&config)?;
 
@@ -162,10 +174,67 @@ fn discovered_audit() -> Result<String, String> {
     let characterisation = Characterisation::from_toml(&read(path_str(&characterisation_path))?)?;
     // what it found goes to stderr, not into the report. a tool that resolves four paths on its own and names none of them is a tool nobody can check, and a report that differs by how it was invoked is a report nobody can diff.
     eprintln!("laxity audit: found {}", config.display());
-    eprintln!("             elf {}", elf.display());
+    eprintln!(
+        "             objects from the {} {}",
+        source.label(),
+        source.path().display()
+    );
+    // the source that was declared and not taken is named too, so that a stale table beside a fresh binary cannot look like the only thing the audit could have read.
+    if let Some(unused) = match source {
+        Objects::Elf(_) => document.object_table_path(&config),
+        Objects::Table(_) => document.elf_path(&config),
+    } {
+        eprintln!(
+            "             {} is declared too and was not read{}",
+            unused.display(),
+            if unused.is_file() {
+                ""
+            } else {
+                ", and is not a file"
+            }
+        );
+    }
     eprintln!("             profile {}", profile_path.display());
-    eprintln!("             characterisation {}", characterisation_path.display());
-    report(&elf, &profile, &characterisation, Some(path_str(&config)), None)
+    eprintln!(
+        "             characterisation {}",
+        characterisation_path.display()
+    );
+    report_from(
+        source,
+        &profile,
+        &characterisation,
+        Some(path_str(&config)),
+        None,
+    )
+}
+
+/// why there is nothing to audit, naming every path the configuration declared so that a typo in one of them is visible rather than reported as an absence.
+fn no_source(config: &std::path::Path, document: &ApplicationDocument) -> String {
+    let declared: Vec<String> = [
+        ("elf", &document.elf),
+        ("object_table", &document.object_table),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| {
+        let value = value.as_deref()?;
+        let path = if key == "elf" {
+            document.elf_path(config)
+        } else {
+            document.object_table_path(config)
+        }?;
+        Some(format!(
+            "declares {key} = {value:?}, which is {} from there and is not a file",
+            path.display()
+        ))
+    })
+    .collect();
+    if declared.is_empty() {
+        return format!(
+            "{} declares neither elf nor object_table, so there is nothing to audit",
+            config.display()
+        );
+    }
+    format!("{} {}", config.display(), declared.join(", and "))
 }
 
 fn path_str(path: &std::path::Path) -> &str {
@@ -239,7 +308,8 @@ usage:
 
 native, this binary:
   audit          price the placement laxity.toml declares, finding it by
-                 walking up from here
+                 walking up from here, from the elf it declares or, in a tree
+                 with no binary, from the objects table it declares
   audit <elf> <profile> <characterisation> [laxity.toml] [image-sha256]
                  the same, with every path named
   tui [options]  the telemetry viewer, laxity tui --help for its options

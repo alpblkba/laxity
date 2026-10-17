@@ -1,8 +1,8 @@
 //! what a placement costs, and on what evidence.
 
 use crate::characterisation::{Basis, Characterisation, Source};
-use laxity_types::Region;
 use crate::placement::{occupied_regions, Placement};
+use laxity_types::Region;
 
 /// one requester endpoint, in the region it touches. a rate of nothing is an endpoint that was declared but never characterised, which costs an unknown rather than a zero.
 #[derive(Clone, Debug)]
@@ -81,7 +81,9 @@ pub fn cost(
     clock_hz: u64,
 ) -> Result<Cost, String> {
     if window_cycles == 0 || clock_hz == 0 {
-        return Err("the workload needs a positive window and the platform a positive clock".to_string());
+        return Err(
+            "the workload needs a positive window and the platform a positive clock".to_string(),
+        );
     }
     let window_seconds = window_cycles as f64 / clock_hz as f64;
     let mut terms = Vec::new();
@@ -99,7 +101,9 @@ pub fn cost(
             })?;
         let requester = requesters
             .iter()
-            .find(|item| item.name == coefficient.requester && item.endpoint == coefficient.endpoint)
+            .find(|item| {
+                item.name == coefficient.requester && item.endpoint == coefficient.endpoint
+            })
             .ok_or_else(|| {
                 format!(
                     "characterisation coefficient names an undeclared requester endpoint: {}.{}",
@@ -119,11 +123,19 @@ pub fn cost(
                 (Basis::Measured { value }, Some(count)) => {
                     (Some(value * count), Some(value * count))
                 }
-                (Basis::Borrowed { minimum, maximum, .. }, Some(count))
+                (
+                    Basis::Borrowed {
+                        minimum, maximum, ..
+                    },
+                    Some(count),
+                )
                 | (Basis::Bounded { minimum, maximum }, Some(count))
-                | (Basis::Mean { minimum, maximum, .. }, Some(count)) => {
-                    (Some(minimum * count), Some(maximum * count))
-                }
+                | (
+                    Basis::Mean {
+                        minimum, maximum, ..
+                    },
+                    Some(count),
+                ) => (Some(minimum * count), Some(maximum * count)),
                 _ => (None, None),
             };
             if let (Some(low), Some(high)) = (low, high) {
@@ -144,7 +156,11 @@ pub fn cost(
         }
     }
 
-    Ok(Cost { terms, low: low_total, high: high_total })
+    Ok(Cost {
+        terms,
+        low: low_total,
+        high: high_total,
+    })
 }
 
 /// one region the victim occupies, charged once whatever the victim has in it.
@@ -192,14 +208,23 @@ pub fn quiet_cost(
             .iter()
             .find(|region| region.id == id)
             .ok_or_else(|| format!("no region carries the qos_id {id}"))?;
-        let charge = characterisation.quiet_charge(&region.name, victim).ok_or_else(|| {
-            format!("the characterisation has no quiet charge for {victim} in {}", region.name)
-        })?;
+        let charge = characterisation
+            .quiet_charge(&region.name, victim)
+            .ok_or_else(|| {
+                format!(
+                    "the characterisation has no quiet charge for {victim} in {}",
+                    region.name
+                )
+            })?;
         let (low, high) = match &charge.basis {
             Basis::Measured { value } => (Some(*value), Some(*value)),
-            Basis::Borrowed { minimum, maximum, .. }
+            Basis::Borrowed {
+                minimum, maximum, ..
+            }
             | Basis::Bounded { minimum, maximum }
-            | Basis::Mean { minimum, maximum, .. } => (Some(*minimum), Some(*maximum)),
+            | Basis::Mean {
+                minimum, maximum, ..
+            } => (Some(*minimum), Some(*maximum)),
             Basis::Unmeasured { .. } => (None, None),
         };
         if let (Some(low), Some(high)) = (low, high) {
@@ -214,7 +239,11 @@ pub fn quiet_cost(
             high,
         });
     }
-    Ok(QuietCost { terms, low: low_total, high: high_total })
+    Ok(QuietCost {
+        terms,
+        low: low_total,
+        high: high_total,
+    })
 }
 
 #[cfg(test)]
@@ -227,8 +256,18 @@ mod tests {
 
     fn regions() -> Vec<Region> {
         vec![
-            Region { id: 1, name: "sram1".into(), base: 0x2000_0000, bytes: 0x0003_0000 },
-            Region { id: 3, name: "sram3".into(), base: 0x2004_0000, bytes: 0x0008_0000 },
+            Region {
+                id: 1,
+                name: "sram1".into(),
+                base: 0x2000_0000,
+                bytes: 0x0003_0000,
+            },
+            Region {
+                id: 3,
+                name: "sram3".into(),
+                base: 0x2004_0000,
+                bytes: 0x0008_0000,
+            },
         ]
     }
 
@@ -250,18 +289,42 @@ mod tests {
 
     #[test]
     fn a_region_the_requester_does_not_touch_costs_nothing_and_charges_no_term() {
-        let placements = vec![Placement::new("stack", 3072, ".bss", Address::LinkTime(0x2000_f400))];
-        let cost = cost(&placements, &[dma(3)], &measured(0.116), &regions(), 320_000, 160_000_000)
-            .unwrap();
+        let placements = vec![Placement::new(
+            "stack",
+            3072,
+            ".bss",
+            Address::LinkTime(0x2000_f400),
+        )];
+        let cost = cost(
+            &placements,
+            &[dma(3)],
+            &measured(0.116),
+            &regions(),
+            320_000,
+            160_000_000,
+        )
+        .unwrap();
         assert!(cost.terms.is_empty());
         assert_eq!(cost.high, 0.0);
     }
 
     #[test]
     fn an_overlapping_region_costs_the_coefficient_times_the_transactions_in_the_window() {
-        let placements = vec![Placement::new("stack", 3072, ".bss", Address::LinkTime(0x2005_7654))];
-        let cost = cost(&placements, &[dma(3)], &measured(0.116), &regions(), 320_000, 160_000_000)
-            .unwrap();
+        let placements = vec![Placement::new(
+            "stack",
+            3072,
+            ".bss",
+            Address::LinkTime(0x2005_7654),
+        )];
+        let cost = cost(
+            &placements,
+            &[dma(3)],
+            &measured(0.116),
+            &regions(),
+            320_000,
+            160_000_000,
+        )
+        .unwrap();
         assert_eq!(cost.terms.len(), 1);
         // 12.8 million transactions a second over a 320000 cycle window at 160 MHz is 25600 of them.
         assert!((cost.terms[0].transactions.unwrap() - 25_600.0).abs() < 1e-6);
@@ -271,8 +334,15 @@ mod tests {
 
     #[test]
     fn a_coefficient_with_no_object_to_attach_to_is_an_error() {
-        let err = cost(&[], &[dma(3)], &measured(0.116), &regions(), 320_000, 160_000_000)
-            .unwrap_err();
+        let err = cost(
+            &[],
+            &[dma(3)],
+            &measured(0.116),
+            &regions(),
+            320_000,
+            160_000_000,
+        )
+        .unwrap_err();
         assert!(err.contains("undeclared object"));
     }
 
@@ -282,22 +352,42 @@ mod tests {
             "{HEADER}\n[[quiet]]\nregion = \"sram1\"\nvictim = \"inference\"\nbasis = \"measured\"\nvalue = 0\ncampaign = \"fixture\"\n"
         ))
         .unwrap();
-        let placements = vec![Placement::new("stack", 3072, ".bss", Address::LinkTime(0x2005_7654))];
+        let placements = vec![Placement::new(
+            "stack",
+            3072,
+            ".bss",
+            Address::LinkTime(0x2005_7654),
+        )];
         let err = quiet_cost(&placements, &characterisation, &regions(), "inference").unwrap_err();
-        assert_eq!(err, "the characterisation has no quiet charge for inference in sram3");
+        assert_eq!(
+            err,
+            "the characterisation has no quiet charge for inference in sram3"
+        );
     }
 
     #[test]
     fn an_endpoint_with_no_rate_costs_an_unknown_rather_than_a_zero() {
-        let placements = vec![Placement::new("stack", 3072, ".bss", Address::LinkTime(0x2005_7654))];
+        let placements = vec![Placement::new(
+            "stack",
+            3072,
+            ".bss",
+            Address::LinkTime(0x2005_7654),
+        )];
         let quiet = Requester {
             name: "gpdma1".into(),
             endpoint: "data".into(),
             region: 3,
             transactions_per_second: None,
         };
-        let cost = cost(&placements, &[quiet], &measured(0.116), &regions(), 320_000, 160_000_000)
-            .unwrap();
+        let cost = cost(
+            &placements,
+            &[quiet],
+            &measured(0.116),
+            &regions(),
+            320_000,
+            160_000_000,
+        )
+        .unwrap();
         assert_eq!(cost.terms.len(), 1);
         assert!(cost.terms[0].low.is_none());
         assert!(cost.terms[0].transactions.is_none());

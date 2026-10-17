@@ -10,15 +10,26 @@ use laxity_types::{regions_spanned, Object, Region};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Address {
     LinkTime(u64),
-    Allocated { pool_base: u64, header_bytes: u64, preceding_bytes: Vec<u64> },
+    Allocated {
+        pool_base: u64,
+        header_bytes: u64,
+        preceding_bytes: Vec<u64>,
+    },
 }
 
 impl Address {
     pub fn resolve(&self) -> u64 {
         match self {
             Address::LinkTime(addr) => *addr,
-            Address::Allocated { pool_base, header_bytes, preceding_bytes } => {
-                let ahead: u64 = preceding_bytes.iter().map(|bytes| bytes + header_bytes).sum();
+            Address::Allocated {
+                pool_base,
+                header_bytes,
+                preceding_bytes,
+            } => {
+                let ahead: u64 = preceding_bytes
+                    .iter()
+                    .map(|bytes| bytes + header_bytes)
+                    .sum();
                 pool_base + ahead + header_bytes
             }
         }
@@ -61,8 +72,10 @@ impl Placement {
 ///
 /// this is the shape the contention free charge has in self-docs/CLOSING-2026-09-19.md, where two of the victim's parts in one region cost what one part there costs and parts in two regions cost the sum.
 pub fn occupied_regions(placements: &[Placement], regions: &[Region]) -> Vec<u8> {
-    let mut ids: Vec<u8> =
-        placements.iter().flat_map(|placement| placement.regions(regions)).collect();
+    let mut ids: Vec<u8> = placements
+        .iter()
+        .flat_map(|placement| placement.regions(regions))
+        .collect();
     ids.sort_unstable();
     ids.dedup();
     ids
@@ -74,8 +87,18 @@ mod tests {
 
     fn regions() -> Vec<Region> {
         vec![
-            Region { id: 1, name: "sram1".into(), base: 0x2000_0000, bytes: 0x0003_0000 },
-            Region { id: 3, name: "sram3".into(), base: 0x2004_0000, bytes: 0x0008_0000 },
+            Region {
+                id: 1,
+                name: "sram1".into(),
+                base: 0x2000_0000,
+                bytes: 0x0003_0000,
+            },
+            Region {
+                id: 3,
+                name: "sram3".into(),
+                base: 0x2004_0000,
+                bytes: 0x0008_0000,
+            },
         ]
     }
 

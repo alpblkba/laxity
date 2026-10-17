@@ -7,6 +7,9 @@ description = "Allocated ARM ELF symbols and their memory regions"
 
 [dependencies]
 laxity-types = { path = "../laxity-types" }
+# the same pair crates/laxity-core reads its own TOML with, so the object table and every other configuration in this tree are parsed by one implementation.
+serde = { version = "1", features = ["derive"] }
+toml = "1"
 object = { version = "0.37.3", default-features = false, features = ["read_core", "elf", "std", "unaligned"] }
 
 [dev-dependencies]
